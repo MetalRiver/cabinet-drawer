@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>抽屉柜</title>
+    <style>
+      /* 启动画面 - 在 Vue 加载前显示 */
+      .splash {
+        position: fixed;
+        inset: 0;
+        background: #0a0e1a;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        z-index: 9999;
+        animation: splashOut 0.5s ease 0.3s forwards;
+      }
+      .splash-logo {
+        width: 80px;
+        height: 80px;
+        background: linear-gradient(135deg, #4f7cff 0%, #ff5e7e 100%);
+        border-radius: 20px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 40px;
+        box-shadow: 0 0 40px rgba(79, 124, 255, 0.5);
+        animation: logoPulse 1.5s ease-in-out infinite;
+      }
+      .splash-text {
+        margin-top: 20px;
+        font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
+        font-size: 18px;
+        color: #b8c1d9;
+        letter-spacing: 2px;
+      }
+      .splash-dots {
+        margin-top: 16px;
+        display: flex;
+        gap: 6px;
+      }
+      .splash-dots span {
+        width: 6px;
+        height: 6px;
+        background: #4f7cff;
+        border-radius: 50%;
+        animation: dotJump 1.2s ease-in-out infinite;
+      }
+      .splash-dots span:nth-child(2) { animation-delay: 0.15s; }
+      .splash-dots span:nth-child(3) { animation-delay: 0.3s; }
+      @keyframes logoPulse {
+        0%, 100% { transform: scale(1); box-shadow: 0 0 40px rgba(79, 124, 255, 0.5); }
+        50% { transform: scale(1.05); box-shadow: 0 0 60px rgba(79, 124, 255, 0.8); }
+      }
+      @keyframes dotJump {
+        0%, 80%, 100% { transform: translateY(0); opacity: 0.5; }
+        40% { transform: translateY(-6px); opacity: 1; }
+      }
+      @keyframes splashOut {
+        to { opacity: 0; visibility: hidden; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="splash">
+      <div class="splash-logo">🗂️</div>
+      <div class="splash-text">抽屉柜</div>
+      <div class="splash-dots">
+        <span></span><span></span><span></span>
+      </div>
+    </div>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

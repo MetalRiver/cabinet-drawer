@@ -1,0 +1,537 @@
+/* ================================================================
+   抽屉柜 - 全局样式（深色玻璃 · 年轻化 · 高对比 · 桌面插件主题）
+   ================================================================ */
+
+:root {
+  /* ===== 背景系统（深色玻璃） ===== */
+  --bg-deep: linear-gradient(
+    135deg,
+    #14141c 0%,
+    #1a1428 50%,
+    #1e1832 100%
+  ); /* 窗口背景底（紫色调） */
+  --bg-primary: rgba(255, 255, 255, 0.05);  /* 卡片：白 5% 透明 */
+  --bg-secondary: rgba(255, 255, 255, 0.09); /* 卡片/弹窗：白 9% */
+  --bg-tertiary: rgba(255, 255, 255, 0.13);  /* 输入框/按钮：白 13% */
+  --bg-glass: rgba(255, 255, 255, 0.08);
+  --bg-overlay: rgba(0, 0, 0, 0.55);        /* 遮罩 */
+
+  /* ===== 主色（年轻化：Indigo + Pink） ===== */
+  --accent: #6366f1;                     /* Indigo-500 - 主色 */
+  --accent-bright: #818cf8;              /* Indigo-400 - hover */
+  --accent-deep: #4f46e5;                /* Indigo-600 - 按钮按下 */
+  --accent-soft: rgba(99, 102, 241, 0.22);
+  --accent-hover: rgba(99, 102, 241, 0.3);
+
+  --highlight: #ec4899;                  /* Pink-500 - 强调 */
+  --highlight-bright: #f472b6;           /* Pink-400 */
+  --highlight-soft: rgba(236, 72, 153, 0.22);
+
+  --success: #10b981;                    /* Emerald-500 */
+  --warning: #f59e0b;                    /* Amber-500 */
+  --info: #06b6d4;                       /* Cyan-500 */
+  --danger: #ef4444;                     /* Red-500 */
+
+  /* ===== 文字（高对比，符合 WCAG AA） ===== */
+  --text-primary: rgba(255, 255, 255, 0.96);   /* 主文字 - 接近白 */
+  --text-secondary: rgba(255, 255, 255, 0.78); /* 次文字 */
+  --text-muted: rgba(255, 255, 255, 0.56);     /* 弱化 */
+  --text-faint: rgba(255, 255, 255, 0.4);      /* 极弱 */
+  --text-inverse: #0f172a;                     /* 反色 - 用于浅色按钮上的字 */
+
+  /* ===== 边框（白线，玻璃感） ===== */
+  --border: rgba(255, 255, 255, 0.1);
+  --border-bright: rgba(99, 102, 241, 0.4);
+  --border-strong: rgba(255, 255, 255, 0.18);
+  --border-input: rgba(255, 255, 255, 0.14);
+
+  /* ===== 阴影（深色环境下要更强） ===== */
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.35), 0 1px 2px rgba(0, 0, 0, 0.25);
+  --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.45), 0 2px 4px rgba(0, 0, 0, 0.3);
+  --shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.55), 0 4px 8px rgba(0, 0, 0, 0.35);
+  --shadow-glow: 0 0 24px rgba(99, 102, 241, 0.4);
+  --shadow-glow-pink: 0 0 24px rgba(236, 72, 153, 0.32);
+
+  /* ===== 圆角（柔和、年轻） ===== */
+  --radius-sm: 8px;
+  --radius: 14px;
+  --radius-lg: 20px;
+  --radius-xl: 28px;
+
+  /* ===== 布局 ===== */
+  --sidebar-width: 88px;
+  --topbar-height: 52px;
+
+  /* ===== 字号（明确、最小 12px） ===== */
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-base: 14px;
+  --text-md: 15px;
+  --text-lg: 17px;
+  --text-xl: 20px;
+  --text-2xl: 24px;
+  --text-3xl: 32px;
+
+  /* ===== 动画曲线 ===== */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --ease-smooth: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-bounce: cubic-bezier(0.68, -0.55, 0.27, 1.55);
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #app {
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg-deep);
+  color: var(--text-primary);
+  font-family: 'Segoe UI', 'Microsoft YaHei', system-ui, -apple-system, sans-serif;
+  font-size: var(--text-base);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  user-select: none;
+}
+
+body {
+  background: var(--bg-deep);
+  min-height: 100vh;
+}
+
+input, select, button, textarea {
+  font-family: inherit;
+  font-size: inherit;
+  color: var(--text-primary);
+}
+
+/* 选中文本：紫色高亮（深色背景下） */
+::selection {
+  background: var(--accent-soft);
+  color: var(--text-primary);
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 3px;
+  transition: background 0.2s;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--text-faint); }
+
+/* ================================================================
+   全局动画
+   ================================================================ */
+
+/* 路由切换 - 快进快出（KeepAlive 缓存后只需要淡入淡出） */
+.page-enter-active {
+  animation: pageIn 0.2s var(--ease-out);
+}
+.page-leave-active {
+  animation: pageOut 0.12s var(--ease-smooth);
+}
+
+@keyframes pageIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes pageOut {
+  from { opacity: 1; }
+  to   { opacity: 0; transform: scale(0.99); }
+}
+
+/* 列表项交错进入 */
+.stagger-item {
+  animation: staggerIn 0.35s var(--ease-out) backwards;
+}
+@keyframes staggerIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* 淡入淡出 */
+.fade-enter-active,
+.fade-leave-active { transition: opacity 0.2s var(--ease-smooth); }
+.fade-enter-from,
+.fade-leave-to { opacity: 0; }
+
+/* 缩放淡入 - 弹窗用 */
+.zoom-enter-active { animation: zoomIn 0.25s var(--ease-spring); }
+.zoom-leave-active { animation: zoomOut 0.18s var(--ease-smooth); }
+@keyframes zoomIn {
+  from { opacity: 0; transform: scale(0.92) translateY(12px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
+}
+@keyframes zoomOut {
+  from { opacity: 1; transform: scale(1); }
+  to   { opacity: 0; transform: scale(0.96); }
+}
+
+/* 滑入 - 抽屉用 */
+.slide-up-enter-active { animation: slideUp 0.32s var(--ease-out); }
+.slide-up-leave-active { animation: slideDown 0.22s var(--ease-smooth); }
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(24px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes slideDown {
+  from { opacity: 1; transform: translateY(0); }
+  to   { opacity: 0; transform: translateY(16px); }
+}
+
+/* 发光脉冲 - 活跃指示器 */
+@keyframes glowPulse {
+  0%, 100% { box-shadow: 0 0 8px rgba(99, 102, 241, 0.3); }
+  50%      { box-shadow: 0 0 16px rgba(99, 102, 241, 0.6); }
+}
+
+/* 闪烁 - 通知 */
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.55; }
+}
+
+/* 旋转 - 加载 */
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* 渐变流动 - 标题装饰 */
+@keyframes gradientFlow {
+  0%   { background-position: 0% 50%; }
+  50%  { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+/* 按压反馈 - 按钮/可点击元素 */
+.tap {
+  position: relative;
+  overflow: hidden;
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    transform 0.14s var(--ease-spring),
+    background-color 0.14s var(--ease-smooth),
+    color 0.14s var(--ease-smooth),
+    box-shadow 0.14s var(--ease-smooth);
+}
+.tap:active { transform: scale(0.96); }
+.tap::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: currentColor;
+  opacity: 0;
+  pointer-events: none;
+  transform: scale(0.4);
+  transition: transform 0.5s var(--ease-out), opacity 0.6s var(--ease-out);
+}
+.tap:active::after {
+  opacity: 0.12;
+  transform: scale(1.6);
+  transition: transform 0.4s var(--ease-out), opacity 0.08s var(--ease-out);
+}
+
+/* ===== Tauri 2 拖拽区域全局规则 ===== */
+[data-tauri-drag-region] {
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+[data-tauri-drag-region] button,
+[data-tauri-drag-region] a,
+[data-tauri-drag-region] input,
+[data-tauri-drag-region] select,
+[data-tauri-drag-region] textarea,
+[data-tauri-drag-region] [data-no-drag] {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+/* ===== 全局工具类 ===== */
+.glass {
+  background: var(--bg-primary);
+  backdrop-filter: blur(40px) saturate(180%);
+  -webkit-backdrop-filter: blur(40px) saturate(180%);
+  border: 1px solid var(--border);
+}
+
+.gradient-text {
+  background: linear-gradient(135deg, #6366f1 0%, #ec4899 100%);
+  background-size: 200% 200%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: gradientFlow 4s ease infinite;
+}
+
+/* ===== 通用按钮（高对比，确保看得清） ===== */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: var(--radius);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all 0.15s var(--ease-smooth);
+  user-select: none;
+}
+.btn-primary {
+  background: linear-gradient(135deg, #6366f1 0%, #818cf8 100%);
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3);
+}
+.btn-primary:hover {
+  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.4);
+  transform: translateY(-1px);
+}
+.btn-primary:active { transform: scale(0.97); }
+.btn-secondary {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-strong);
+}
+.btn-secondary:hover { background: var(--bg-tertiary); }
+.btn-ghost {
+  background: transparent;
+  color: var(--text-secondary);
+}
+.btn-ghost:hover { background: var(--accent-soft); color: var(--accent); }
+.btn-danger {
+  background: var(--danger);
+  color: #fff;
+}
+.btn-icon {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: 10px;
+}
+
+/* ===== 通用输入框（高对比） ===== */
+.input {
+  width: 100%;
+  padding: 9px 12px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-input);
+  border-radius: var(--radius);
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  transition: all 0.15s var(--ease-smooth);
+  outline: none;
+}
+.input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+  background: rgba(255, 255, 255, 0.16);
+}
+.input::placeholder { color: var(--text-faint); }
+
+/* ===== 统一 View Header（P0 重构）===== */
+.view-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 14px;
+  gap: 12px;
+}
+.view-header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+  min-width: 0;
+}
+.view-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  flex-shrink: 0;
+  position: relative;
+  overflow: hidden;
+}
+.view-icon::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.12) 0%, transparent 100%);
+  pointer-events: none;
+}
+.view-icon.icon-blue   { background: linear-gradient(135deg, rgba(79, 124, 255, 0.25), rgba(79, 195, 247, 0.25)); }
+.view-icon.icon-purple { background: linear-gradient(135deg, rgba(123, 97, 255, 0.25), rgba(255, 94, 126, 0.25)); }
+.view-icon.icon-cyan   { background: linear-gradient(135deg, rgba(79, 195, 247, 0.25), rgba(61, 220, 151, 0.25)); }
+.view-icon.icon-orange { background: linear-gradient(135deg, rgba(255, 184, 77, 0.25), rgba(255, 138, 94, 0.25)); }
+.view-icon.icon-yellow { background: linear-gradient(135deg, rgba(255, 200, 50, 0.25), rgba(255, 138, 94, 0.25)); }
+
+.view-header-info { flex: 1; min-width: 0; }
+.view-title {
+  font-size: 20px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 2px;
+  color: var(--text-primary);
+  line-height: 1.2;
+  letter-spacing: -0.2px;
+}
+.title-count {
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 10px;
+  line-height: 1.4;
+  border: 1px solid var(--border);
+}
+.view-subtitle {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ===== View Header 响应式：窗口拉大时标题区更醒目 ===== */
+/* 中等宽度（600+）：icon 大、title 字号略增 */
+@media (min-width: 600px) {
+  .view-header { margin-bottom: 16px; gap: 14px; }
+  .view-icon { width: 44px; height: 44px; font-size: 22px; border-radius: 13px; }
+  .view-title { font-size: 22px; }
+  .view-subtitle { font-size: 13px; }
+}
+/* 大宽度（800+）：更大 */
+@media (min-width: 800px) {
+  .view-header { margin-bottom: 18px; gap: 16px; }
+  .view-icon { width: 48px; height: 48px; font-size: 24px; border-radius: 14px; }
+  .view-title { font-size: 24px; }
+  .view-subtitle { font-size: 13px; }
+  .title-count { font-size: 12px; padding: 3px 10px; }
+}
+/* 超大宽度（1100+）：超宽屏最大展示 */
+@media (min-width: 1100px) {
+  .view-header { margin-bottom: 20px; gap: 18px; }
+  .view-icon { width: 52px; height: 52px; font-size: 26px; border-radius: 15px; }
+  .view-title { font-size: 26px; }
+  .view-subtitle { font-size: 14px; }
+  .title-count { font-size: 13px; padding: 3px 12px; }
+}
+
+.view-header-actions { display: flex; gap: 6px; flex-shrink: 0; align-items: center; }
+.action-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+  font-weight: 500;
+  transition: all 0.18s var(--ease-smooth);
+  -webkit-app-region: no-drag;
+  user-select: none;
+  gap: 5px;
+}
+.action-btn-primary {
+  width: 36px;
+  height: 36px;
+  font-size: 18px;
+  background: linear-gradient(135deg, var(--accent) 0%, #4fc3f7 100%);
+  color: white;
+  box-shadow: 0 2px 8px rgba(79, 124, 255, 0.3);
+}
+.action-btn-primary:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(79, 124, 255, 0.45); }
+.action-btn-primary:active { transform: translateY(0) scale(0.95); }
+.action-btn-secondary {
+  width: 36px;
+  height: 36px;
+  font-size: 15px;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+}
+.action-btn-secondary:hover {
+  background: var(--accent-soft);
+  color: var(--text-primary);
+  border-color: var(--accent);
+}
+.action-btn-text {
+  height: 36px;
+  padding: 0 14px;
+  font-size: 13px;
+  background: linear-gradient(135deg, var(--accent) 0%, #4fc3f7 100%);
+  color: white;
+  box-shadow: 0 2px 8px rgba(79, 124, 255, 0.3);
+}
+.action-btn-text:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(79, 124, 255, 0.45); }
+.action-btn-text.orange {
+  background: linear-gradient(135deg, #ffb84d 0%, #ff8a5e 100%);
+  box-shadow: 0 2px 8px rgba(255, 184, 77, 0.3);
+}
+.action-btn-text.orange:hover { box-shadow: 0 4px 12px rgba(255, 184, 77, 0.45); }
+/* P0-#ICON#MISSING#HINT：警告色按钮（用于"重抽图标"等恢复操作）
+   区别于 action-btn-text（蓝色 / 常规）和 action-btn-text.orange（橙色 / 通知）
+   用紫色（accent 的同色系但更柔和）+ 边框 → 不刺眼但能引起注意 */
+.action-btn-warn {
+  height: 36px;
+  padding: 0 12px;
+  font-size: 12px;
+  font-weight: 600;
+  background: rgba(168, 85, 247, 0.15);
+  color: #c084fc;
+  border: 1px solid rgba(168, 85, 247, 0.4);
+  box-shadow: 0 0 0 0 rgba(168, 85, 247, 0);
+  animation: warn-pulse 2s ease-in-out infinite;
+}
+.action-btn-warn:hover:not(:disabled) {
+  background: rgba(168, 85, 247, 0.25);
+  border-color: rgba(168, 85, 247, 0.7);
+  box-shadow: 0 4px 12px rgba(168, 85, 247, 0.35);
+  transform: translateY(-1px);
+}
+.action-btn-warn:active:not(:disabled) { transform: translateY(0) scale(0.96); }
+.action-btn-warn:disabled { opacity: 0.6; cursor: not-allowed; }
+@keyframes warn-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(168, 85, 247, 0); }
+  50% { box-shadow: 0 0 0 4px rgba(168, 85, 247, 0.15); }
+}
+
+/* ===== 常用区类型色条 / 角标 ===== */
+.type-stripe {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  border-radius: 10px 10px 0 0;
+}
+.stripe-app      { background: linear-gradient(90deg, #4f7cff, #4fc3f7); }
+.stripe-password { background: linear-gradient(90deg, #7b61ff, #ff5e7e); }
+.stripe-snippet  { background: linear-gradient(90deg, #4fc3f7, #3ddc97); }
+.stripe-temp     { background: linear-gradient(90deg, #ffb84d, #ff8a5e); }
+
+.type-emoji {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  font-size: 9px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 0 3px;
+  line-height: 1.4;
+  opacity: 0.85;
+}

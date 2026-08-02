@@ -1,0 +1,71 @@
+# ========================
+# Node.js / 前端
+# ========================
+node_modules/
+dist/
+.vite/
+*.local
+.DS_Store
+Thumbs.db
+
+# pnpm / npm 缓存
+.pnpm-store/
+.npm
+.cache/
+
+# ========================
+# 数据库 + 隐私文件（绝对不能上传！）
+# ========================
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.log
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# 临时本地文件
+err.log
+out.log
+db_copy.db
+
+# ========================
+# Rust / Tauri 编译产物（几十GB，绝对不能上传！）
+# ========================
+# Rust target 目录（debug/release 编译产物）
+**/target/
+**/Target/
+
+# Tauri 打包中间文件
+src-tauri/target/
+
+# Tauri 生成的临时打包文件
+src-tauri/gen/
+
+# ========================
+# IDE / 编辑器
+# ========================
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+!.vscode/tasks.json
+!.vscode/launch.json
+
+# ========================
+# 操作系统临时文件
+# ========================
+$RECYCLE.BIN/
+System Volume Information/
+*.swp
+*.swo
+*~
+
+# ========================
+# 临时测试脚本
+# ========================
+query_db.py
+*.tmp

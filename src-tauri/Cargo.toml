@@ -1,0 +1,78 @@
+[package]
+name = "drawer-box"
+version = "0.1.0"
+description = "抽屉柜 - 桌面面板"
+authors = ["you"]
+edition = "2021"
+
+[lib]
+name = "drawer_box_lib"
+# C1-1：crate-type 说明（踩坑修复）
+#      cdylib = Tauri 必须（生成 drawer_box_lib.dll 给 WebView2 / Tauri Runtime 调用 IPC）
+#      rlib = Rust 内部链接必须（main.rs 里 use drawer_box_lib 需要），但这只是编译中间产物，不会进最终安装包
+#      staticlib = iOS/Android 静态库，Windows 完全不需要，删掉减 build 时间
+crate-type = ["cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["protocol-asset", "tray-icon"] }
+tauri-plugin-shell = "2"
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-clipboard-manager = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.31", features = ["bundled"] }
+aes-gcm = "0.10"
+argon2 = "0.5"
+rand = "0.8"
+base64 = "0.22"
+sha2 = "0.10"
+chrono = "0.4"
+tokio = { version = "1", features = ["time"] }
+png = "0.17"
+dirs = "5"
+zstd = "0.13"
+# image crate: 用于把 windows-icons 抽出的 RgbaImage 编码为 PNG
+# C1-1：关掉默认 features（默认 10+ 种格式解码器/编码器，我们只用 PNG），只保留 png
+#      预估减 1~2MB exe 体积，功能完全不受影响
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+# Windows 专用：贴边自动隐藏 + ShellExecuteW 启动软件 + 抽 .exe 图标 + 文件选择对话框
+[target."cfg(windows)".dependencies]
+# windows-icons = "0.3" 内部用 image + windows crate 直接调 Windows API ExtractIconW
+# 替代原来的 PowerShell [System.Drawing.Icon]::ExtractAssociatedIcon 方案
+# 优势：快 10-30x，不依赖 .NET / PowerShell，跨 Win 版本一致
+windows-icons = "0.3"
+# rfd = "Rust File Dialog" — 选文件 / 选文件夹对话框（原生 Windows 资源管理器样式）
+# 用于"+ 软件"按钮里点"浏览..."直接选 .exe / .lnk / 文件夹
+rfd = "0.14"
+windows-sys = { version = "0.59", features = [
+  "Win32_Foundation",
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_Graphics_Gdi",
+  "Win32_System_Threading",
+  "Win32_UI_Shell",
+  "Win32_UI_HiDpi",
+  "Win32_System_Com",
+  "Win32_System_Memory",
+] }
+
+# ============================================================
+# C1-1：Release 编译优化（体积优先）
+# 说明：不改任何业务逻辑，纯编译器参数，预计安装包 5.09MB → 2.5~3.5MB
+#      运行速度影响 <5%（用户完全感知不到），体积减少 40~50%
+# ============================================================
+[profile.release]
+# 体积优先优化（比默认 opt-level=3 小 20~35%，运行速度慢 5~10%，桌面应用完全无感）
+opt-level = "z"
+# 全链路 LLVM 交叉 crate 死代码消除 + 内联
+lto = true
+# 禁用并行编译单元（build 慢 30~50%，换体积再减 10~15%
+codegen-units = 1
+# 去掉所有调试符号 + 行号表（单独就能减 30~40%，release 版本不需要调试符号）
+strip = true
+# 直接 abort 模式（去掉 panic 栈展开代码，再减 5~8%）
+panic = "abort"

@@ -1,0 +1,81 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nickkuk/nickkuk.github.io/refs/heads/main/tauri-conf.schema.json",
+  "productName": "抽屉柜 Drawer",
+  "version": "0.1.0",
+  "identifier": "com.drawer-box.app",
+  "build": {
+    "beforeBuildCommand": "pnpm build",
+    "beforeDevCommand": "pnpm dev",
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "抽屉柜 Drawer",
+        "width": 480,
+        "height": 720,
+        "minWidth": 320,
+        "minHeight": 400,
+        "maxWidth": 1400,
+        "maxHeight": 1100,
+          "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": false,
+        "skipTaskbar": true,
+        "visible": false,
+        "resizable": true,
+        "maximizable": false,
+        "minimizable": true,
+        "closable": true,
+        "shadow": true,
+        "fullscreen": false,
+        "center": true,
+        "dragDropEnabled": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self' ipc: http://ipc.localhost; img-src 'self' data: asset: http://asset.localhost; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost; font-src 'self' data:",
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "$APPLOCALDATA/com.drawer-box.app/icons/**/*",
+          "$APPDATA/com.drawer-box.app/**/*"
+        ]
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "publisher": "Wind-zp",
+    "shortDescription": "Windows 桌面抽屉柜：密码 / 软件 / 命令行 / 临时四合一，玻璃质感常驻桌面",
+    "longDescription": "抽屉柜是一款本地优先的 Windows 桌面工具，把你最常用的 4 类数据收纳进一个永远在屏幕上的小窗口：\n\n• 密码：端到端加密（AES-256 + Argon2），剪贴板 15s 自动清空\n• 软件：扫描开始菜单/桌面/ProgramFiles，拖入文件/文件夹/快捷方式自动分类，一键启动\n• 命令行：常用命令、代码片段一键复制\n• 临时：草稿/便签，3 天自动清理\n\n特性：\n• 桌面常驻 + 玻璃质感（透明无边框，4 种形态可切换）\n• 贴边自动隐藏，鼠标靠近触角自动唤回\n• 5 分钟闲置自动锁定\n• 全部数据本地存储，不联网，不上传",
+    "targets": ["nsis"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "nsis": {
+        "installerIcon": "icons/icon.ico",
+        "installMode": "currentUser",
+        "languages": ["SimpChinese", "English"],
+        "displayLanguageSelector": false
+      },
+      "webviewInstallMode": {
+        "type": "embedBootstrapper"
+      }
+    }
+  },
+  "plugins": {
+    "shell": {
+      "open": "^https?://"
+    },
+    "clipboard-manager": null
+  }
+}

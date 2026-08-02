@@ -1,0 +1,1411 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>抽屉柜 - 桌面面板 UI 原型</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    :root {
+      --bg-primary: #1a1a2e;
+      --bg-secondary: #16213e;
+      --bg-tertiary: #0f3460;
+      --accent: #0f3460;
+      --accent-hover: #1a4d85;
+      --highlight: #e94560;
+      --text-primary: #ffffff;
+      --text-secondary: #a0aec0;
+      --text-muted: #718096;
+      --border: #2d3748;
+      --success: #48bb78;
+      --warning: #ed8936;
+      --shadow: 0 10px 40px rgba(0,0,0,0.4);
+      --radius: 12px;
+      --radius-sm: 8px;
+    }
+    body {
+      font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+      min-height: 100vh;
+      color: var(--text-primary);
+      padding: 40px;
+    }
+    .prototype-container {
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+    h1 { text-align: center; margin-bottom: 40px; font-size: 28px; }
+    h2 { font-size: 20px; margin: 30px 0 15px; color: var(--text-secondary); padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+    h3 { font-size: 14px; margin: 15px 0; color: var(--text-muted); }
+    
+    /* 窗口样式 */
+    .window {
+      background: var(--bg-secondary);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+      margin-bottom: 30px;
+      border: 1px solid var(--border);
+    }
+    .window-header {
+      display: flex;
+      align-items: center;
+      padding: 10px 15px;
+      background: var(--bg-primary);
+      border-bottom: 1px solid var(--border);
+    }
+    .window-dots {
+      display: flex;
+      gap: 8px;
+      margin-right: 15px;
+    }
+    .dot { width: 12px; height: 12px; border-radius: 50%; }
+    .dot.close { background: #ff5f57; }
+    .dot.minimize { background: #ffbd2e; }
+    .dot.maximize { background: #28ca42; }
+    .window-title { font-size: 13px; color: var(--text-secondary); }
+    
+    /* 布局 */
+    .layout-main { display: flex; }
+    
+    /* 左侧导航 */
+    .sidebar {
+      width: 80px;
+      background: var(--bg-primary);
+      padding: 15px 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 5px;
+      border-right: 1px solid var(--border);
+    }
+    .nav-item {
+      width: 56px;
+      height: 56px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      position: relative;
+      transition: all 0.2s;
+      gap: 4px;
+    }
+    .nav-item:hover { background: var(--bg-tertiary); }
+    .nav-item.active { background: var(--accent); }
+    .nav-item.active::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 3px;
+      height: 24px;
+      background: var(--highlight);
+      border-radius: 0 2px 2px 0;
+    }
+    .nav-icon {
+      width: 24px;
+      height: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+    }
+    .nav-label { font-size: 10px; color: var(--text-muted); }
+    .nav-item.active .nav-label { color: var(--text-primary); }
+    .nav-badge {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      background: var(--highlight);
+      color: white;
+      font-size: 10px;
+      padding: 1px 5px;
+      border-radius: 10px;
+      min-width: 16px;
+      text-align: center;
+    }
+    
+    /* 内容区 */
+    .content {
+      flex: 1;
+      padding: 20px;
+      min-width: 0;
+    }
+    
+    /* 搜索框 */
+    .search-box {
+      background: var(--bg-primary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 10px 15px;
+      display: flex;
+      align-items: center;
+      margin-bottom: 20px;
+      transition: border-color 0.2s;
+    }
+    .search-box:focus-within { border-color: var(--accent); }
+    .search-icon { color: var(--text-muted); margin-right: 10px; font-size: 16px; }
+    .search-input {
+      flex: 1;
+      background: transparent;
+      border: none;
+      outline: none;
+      color: var(--text-primary);
+      font-size: 14px;
+    }
+    .search-input::placeholder { color: var(--text-muted); }
+    
+    /* 置顶区 */
+    .pinned-section {
+      background: linear-gradient(135deg, rgba(15,52,96,0.3) 0%, rgba(233,69,96,0.1) 100%);
+      border: 1px solid rgba(15,52,96,0.3);
+      border-radius: var(--radius);
+      padding: 15px;
+      margin-bottom: 20px;
+    }
+    .pinned-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+    .pinned-title { font-size: 13px; color: var(--text-muted); }
+    .pinned-dots { color: var(--text-muted); font-size: 12px; }
+    .pinned-grid {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 10px;
+    }
+    .pinned-item {
+      background: var(--bg-primary);
+      border-radius: var(--radius-sm);
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+      transition: transform 0.2s;
+      border: 1px solid var(--border);
+    }
+    .pinned-item:hover { transform: translateY(-2px); border-color: var(--accent); }
+    .pinned-icon { width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 16px; }
+    .pinned-label { font-size: 11px; color: var(--text-secondary); text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; width: 100%; }
+    
+    /* 列表项 */
+    .list-item {
+      background: var(--bg-primary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 14px 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .list-item:hover { border-color: var(--accent); background: rgba(15,52,96,0.2); }
+    .list-item-main { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; }
+    .list-icon {
+      width: 40px;
+      height: 40px;
+      border-radius: var(--radius-sm);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+      flex-shrink: 0;
+    }
+    .list-info { flex: 1; min-width: 0; }
+    .list-title { font-size: 14px; color: var(--text-primary); margin-bottom: 2px; }
+    .list-subtitle { font-size: 12px; color: var(--text-muted); }
+    .list-actions { display: flex; gap: 8px; opacity: 0; transition: opacity 0.2s; }
+    .list-item:hover .list-actions { opacity: 1; }
+    .action-btn {
+      width: 32px;
+      height: 32px;
+      border-radius: var(--radius-sm);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      transition: all 0.2s;
+    }
+    .action-btn:hover { background: var(--bg-tertiary); color: var(--text-primary); }
+    
+    /* 密码项特殊样式 */
+    .password-mask { font-family: monospace; letter-spacing: 1px; }
+    .clipboard-timer {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      color: var(--warning);
+      animation: pulse 1s infinite;
+    }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+    
+    /* 右侧分区标签 */
+    .section-tabs {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 15px;
+      overflow-x: auto;
+      padding-bottom: 5px;
+    }
+    .section-tab {
+      padding: 6px 16px;
+      border-radius: 20px;
+      font-size: 12px;
+      cursor: pointer;
+      transition: all 0.2s;
+      white-space: nowrap;
+    }
+    .section-tab.active { background: var(--accent); color: var(--text-primary); }
+    .section-tab:not(.active) { background: var(--bg-primary); color: var(--text-muted); border: 1px solid var(--border); }
+    
+    /* 拖拽区域 */
+    .drop-zone {
+      border: 2px dashed var(--border);
+      border-radius: var(--radius);
+      padding: 40px;
+      text-align: center;
+      margin-bottom: 20px;
+      transition: all 0.2s;
+    }
+    .drop-zone.active { border-color: var(--highlight); background: rgba(233,69,96,0.1); }
+    .drop-icon { font-size: 32px; color: var(--text-muted); margin-bottom: 10px; }
+    .drop-text { font-size: 14px; color: var(--text-muted); }
+    
+    /* 临时内容 */
+    .temp-item {
+      background: var(--bg-primary);
+      border-left: 3px solid var(--warning);
+      border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+      padding: 12px 16px;
+      margin-bottom: 8px;
+      position: relative;
+    }
+    .temp-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+    .temp-title { font-size: 13px; color: var(--text-primary); }
+    .temp-time { font-size: 11px; color: var(--warning); }
+    .temp-content { font-size: 13px; color: var(--text-secondary); line-height: 1.5; }
+    .temp-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+    .temp-btn {
+      font-size: 11px;
+      padding: 4px 10px;
+      border-radius: 4px;
+      cursor: pointer;
+      border: none;
+    }
+    .temp-btn.copy { background: var(--accent); color: var(--text-primary); }
+    .temp-btn.save { background: var(--success); color: white; }
+    .temp-btn.delete { background: transparent; color: var(--text-muted); border: 1px solid var(--border); }
+    
+    /* 汇总按钮 */
+    .summary-btn {
+      width: 100%;
+      background: linear-gradient(135deg, var(--accent) 0%, var(--highlight) 100%);
+      color: white;
+      border: none;
+      border-radius: var(--radius-sm);
+      padding: 12px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      margin-bottom: 15px;
+      transition: transform 0.2s;
+    }
+    .summary-btn:hover { transform: translateY(-1px); }
+    
+    /* 设置页 */
+    .settings-section { background: var(--bg-primary); border-radius: var(--radius); padding: 20px; margin-bottom: 15px; }
+    .settings-title { font-size: 14px; color: var(--text-primary); margin-bottom: 15px; }
+    .settings-group { margin-bottom: 15px; }
+    .settings-label { font-size: 13px; color: var(--text-secondary); margin-bottom: 6px; display: block; }
+    .settings-input {
+      width: 100%;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 10px 12px;
+      color: var(--text-primary);
+      font-size: 13px;
+      outline: none;
+    }
+    .settings-input:focus { border-color: var(--accent); }
+    .settings-select {
+      width: 100%;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 10px 12px;
+      color: var(--text-primary);
+      font-size: 13px;
+      outline: none;
+      cursor: pointer;
+    }
+    .settings-toggle {
+      width: 44px;
+      height: 24px;
+      background: var(--border);
+      border-radius: 12px;
+      cursor: pointer;
+      position: relative;
+      transition: background 0.2s;
+    }
+    .settings-toggle.active { background: var(--accent); }
+    .settings-toggle::after {
+      content: '';
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 20px;
+      height: 20px;
+      background: white;
+      border-radius: 50%;
+      transition: left 0.2s;
+    }
+    .settings-toggle.active::after { left: 22px; }
+    .settings-row { display: flex; justify-content: space-between; align-items: center; }
+    .settings-btn {
+      padding: 8px 20px;
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+      cursor: pointer;
+      border: none;
+    }
+    .settings-btn.primary { background: var(--accent); color: white; }
+    .settings-btn.danger { background: var(--highlight); color: white; }
+    
+    /* 锁定界面 */
+    .lock-screen {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 60px 40px;
+      text-align: center;
+    }
+    .lock-icon {
+      width: 80px;
+      height: 80px;
+      background: var(--accent);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 40px;
+      margin-bottom: 20px;
+    }
+    .lock-title { font-size: 20px; color: var(--text-primary); margin-bottom: 8px; }
+    .lock-subtitle { font-size: 13px; color: var(--text-muted); margin-bottom: 30px; }
+    .lock-input {
+      width: 100%;
+      max-width: 300px;
+      background: var(--bg-primary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px 16px;
+      color: var(--text-primary);
+      font-size: 16px;
+      text-align: center;
+      outline: none;
+      margin-bottom: 15px;
+    }
+    .lock-input:focus { border-color: var(--accent); }
+    .lock-btn {
+      width: 100%;
+      max-width: 300px;
+      background: linear-gradient(135deg, var(--accent) 0%, var(--highlight) 100%);
+      color: white;
+      border: none;
+      border-radius: var(--radius);
+      padding: 14px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+    }
+    .lock-links { margin-top: 20px; display: flex; gap: 20px; }
+    .lock-link { font-size: 12px; color: var(--text-muted); cursor: pointer; }
+    .lock-link:hover { color: var(--text-secondary); }
+    
+    /* 首次设置 */
+    .setup-screen {
+      padding: 40px;
+      max-width: 400px;
+      margin: 0 auto;
+    }
+    .setup-step { text-align: center; margin-bottom: 30px; }
+    .setup-step-number {
+      width: 40px;
+      height: 40px;
+      background: var(--accent);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0 auto 10px;
+      font-size: 18px;
+    }
+    .recovery-phrase {
+      background: var(--bg-primary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+      margin: 20px 0;
+      font-family: monospace;
+      font-size: 13px;
+      line-height: 2;
+      text-align: center;
+      color: var(--text-secondary);
+    }
+    .recovery-note {
+      font-size: 12px;
+      color: var(--warning);
+      text-align: center;
+      margin-top: 10px;
+    }
+    
+    /* 汇总弹窗 */
+    .modal-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0,0,0,0.6);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+      opacity: 1;
+      visibility: visible;
+      transition: opacity 0.2s, visibility 0.2s;
+    }
+    .modal-overlay.hidden {
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+    }
+    .modal {
+      background: var(--bg-secondary);
+      border-radius: var(--radius);
+      width: 90%;
+      max-width: 500px;
+      max-height: 80vh;
+      overflow: hidden;
+      border: 1px solid var(--border);
+    }
+    .modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 15px 20px;
+      background: var(--bg-primary);
+      border-bottom: 1px solid var(--border);
+    }
+    .modal-title { font-size: 16px; color: var(--text-primary); }
+    .modal-close { cursor: pointer; color: var(--text-muted); }
+    .modal-body { padding: 20px; }
+    .summary-content {
+      background: var(--bg-primary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 15px;
+      font-family: monospace;
+      font-size: 13px;
+      line-height: 1.8;
+      color: var(--text-secondary);
+      max-height: 400px;
+      overflow-y: auto;
+      margin-bottom: 15px;
+    }
+    .modal-footer {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      padding: 15px 20px;
+      border-top: 1px solid var(--border);
+    }
+    
+    /* 颜色映射 */
+    .icon-gold { background: linear-gradient(135deg, #ffd700 0%, #ffaa00 100%); color: #1a1a2e; }
+    .icon-purple { background: linear-gradient(135deg, #9b59b6 0%, #6c3483 100%); color: white; }
+    .icon-orange { background: linear-gradient(135deg, #e67e22 0%, #d35400 100%); color: white; }
+    .icon-green { background: linear-gradient(135deg, #27ae60 0%, #1e8449 100%); color: white; }
+    .icon-blue { background: linear-gradient(135deg, #3498db 0%, #2980b9 100%); color: white; }
+    .icon-red { background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%); color: white; }
+    .icon-gray { background: linear-gradient(135deg, #7f8c8d 0%, #5d6d7e 100%); color: white; }
+    .icon-cyan { background: linear-gradient(135deg, #1abc9c 0%, #16a085 100%); color: white; }
+    
+    /* 标注 */
+    .annotation {
+      font-size: 11px;
+      color: var(--text-muted);
+      font-style: italic;
+      margin-top: 8px;
+    }
+    
+    /* 响应式 */
+    @media (max-width: 768px) {
+      .sidebar { width: 60px; }
+      .nav-item { width: 44px; height: 44px; }
+      .pinned-grid { grid-template-columns: repeat(3, 1fr); }
+    }
+  </style>
+</head>
+<body>
+  <div class="prototype-container">
+    <h1>🎯 抽屉柜 - 桌面面板 UI 原型</h1>
+    
+    <!-- 状态1：未解锁（锁定界面） -->
+    <h2>状态 1 - 未解锁（锁定界面）</h2>
+    <div class="window" style="max-width: 450px; margin-left: auto; margin-right: auto;">
+      <div class="window-header">
+        <div class="window-dots">
+          <div class="dot close"></div>
+          <div class="dot minimize"></div>
+          <div class="dot maximize"></div>
+        </div>
+        <div class="window-title">抽屉柜 - 已锁定</div>
+      </div>
+      <div class="lock-screen">
+        <div class="lock-icon">🔒</div>
+        <div class="lock-title">请输入主密码</div>
+        <div class="lock-subtitle">保护您的密码和敏感信息</div>
+        <input type="password" class="lock-input" placeholder="••••••••">
+        <button class="lock-btn">解锁</button>
+        <div class="lock-links">
+          <div class="lock-link">忘记密码？</div>
+          <div class="lock-link">重置应用</div>
+        </div>
+      </div>
+    </div>
+    <div class="annotation">• 数据来源：无（本地存储主密码哈希）</div>
+    <div class="annotation">• 组件：LockScreen.vue + PasswordInput.vue</div>
+    
+    <!-- 状态2：首次设置 -->
+    <h2>状态 2 - 首次设置（主密码 + 恢复短语）</h2>
+    <div class="window" style="max-width: 500px; margin-left: auto; margin-right: auto;">
+      <div class="window-header">
+        <div class="window-dots">
+          <div class="dot close"></div>
+          <div class="dot minimize"></div>
+          <div class="dot maximize"></div>
+        </div>
+        <div class="window-title">抽屉柜 - 首次设置</div>
+      </div>
+      <div class="setup-screen">
+        <div class="setup-step">
+          <div class="setup-step-number">1</div>
+          <div style="font-size: 14px; color: var(--text-secondary);">设置主密码</div>
+        </div>
+        <div class="settings-group">
+          <div class="settings-label">主密码</div>
+          <input type="password" class="settings-input" placeholder="至少8位，包含大小写和数字">
+        </div>
+        <div class="settings-group">
+          <div class="settings-label">确认密码</div>
+          <input type="password" class="settings-input" placeholder="再次输入">
+        </div>
+        <div class="recovery-note">⚠️ 请妥善保管您的主密码，丢失后无法找回</div>
+        <button class="lock-btn" style="margin-top: 20px;">下一步</button>
+        
+        <div style="margin-top: 40px; padding-top: 20px; border-top: 1px solid var(--border);">
+          <div class="setup-step">
+            <div class="setup-step-number">2</div>
+            <div style="font-size: 14px; color: var(--text-secondary);">保存恢复短语</div>
+          </div>
+          <div class="recovery-phrase">
+            apple banana cherry<br>
+            dragon eggfish fox<br>
+            grape honey ice
+          </div>
+          <div class="recovery-note">⚠️ 将此短语抄写到安全的地方！<br>主密码丢失时，可用此短语恢复数据</div>
+          <button class="lock-btn" style="margin-top: 15px;">确认已保存</button>
+        </div>
+      </div>
+    </div>
+    <div class="annotation">• 数据来源：settings 表（主密码哈希 + 恢复短语加密存储）</div>
+    <div class="annotation">• 组件：SetupWizard.vue + RecoveryPhrase.vue</div>
+    
+    <!-- 状态3：已解锁 - 密码区 -->
+    <h2>状态 3 - 已解锁主界面（密码区）</h2>
+    <div class="window" style="max-width: 900px;">
+      <div class="window-header">
+        <div class="window-dots">
+          <div class="dot close"></div>
+          <div class="dot minimize"></div>
+          <div class="dot maximize"></div>
+        </div>
+        <div class="window-title">抽屉柜 - 我的桌面面板</div>
+      </div>
+      <div class="layout-main">
+        <!-- 左侧导航 -->
+        <div class="sidebar">
+          <div class="nav-item active">
+            <div class="nav-icon">🔑</div>
+            <div class="nav-label">密码区</div>
+            <div class="nav-badge">6</div>
+          </div>
+          <div class="nav-item">
+            <div class="nav-icon">⚙️</div>
+            <div class="nav-label">开发工具</div>
+            <div class="nav-badge">8</div>
+          </div>
+          <div class="nav-item">
+            <div class="nav-icon">🎨</div>
+            <div class="nav-label">设计软件</div>
+            <div class="nav-badge">4</div>
+          </div>
+          <div class="nav-item">
+            <div class="nav-icon">📝</div>
+            <div class="nav-label">文本片段</div>
+            <div class="nav-badge">5</div>
+          </div>
+          <div class="nav-item">
+            <div class="nav-icon">⏳</div>
+            <div class="nav-label">临时内容</div>
+            <div class="nav-badge">3</div>
+          </div>
+          <div class="nav-item">
+            <div class="nav-icon">📊</div>
+            <div class="nav-label">日常办公</div>
+            <div class="nav-badge">7</div>
+          </div>
+          <div class="nav-item" style="margin-top: auto;">
+            <div class="nav-icon">⚙️</div>
+            <div class="nav-label">设置</div>
+          </div>
+          <div class="nav-item">
+            <div class="nav-icon">🔒</div>
+            <div class="nav-label">锁定</div>
+          </div>
+        </div>
+        
+        <!-- 右侧内容 -->
+        <div class="content">
+          <!-- 搜索框 -->
+          <div class="search-box">
+            <div class="search-icon">🔍</div>
+            <input type="text" class="search-input" placeholder="搜索密码、软件、片段...">
+          </div>
+          
+          <!-- 置顶区 -->
+          <div class="pinned-section">
+            <div class="pinned-header">
+              <div class="pinned-title">⭐ 置顶（最多5个）</div>
+              <div class="pinned-dots">•••</div>
+            </div>
+            <div class="pinned-grid">
+              <div class="pinned-item">
+                <div class="pinned-icon icon-gold">🔑</div>
+                <div class="pinned-label">GitHub</div>
+              </div>
+              <div class="pinned-item">
+                <div class="pinned-icon icon-blue">💻</div>
+                <div class="pinned-label">VS Code</div>
+              </div>
+              <div class="pinned-item">
+                <div class="pinned-icon icon-purple">🐙</div>
+                <div class="pinned-label">SSH</div>
+              </div>
+              <div class="pinned-item">
+                <div class="pinned-icon icon-green">📧</div>
+                <div class="pinned-label">邮箱密码</div>
+              </div>
+              <div class="pinned-item">
+                <div class="pinned-icon icon-orange">🗂️</div>
+                <div class="pinned-label">工作笔记</div>
+              </div>
+            </div>
+          </div>
+          
+          <!-- 内容标题 -->
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+            <h3 style="font-size: 16px; color: var(--text-primary);">🔑 密码区</h3>
+            <button class="settings-btn primary" style="font-size: 12px;">+ 添加密码</button>
+          </div>
+          
+          <!-- 密码列表 -->
+          <div class="list-item">
+            <div class="list-item-main">
+              <div class="list-icon icon-gold">🔑</div>
+              <div class="list-info">
+                <div class="list-title">GitHub</div>
+                <div class="list-subtitle">user@example.com · **********</div>
+              </div>
+            </div>
+            <div class="list-actions">
+              <div class="action-btn" title="复制用户名">👤</div>
+              <div class="action-btn" title="复制密码">🔑</div>
+              <div class="action-btn" title="编辑">✏️</div>
+            </div>
+          </div>
+          
+          <div class="list-item">
+            <div class="list-item-main">
+              <div class="list-icon icon-purple">🐙</div>
+              <div class="list-info">
+                <div class="list-title">服务器 SSH</div>
+                <div class="list-subtitle">root@192.168.1.100 · ********</div>
+              </div>
+            </div>
+            <div class="list-actions">
+              <div class="action-btn">👤</div>
+              <div class="action-btn">🔑</div>
+              <div class="action-btn">✏️</div>
+            </div>
+          </div>
+          
+          <div class="list-item">
+            <div class="list-item-main">
+              <div class="list-icon icon-orange">🗄️</div>
+              <div class="list-info">
+                <div class="list-title">MySQL Root</div>
+                <div class="list-subtitle">localhost:3306 · ********</div>
+              </div>
+            </div>
+            <div class="list-actions">
+              <div class="action-btn">👤</div>
+              <div class="action-btn">🔑</div>
+              <div class="action-btn">✏️</div>
+            </div>
+          </div>
+          
+          <!-- 剪贴板倒计时状态示例 -->
+          <div class="list-item" style="border-color: var(--warning);">
+            <div class="list-item-main">
+              <div class="list-icon icon-green">📧</div>
+              <div class="list-info">
+                <div class="list-title">工作邮箱</div>
+                <div class="list-subtitle">
+                  work@company.com · ******** 
+                  <span class="clipboard-timer">⏱️ 12秒后清除</span>
+                </div>
+              </div>
+            </div>
+            <div class="list-actions">
+              <div class="action-btn">👤</div>
+              <div class="action-btn">🔑</div>
+              <div class="action-btn">✏️</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="annotation">• 数据来源：passwords 表（加密存储）+ pinned_items 表</div>
+    <div class="annotation">• 组件：PasswordList.vue + PasswordItem.vue + SearchBar.vue + PinnedSection.vue</div>
+    
+    <!-- 状态4：软件启动区（拖拽态） -->
+    <h2>状态 4 - 软件启动区（支持拖拽添加）</h2>
+    <div class="window" style="max-width: 900px;">
+      <div class="window-header">
+        <div class="window-dots">
+          <div class="dot close"></div>
+          <div class="dot minimize"></div>
+          <div class="dot maximize"></div>
+        </div>
+        <div class="window-title">抽屉柜 - 软件启动</div>
+      </div>
+      <div class="layout-main">
+        <div class="sidebar">
+          <div class="nav-item">
+            <div class="nav-icon">🔑</div>
+            <div class="nav-label">密码区</div>
+          </div>
+          <div class="nav-item active">
+            <div class="nav-icon">⚙️</div>
+            <div class="nav-label">开发工具</div>
+            <div class="nav-badge">8</div>
+          </div>
+          <div class="nav-item">
+            <div class="nav-icon">🎨</div>
+            <div class="nav-label">设计软件</div>
+          </div>
+          <div class="nav-item">
+            <div class="nav-icon">📝</div>
+            <div class="nav-label">文本片段</div>
+          </div>
+          <div class="nav-item">
+            <div class="nav-icon">⏳</div>
+            <div class="nav-label">临时内容</div>
+          </div>
+          <div class="nav-item">
+            <div class="nav-icon">📊</div>
+            <div class="nav-label">日常办公</div>
+          </div>
+          <div class="nav-item" style="margin-top: auto;">
+            <div class="nav-icon">⚙️</div>
+            <div class="nav-label">设置</div>
+          </div>
+        </div>
+        
+        <div class="content">
+          <div class="search-box">
+            <div class="search-icon">🔍</div>
+            <input type="text" class="search-input" placeholder="搜索软件...">
+          </div>
+          
+          <!-- 分区标签 -->
+          <div class="section-tabs">
+            <div class="section-tab active">开发工具</div>
+            <div class="section-tab">设计软件</div>
+            <div class="section-tab">日常办公</div>
+            <div class="section-tab">自定义分区</div>
+          </div>
+          
+          <!-- 拖拽区域 -->
+          <div class="drop-zone">
+            <div class="drop-icon">📥</div>
+            <div class="drop-text">将快捷方式拖到这里添加软件</div>
+          </div>
+          
+          <!-- 软件列表 -->
+          <div class="list-item">
+            <div class="list-item-main">
+              <div class="list-icon icon-blue">💻</div>
+              <div class="list-info">
+                <div class="list-title">VS Code</div>
+                <div class="list-subtitle">C:\Program Files\Microsoft VS Code\Code.exe</div>
+              </div>
+            </div>
+            <div class="list-actions">
+              <div class="action-btn" title="启动">▶️</div>
+              <div class="action-btn" title="编辑">✏️</div>
+              <div class="action-btn" title="删除">🗑️</div>
+            </div>
+          </div>
+          
+          <div class="list-item">
+            <div class="list-item-main">
+              <div class="list-icon icon-purple">🐙</div>
+              <div class="list-info">
+                <div class="list-title">Git Bash</div>
+                <div class="list-subtitle">C:\Program Files\Git\git-bash.exe</div>
+              </div>
+            </div>
+            <div class="list-actions">
+              <div class="action-btn">▶️</div>
+              <div class="action-btn">✏️</div>
+              <div class="action-btn">🗑️</div>
+            </div>
+          </div>
+          
+          <div class="list-item">
+            <div class="list-item-main">
+              <div class="list-icon icon-orange">🐳</div>
+              <div class="list-info">
+                <div class="list-title">Docker Desktop</div>
+                <div class="list-subtitle">C:\Program Files\Docker\Docker\Docker Desktop.exe</div>
+              </div>
+            </div>
+            <div class="list-actions">
+              <div class="action-btn">▶️</div>
+              <div class="action-btn">✏️</div>
+              <div class="action-btn">🗑️</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="annotation">• 数据来源：apps 表 + app_categories 表</div>
+    <div class="annotation">• 组件：AppList.vue + AppItem.vue + DropZone.vue + CategoryTabs.vue</div>
+    
+    <!-- 状态5：文本片段区 -->
+    <h2>状态 5 - 文本片段区（代码高亮支持）</h2>
+    <div class="window" style="max-width: 900px;">
+      <div class="window-header">
+        <div class="window-dots">
+          <div class="dot close"></div>
+          <div class="dot minimize"></div>
+          <div class="dot maximize"></div>
+        </div>
+        <div class="window-title">抽屉柜 - 文本片段</div>
+      </div>
+      <div class="layout-main">
+        <div class="sidebar">
+          <div class="nav-item">
+            <div class="nav-icon">🔑</div>
+            <div class="nav-label">密码区</div>
+          </div>
+          <div class="nav-item">
+            <div class="nav-icon">⚙️</div>
+            <div class="nav-label">开发工具</div>
+          </div>
+          <div class="nav-item">
+            <div class="nav-icon">🎨</div>
+            <div class="nav-label">设计软件</div>
+          </div>
+          <div class="nav-item active">
+            <div class="nav-icon">📝</div>
+            <div class="nav-label">文本片段</div>
+            <div class="nav-badge">5</div>
+          </div>
+          <div class="nav-item">
+            <div class="nav-icon">⏳</div>
+            <div class="nav-label">临时内容</div>
+          </div>
+          <div class="nav-item">
+            <div class="nav-icon">📊</div>
+            <div class="nav-label">日常办公</div>
+          </div>
+          <div class="nav-item" style="margin-top: auto;">
+            <div class="nav-icon">⚙️</div>
+            <div class="nav-label">设置</div>
+          </div>
+        </div>
+        
+        <div class="content">
+          <div class="search-box">
+            <div class="search-icon">🔍</div>
+            <input type="text" class="search-input" placeholder="搜索片段...">
+          </div>
+          
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+            <h3 style="font-size: 16px; color: var(--text-primary);">📝 文本片段</h3>
+            <button class="settings-btn primary" style="font-size: 12px;">+ 添加片段</button>
+          </div>
+          
+          <!-- 片段列表 -->
+          <div class="list-item">
+            <div class="list-item-main">
+              <div class="list-icon icon-cyan">💡</div>
+              <div class="list-info">
+                <div class="list-title">常用 Git 命令</div>
+                <div class="list-subtitle">bash · 3 行</div>
+              </div>
+            </div>
+            <div class="list-actions">
+              <div class="action-btn" title="复制">📋</div>
+              <div class="action-btn" title="编辑">✏️</div>
+              <div class="action-btn" title="删除">🗑️</div>
+            </div>
+          </div>
+          
+          <div class="list-item">
+            <div class="list-item-main">
+              <div class="list-icon icon-green">📋</div>
+              <div class="list-info">
+                <div class="list-title">项目模板配置</div>
+                <div class="list-subtitle">json · 15 行</div>
+              </div>
+            </div>
+            <div class="list-actions">
+              <div class="action-btn">📋</div>
+              <div class="action-btn">✏️</div>
+              <div class="action-btn">🗑️</div>
+            </div>
+          </div>
+          
+          <div class="list-item">
+            <div class="list-item-main">
+              <div class="list-icon icon-purple">🔧</div>
+              <div class="list-info">
+                <div class="list-title">SQL 查询模板</div>
+                <div class="list-subtitle">sql · 8 行</div>
+              </div>
+            </div>
+            <div class="list-actions">
+              <div class="action-btn">📋</div>
+              <div class="action-btn">✏️</div>
+              <div class="action-btn">🗑️</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="annotation">• 数据来源：snippets 表</div>
+    <div class="annotation">• 组件：SnippetList.vue + SnippetItem.vue</div>
+    
+    <!-- 状态6：临时内容区（汇总+转存） -->
+    <h2>状态 6 - 临时内容区（汇总 + 转存功能）</h2>
+    <div class="window" style="max-width: 900px;">
+      <div class="window-header">
+        <div class="window-dots">
+          <div class="dot close"></div>
+          <div class="dot minimize"></div>
+          <div class="dot maximize"></div>
+        </div>
+        <div class="window-title">抽屉柜 - 临时内容</div>
+      </div>
+      <div class="layout-main">
+        <div class="sidebar">
+          <div class="nav-item">
+            <div class="nav-icon">🔑</div>
+            <div class="nav-label">密码区</div>
+          </div>
+          <div class="nav-item">
+            <div class="nav-icon">⚙️</div>
+            <div class="nav-label">开发工具</div>
+          </div>
+          <div class="nav-item">
+            <div class="nav-icon">🎨</div>
+            <div class="nav-label">设计软件</div>
+          </div>
+          <div class="nav-item">
+            <div class="nav-icon">📝</div>
+            <div class="nav-label">文本片段</div>
+          </div>
+          <div class="nav-item active">
+            <div class="nav-icon">⏳</div>
+            <div class="nav-label">临时内容</div>
+            <div class="nav-badge">3</div>
+          </div>
+          <div class="nav-item">
+            <div class="nav-icon">📊</div>
+            <div class="nav-label">日常办公</div>
+          </div>
+          <div class="nav-item" style="margin-top: auto;">
+            <div class="nav-icon">⚙️</div>
+            <div class="nav-label">设置</div>
+          </div>
+        </div>
+        
+        <div class="content">
+          <div class="search-box">
+            <div class="search-icon">🔍</div>
+            <input type="text" class="search-input" placeholder="搜索临时内容...">
+          </div>
+          
+          <!-- 汇总按钮 -->
+          <button class="summary-btn">📋 汇总所有临时内容</button>
+          
+          <h3 style="font-size: 16px; color: var(--text-primary); margin-bottom: 15px;">⏳ 临时内容（默认3天后过期）</h3>
+          
+          <!-- 临时内容列表 -->
+          <div class="temp-item">
+            <div class="temp-header">
+              <div class="temp-title">API 响应示例</div>
+              <div class="temp-time">2小时后过期</div>
+            </div>
+            <div class="temp-content">{"code": 200, "data": {"id": 123, "name": "test"}, "message": "success"}</div>
+            <div class="temp-footer">
+              <button class="temp-btn copy">复制</button>
+              <button class="temp-btn save">转存为片段</button>
+              <button class="temp-btn delete">删除</button>
+            </div>
+          </div>
+          
+          <div class="temp-item">
+            <div class="temp-header">
+              <div class="temp-title">会议记录要点</div>
+              <div class="temp-time">1天后过期</div>
+            </div>
+            <div class="temp-content">1. 项目进度汇报\n2. 下周计划\n3. 需要协调的资源</div>
+            <div class="temp-footer">
+              <button class="temp-btn copy">复制</button>
+              <button class="temp-btn save">转存为片段</button>
+              <button class="temp-btn delete">删除</button>
+            </div>
+          </div>
+          
+          <div class="temp-item">
+            <div class="temp-header">
+              <div class="temp-title">临时链接</div>
+              <div class="temp-time">3天后过期</div>
+            </div>
+            <div class="temp-content">https://example.com/temp-link?token=abc123</div>
+            <div class="temp-footer">
+              <button class="temp-btn copy">复制</button>
+              <button class="temp-btn save">转存为片段</button>
+              <button class="temp-btn delete">删除</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="annotation">• 数据来源：temp_contents 表（带过期时间戳）</div>
+    <div class="annotation">• 组件：TempContentList.vue + TempItem.vue + SummaryModal.vue</div>
+    
+    <!-- 状态7：汇总弹窗 -->
+    <h2>状态 7 - 临时内容汇总弹窗</h2>
+    <div class="modal-overlay hidden" id="summaryModal">
+      <div class="modal">
+        <div class="modal-header">
+          <div class="modal-title">📋 临时内容汇总</div>
+          <div class="modal-close" onclick="closeModal()">✕</div>
+        </div>
+        <div class="modal-body">
+          <div class="summary-content">
+[API 响应示例] - {"code": 200, "data": {"id": 123, "name": "test"}, "message": "success"} - 2024-01-15 10:30
+
+[会议记录要点] - 1. 项目进度汇报\n2. 下周计划\n3. 需要协调的资源 - 2024-01-15 09:00
+
+[临时链接] - https://example.com/temp-link?token=abc123 - 2024-01-15 08:00
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="settings-btn" style="background: var(--bg-primary); color: var(--text-secondary); border: 1px solid var(--border);" onclick="closeModal()">取消</button>
+          <button class="settings-btn primary" onclick="copySummary()">复制汇总内容</button>
+        </div>
+      </div>
+    </div>
+    
+    <!-- 状态8：设置页 -->
+    <h2>状态 8 - 设置页</h2>
+    <div class="window" style="max-width: 600px;">
+      <div class="window-header">
+        <div class="window-dots">
+          <div class="dot close"></div>
+          <div class="dot minimize"></div>
+          <div class="dot maximize"></div>
+        </div>
+        <div class="window-title">抽屉柜 - 设置</div>
+      </div>
+      <div class="content">
+        <!-- 主密码修改 -->
+        <div class="settings-section">
+          <div class="settings-title">🔒 主密码</div>
+          <div class="settings-group">
+            <div class="settings-label">当前密码</div>
+            <input type="password" class="settings-input" placeholder="请输入当前密码">
+          </div>
+          <div class="settings-group">
+            <div class="settings-label">新密码</div>
+            <input type="password" class="settings-input" placeholder="请输入新密码">
+          </div>
+          <div class="settings-group">
+            <div class="settings-label">确认新密码</div>
+            <input type="password" class="settings-input" placeholder="再次输入新密码">
+          </div>
+          <button class="settings-btn primary" style="margin-top: 10px;">修改密码</button>
+        </div>
+        
+        <!-- 快捷键配置 -->
+        <div class="settings-section">
+          <div class="settings-title">⌨️ 快捷键</div>
+          <div class="settings-group">
+            <div class="settings-row">
+              <div class="settings-label">呼出/收起窗口</div>
+              <div class="settings-input" style="width: 120px; text-align: center;">Alt + Q</div>
+            </div>
+            <div class="settings-row" style="margin-top: 15px;">
+              <div class="settings-label">立即锁定</div>
+              <div class="settings-input" style="width: 120px; text-align: center;">Alt + L</div>
+            </div>
+          </div>
+        </div>
+        
+        <!-- 自动锁定时间 -->
+        <div class="settings-section">
+          <div class="settings-title">⏱️ 自动锁定</div>
+          <div class="settings-group">
+            <div class="settings-label">闲置后自动锁定时间</div>
+            <select class="settings-select">
+              <option>5 分钟</option>
+              <option>10 分钟</option>
+              <option>15 分钟</option>
+              <option>30 分钟</option>
+              <option>永不自动锁定</option>
+            </select>
+          </div>
+        </div>
+        
+        <!-- 临时内容过期时间 -->
+        <div class="settings-section">
+          <div class="settings-title">📅 临时内容</div>
+          <div class="settings-group">
+            <div class="settings-label">默认过期时间</div>
+            <select class="settings-select">
+              <option>1 天</option>
+              <option>3 天</option>
+              <option>7 天</option>
+              <option>永不过期</option>
+            </select>
+          </div>
+        </div>
+        
+        <!-- 剪贴板设置 -->
+        <div class="settings-section">
+          <div class="settings-title">📋 剪贴板</div>
+          <div class="settings-group">
+            <div class="settings-row">
+              <div class="settings-label">复制后自动清除时间</div>
+              <select class="settings-select" style="width: 120px;">
+                <option>10 秒</option>
+                <option>15 秒</option>
+                <option>30 秒</option>
+                <option>1 分钟</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        
+        <!-- 导入导出 -->
+        <div class="settings-section">
+          <div class="settings-title">📦 数据管理</div>
+          <div style="display: flex; gap: 10px;">
+            <button class="settings-btn primary" style="flex: 1;">导出数据（加密）</button>
+            <button class="settings-btn" style="flex: 1; background: var(--bg-primary); color: var(--text-secondary); border: 1px solid var(--border);">导入数据</button>
+          </div>
+        </div>
+        
+        <!-- 重置 -->
+        <div class="settings-section">
+          <div class="settings-title">⚠️ 危险操作</div>
+          <button class="settings-btn danger" style="width: 100%;">重置所有数据（不可恢复）</button>
+        </div>
+      </div>
+    </div>
+    <div class="annotation">• 数据来源：settings 表</div>
+    <div class="annotation">• 组件：SettingsPage.vue + PasswordSettings.vue + ShortcutSettings.vue + AutoLockSettings.vue</div>
+    
+    <!-- 数据模型映射 -->
+    <h2>📊 数据模型映射（SQLite 表结构）</h2>
+    <div style="background: var(--bg-secondary); border-radius: var(--radius); padding: 20px; border: 1px solid var(--border);">
+      <pre style="font-family: monospace; font-size: 12px; line-height: 1.6; color: var(--text-secondary); white-space: pre-wrap;">
+-- 主密码与设置
+CREATE TABLE settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+-- key 值: master_password_hash, recovery_phrase, auto_lock_minutes, 
+--         temp_expire_days, clipboard_clear_seconds, global_shortcut, lock_shortcut
+
+-- 密码表（加密存储）
+CREATE TABLE passwords (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL,
+  username TEXT NOT NULL,
+  password TEXT NOT NULL,  -- AES-256 加密
+  url TEXT,
+  notes TEXT,              -- AES-256 加密
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+-- 软件表
+CREATE TABLE apps (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  path TEXT NOT NULL,
+  icon BLOB,               -- 图标二进制
+  arguments TEXT,          -- 启动参数
+  category_id INTEGER,
+  custom_name TEXT,
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY (category_id) REFERENCES app_categories(id)
+);
+
+-- 软件分区表
+CREATE TABLE app_categories (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  icon TEXT,
+  sort_order INTEGER DEFAULT 0
+);
+
+-- 文本片段表
+CREATE TABLE snippets (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL,
+  content TEXT NOT NULL,
+  language TEXT,           -- 代码语言（用于高亮）
+  tags TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+-- 临时内容表
+CREATE TABLE temp_contents (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT,
+  content TEXT NOT NULL,
+  expire_at INTEGER NOT NULL,  -- 过期时间戳
+  created_at INTEGER NOT NULL
+);
+
+-- 置顶项表
+CREATE TABLE pinned_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  type TEXT NOT NULL,      -- password/app/snippet/temp
+  item_id INTEGER NOT NULL,
+  sort_order INTEGER DEFAULT 0,
+  UNIQUE(type, item_id)
+);
+      </pre>
+    </div>
+    
+    <!-- 组件树 -->
+    <h2>🌳 Vue 组件树</h2>
+    <div style="background: var(--bg-secondary); border-radius: var(--radius); padding: 20px; border: 1px solid var(--border);">
+      <pre style="font-family: monospace; font-size: 12px; line-height: 1.8; color: var(--text-secondary);">
+App.vue
+├── LockScreen.vue          # 锁定界面（未解锁时显示）
+│   └── PasswordInput.vue   # 密码输入框
+├── SetupWizard.vue         # 首次设置向导
+│   └── RecoveryPhrase.vue  # 恢复短语展示
+└── MainLayout.vue          # 主布局（已解锁时显示）
+    ├── Sidebar.vue         # 左侧导航抽屉
+    │   └── NavItem.vue     # 单个导航项
+    ├── ContentArea.vue     # 右侧内容区
+    │   ├── SearchBar.vue   # 全局搜索框
+    │   ├── PinnedSection.vue # 置顶区
+    │   │   └── PinnedItem.vue
+    │   ├── PasswordList.vue   # 密码区列表
+    │   │   └── PasswordItem.vue
+    │   ├── AppList.vue        # 软件启动列表
+    │   │   ├── DropZone.vue   # 拖拽区域
+    │   │   ├── CategoryTabs.vue # 分区标签
+    │   │   └── AppItem.vue
+    │   ├── SnippetList.vue    # 文本片段列表
+    │   │   └── SnippetItem.vue
+    │   ├── TempContentList.vue # 临时内容列表
+    │   │   └── TempItem.vue
+    │   └── SettingsPage.vue   # 设置页
+    │       ├── PasswordSettings.vue
+    │       ├── ShortcutSettings.vue
+    │       ├── AutoLockSettings.vue
+    │       └── DataManageSettings.vue
+    └── SummaryModal.vue    # 临时内容汇总弹窗
+      </pre>
+    </div>
+  </div>
+
+  <script>
+    // 弹窗控制
+    function showModal() {
+      document.getElementById('summaryModal').classList.remove('hidden');
+    }
+    function closeModal() {
+      document.getElementById('summaryModal').classList.add('hidden');
+    }
+    function copySummary() {
+      const content = document.querySelector('.summary-content').textContent;
+      navigator.clipboard.writeText(content).then(() => {
+        const btn = document.querySelector('.modal-footer .settings-btn.primary');
+        const originalText = btn.textContent;
+        btn.textContent = '✓ 已复制';
+        setTimeout(() => { btn.textContent = originalText; }, 2000);
+      });
+      closeModal();
+    }
+
+    // 点击遮罩层关闭弹窗
+    document.getElementById('summaryModal').addEventListener('click', function(e) {
+      if (e.target === this) {
+        closeModal();
+      }
+    });
+
+    // 汇总按钮点击
+    document.querySelector('.summary-btn')?.addEventListener('click', showModal);
+
+    // ESC 键关闭弹窗
+    document.addEventListener('keydown', function(e) {
+      if (e.key === 'Escape') {
+        closeModal();
+      }
+    });
+  </script>
+</body>
+</html>
