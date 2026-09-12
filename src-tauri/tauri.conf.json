@@ -41,8 +41,7 @@
       "assetProtocol": {
         "enable": true,
         "scope": [
-          "$APPLOCALDATA/com.drawer-box.app/icons/**/*",
-          "$APPDATA/com.drawer-box.app/**/*"
+          "$APPLOCALDATA/icons/**/*"
         ]
       }
     }

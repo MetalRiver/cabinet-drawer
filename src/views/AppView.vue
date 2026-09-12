@@ -268,14 +268,15 @@ async function reextractIcons() {
 // P0-#ICON#DEBUG#OVERLAY：诊断浮层（按 Alt+Shift+D 临时切换）
 // 原因：用户报"图标变紫色羽毛"，但 cache 文件 + db 路径都对，需要看实际渲染状态
 const showIconDebug = ref(false);
+// ✅ 命名处理器（原为匿名监听且从不清理，锁屏-解锁每轮累积一份）
+const onIconDebugKeydown = (e: KeyboardEvent) => {
+  if (e.altKey && e.shiftKey && (e.key === "D" || e.key === "d")) {
+    e.preventDefault();
+    showIconDebug.value = !showIconDebug.value;
+  }
+};
 onMounted(() => {
-  // Alt+Shift+D 切换调试浮层（不持久化，避免误触）
-  document.addEventListener("keydown", (e) => {
-    if (e.altKey && e.shiftKey && (e.key === "D" || e.key === "d")) {
-      e.preventDefault();
-      showIconDebug.value = !showIconDebug.value;
-    }
-  });
+  document.addEventListener("keydown", onIconDebugKeydown);
 });
 const debugSample = computed(() => {
   // 拿前 5 个 app 类型的 item 状态给用户看
@@ -418,13 +419,15 @@ onMounted(() => {
     }
   })();
 
-  // 暴露给 onUnmounted 使用
-  (onUnmounted as any).__dragCleanup = () => {
+  // ✅ 泄漏修复：在 mounted 上下文注册卸载清理（Vue 3 支持钩子内注册钩子）。
+  // 原 (onUnmounted as any).__dragCleanup 是伪清理写法（给函数对象赋属性），永不执行，
+  // 导致 4 个拖拽监听随每次锁屏-解锁循环累积一份。
+  onUnmounted(() => {
     window.removeEventListener("dragover", onNativeDragOver);
     window.removeEventListener("dragenter", onNativeDragEnter);
     window.removeEventListener("dragleave", onNativeDragLeave);
     window.removeEventListener("drop", onNativeDrop);
-  };
+  });
 
   // P0-#Y#4：右键菜单 - 全局监听点击/滚动关闭
   // 注意：contextmenu 上要 stopPropagation，否则这里的 listener 会立即把它关掉
@@ -434,25 +437,30 @@ onMounted(() => {
   // P1-#APPC#CTX#EDGE：窗口 resize 时重新钳位右键菜单位置
   window.addEventListener("resize", repositionCtxMenu);
 
-  // 自定义下拉"导入到"点击外部关闭
-  const onDocClick = (e: MouseEvent) => {
-    if (!scanTargetDropdownOpen.value) return;
-    const target = e.target as HTMLElement;
-    if (!target.closest(".scan-target-dd")) {
-      scanTargetDropdownOpen.value = false;
-    }
-  };
   window.addEventListener("click", onDocClick);
-  (onUnmounted as any).__ddCleanup = () => {
-    window.removeEventListener("click", onDocClick);
-  };
 });
+
+// 自定义下拉"导入到"点击外部关闭（提升到 setup 作用域，供 onUnmounted 移除；
+// 原定义在 onMounted 内且用 (onUnmounted as any).__ddCleanup 伪清理，永不执行）
+const onDocClick = (e: MouseEvent) => {
+  if (!scanTargetDropdownOpen.value) return;
+  const target = e.target as HTMLElement;
+  if (!target.closest(".scan-target-dd")) {
+    scanTargetDropdownOpen.value = false;
+  }
+};
 
 onUnmounted(() => {
   unlistenDragDrop?.();
   unlistenDragDrop = null;
   // P1-#APPC#CTX#EDGE：清理 resize 监听
   window.removeEventListener("resize", repositionCtxMenu);
+  // ✅ 泄漏修复：以下监听此前从未被移除，随锁屏-解锁循环持续累积
+  window.removeEventListener("click", closeContextMenu);
+  window.removeEventListener("contextmenu", closeContextMenu);
+  window.removeEventListener("scroll", closeContextMenu, true);
+  window.removeEventListener("click", onDocClick);
+  document.removeEventListener("keydown", onIconDebugKeydown);
 });
 
 // 关键修复 P1-#X：删除 watch(() => appStore.searchQuery, () => loadItems())！

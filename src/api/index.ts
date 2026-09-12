@@ -216,7 +216,7 @@ export const getAppVersion = () => invoke<string>("get_app_version");
 export const rescanSubtypes = () => invoke<number>("rescan_subtypes");
 
 export const listApps = (query?: string, categoryId?: number) =>
-  invoke<AppMeta[]>("list_apps", { query: query ?? "", category_id: categoryId });
+  invoke<AppMeta[]>("list_apps", { query: query ?? "", categoryId });
 
 // P0-#X：导入结果（区分新增/跳过/失败）
 export interface ImportResult {
@@ -226,7 +226,7 @@ export interface ImportResult {
 }
 
 export const importPaths = (paths: string[], categoryId?: number) =>
-  invoke<ImportResult>("import_paths", { paths, category_id: categoryId });
+  invoke<ImportResult>("import_paths", { paths, categoryId });
 
 export const listAppCategories = () =>
   invoke<AppCategoryMeta[]>("list_app_categories");
@@ -251,11 +251,11 @@ export const createApp = (params: {
 }) => invoke<number>("create_app", {
   name: params.name,
   path: params.path,
-  icon_path: params.iconPath,
+  iconPath: params.iconPath,
   args: params.args,
-  category_id: params.categoryId,
-  app_type: params.appType,
-  app_subtype: params.appSubtype,
+  categoryId: params.categoryId,
+  appType: params.appType,
+  appSubtype: params.appSubtype,
 });
 
 export const updateApp = (params: {
@@ -271,11 +271,11 @@ export const updateApp = (params: {
   id: params.id,
   name: params.name,
   path: params.path,
-  icon_path: params.iconPath,
+  iconPath: params.iconPath,
   args: params.args,
-  category_id: params.categoryId,
-  app_subtype: params.appSubtype,
-  app_type: params.appType,
+  categoryId: params.categoryId,
+  appSubtype: params.appSubtype,
+  appType: params.appType,
 });
 
 export const deleteApp = (id: number) =>
@@ -305,7 +305,7 @@ export const listAppsWithIcons = (
   query = "",
   categoryId?: number
 ): Promise<AppWithIcon[]> =>
-  invoke<AppWithIcon[]>("list_apps_with_icons", { query, category_id: categoryId });
+  invoke<AppWithIcon[]>("list_apps_with_icons", { query, categoryId });
 
 /** P0-#LOCK#POLLING#FALLBACK：查询后端 lock 状态 + build 时间戳 */
 export interface AppStatus {

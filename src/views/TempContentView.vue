@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed } from "vue";
+import { ref, onMounted, onUnmounted, onActivated, onDeactivated, computed } from "vue";
 import { useAppStore } from "../stores/app";
 import { useWidgetStore } from "../stores/widget";
 import { useTempStore } from "../stores/temp";
@@ -28,21 +28,32 @@ const ttlOptions = computed(() => [
 ].map(o => ({ ...o, label: o.value === defaultTtl.value ? `${o.label}（默认）` : o.label })));
 const addForm = ref({ text: "", ttlMinutes: defaultTtl.value });
 
-// 倒计时实时刷新
+// 倒计时实时刷新（KeepAlive 缓存下切走 tab 走 deactivated 路径，
+// 必须用 onActivated/onDeactivated 管理计时器，否则离开便签页后每秒空转）
 const now = ref(Date.now());
 let timer: number | null = null;
+const startTimer = () => {
+  if (timer === null) {
+    timer = window.setInterval(() => {
+      now.value = Date.now();
+    }, 1000);
+  }
+};
+const stopTimer = () => {
+  if (timer !== null) {
+    clearInterval(timer);
+    timer = null;
+  }
+};
 onMounted(() => {
   // 修复 P1：fire-and-forget，先启动倒计时刷新，再后台拉数据
   // 视图能立即渲染（空态），数据到达后自动填充
   void tempStore.loadItems();
-  // 修复 P2-#26：view 端 1s 即可驱动倒计时
-  timer = window.setInterval(() => {
-    now.value = Date.now();
-  }, 1000);
+  startTimer();
 });
-onUnmounted(() => {
-  if (timer) clearInterval(timer);
-});
+onUnmounted(stopTimer);
+onActivated(startTimer);
+onDeactivated(stopTimer);
 
 // 关键修复：去掉 watch(searchQuery) → loadItems
 // 之前每次按键都触发后端 DB 查询，导致列表项被整个替换 → 闪屏

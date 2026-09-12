@@ -105,6 +105,11 @@ function onMiniMouseDown(e: MouseEvent) {
 // 暴露给模板
 defineExpose({});
 
+// P0-#Y#FIX#TRASH#OPEN：设置界面"打开回收站"按钮派发的 window 事件处理
+// （提升到 setup 作用域供 onUnmounted 移除；MainLayout 每次锁屏-解锁重新挂载，
+//   原来只加不减会累积监听）
+const onOpenTrash = () => { showTrash.value = true; };
+
 onMounted(() => {
   // P0-#PERF#INIT：onMounted **绝不 await 任何 IPC** — 改为 fire-and-forget
   // 之前：await getDataDir() / await widgetStore.init() / await listen() 全部同步 block
@@ -185,7 +190,8 @@ onMounted(() => {
         await widgetStore.forceExpand();
       });
       // P0-#Y#FIX#TRASH#OPEN：监听设置界面"打开回收站"按钮派发的事件
-      window.addEventListener("open-trash", () => { showTrash.value = true; });
+      // （移出 try：listen() 失败不应连累这个本地监听的注册）
+      window.addEventListener("open-trash", onOpenTrash);
     } catch (e) {
       console.warn("监听窗口事件失败", e);
     }
@@ -195,6 +201,8 @@ onMounted(() => {
 onUnmounted(() => {
   unlistenMove?.();
   unlistenForceExpand?.();
+  // ✅ 泄漏修复：与 onMounted 中的 addEventListener 成对移除
+  window.removeEventListener("open-trash", onOpenTrash);
 });
 
 // ===== 迷你模式自适应窗口尺寸 =====
