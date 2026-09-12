@@ -63,12 +63,17 @@
     "windows": {
       "nsis": {
         "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico",
+        "headerImage": "icons/nsis-header.bmp",
+        "sidebarImage": "icons/nsis-sidebar.bmp",
+        "startMenuFolder": "抽屉柜 Drawer",
         "installMode": "currentUser",
         "languages": ["SimpChinese", "English"],
         "displayLanguageSelector": false
       },
       "webviewInstallMode": {
-        "type": "embedBootstrapper"
+        "type": "embedBootstrapper",
+        "silent": false
       }
     }
   },
