@@ -404,31 +404,54 @@ impl Db {
 
     /// P0-#Y#FIX#TYPE#EDIT：完整 update（含 app_type）
     /// 之前 update_app 不更新 app_type → 右键菜单无法把"误判为 app"的网址改成"url"
-    /// 现在：app_type 字段也支持更新（None=不改，用 COALESCE 保留原值）
+    ///
+    /// ## 更新契约（P0-#Y#FIX#PATCH 定稿，勿混淆）
+    /// - `Option` 参数 `None` = **保持原值**（不进入本次 UPDATE 的 SET 列表）
+    /// - `Some(v)` = 显式更新为 v（v 为空串即"主动清空"该文本字段）
+    /// - `name`/`path` 为必填字段，每次全量写入
+    /// - 列名全部来自代码内固定字面量（白名单），值一律参数绑定，无 SQL 注入面
+    /// - UI 目前没有"主动清空 category/icon/subtype"的入口；未来需要时必须新增
+    ///   显式信号（专用命令或哨兵值），**不能复用 None 表达清空**
     pub fn update_app_full(
         &self,
         id: i64,
         name: &str,
         path: &str,
-        icon_path: &str,
-        args: &str,
+        icon_path: Option<&str>,
+        args: Option<&str>,
         category_id: Option<i64>,
-        app_subtype: &str,
+        app_subtype: Option<&str>,
         app_type: Option<&str>,
     ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
-        // app_type 传 None 时保留原值
-        if let Some(at) = app_type {
-            conn.execute(
-                "UPDATE apps SET name=?1, path=?2, icon_path=?3, args=?4, category_id=?5, app_subtype=?6, app_type=?7 WHERE id=?8",
-                params![name, path, icon_path, args, category_id, app_subtype, at, id],
-            )?;
-        } else {
-            conn.execute(
-                "UPDATE apps SET name=?1, path=?2, icon_path=?3, args=?4, category_id=?5, app_subtype=?6 WHERE id=?7",
-                params![name, path, icon_path, args, category_id, app_subtype, id],
-            )?;
+        // 动态构建 SET：只更新 Some 字段（patch 语义），列名为固定白名单字面量
+        let mut sets: Vec<&str> = vec!["name=?", "path=?"];
+        let mut values: Vec<rusqlite::types::Value> =
+            vec![rusqlite::types::Value::from(name.to_string()), rusqlite::types::Value::from(path.to_string())];
+        if let Some(v) = icon_path {
+            sets.push("icon_path=?");
+            values.push(rusqlite::types::Value::from(v.to_string()));
         }
+        if let Some(v) = args {
+            sets.push("args=?");
+            values.push(rusqlite::types::Value::from(v.to_string()));
+        }
+        if let Some(v) = category_id {
+            sets.push("category_id=?");
+            values.push(rusqlite::types::Value::from(v));
+        }
+        if let Some(v) = app_subtype {
+            sets.push("app_subtype=?");
+            values.push(rusqlite::types::Value::from(v.to_string()));
+        }
+        if let Some(v) = app_type {
+            sets.push("app_type=?");
+            values.push(rusqlite::types::Value::from(v.to_string()));
+        }
+        // WHERE 子句单独拼装——id 是 WHERE 条件,绝不能混入 SET 列表
+        values.push(rusqlite::types::Value::from(id));
+        let sql = format!("UPDATE apps SET {} WHERE id = ?", sets.join(", "));
+        conn.execute(&sql, rusqlite::params_from_iter(values))?;
         Ok(())
     }
 

@@ -1116,15 +1116,19 @@ pub fn update_app(
     app_type: Option<String>,
 ) -> Result<(), String> {
     let db = state.db.lock().unwrap();
-    let sub = match app_subtype { Some(s) => s, None => String::new() };
+    // 🛡️ patch 语义（P0-#Y#FIX#PATCH）：Option 字段统一 None = 保持原值、Some(v) = 显式更新。
+    // 旧实现把"未提供"（unwrap_or("")/String::new()）当成"主动清空"，导致"编辑名称/路径"表单
+    // 顺带清掉 icon_path/app_subtype；右键"修改一级分类"(changeType) 同样会清掉 app_subtype。
+    // 注意：None ≠ 清空。UI 目前没有主动清空 icon/category/subtype 的入口；
+    // 未来若需支持，必须新增显式信号（专用命令或哨兵值），不得复用 None。
     db.update_app_full(
         id,
         &name,
         &path,
-        icon_path.as_deref().unwrap_or(""),
-        args.as_deref().unwrap_or(""),
+        icon_path.as_deref(),
+        args.as_deref(),
         category_id,
-        &sub,
+        app_subtype.as_deref(),
         app_type.as_deref(),
     )
     .map_err(|e| e.to_string())
