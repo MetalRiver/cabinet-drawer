@@ -258,6 +258,26 @@ impl Db {
         Ok(())
     }
 
+    /// 仅更新密码条目元数据（标题/用户名/网址/备注）。
+    /// P0-B 契约：不触碰 password 字段——原密文字节级保持不变；
+    /// updated_at 正常刷新（列表排序语义不变）。
+    pub fn update_password_metadata(
+        &self,
+        id: i64,
+        title: &str,
+        username: &str,
+        url: &str,
+        notes: &str,
+    ) -> Result<()> {
+        let now = chrono::Utc::now().timestamp_millis();
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE passwords SET title=?1, username=?2, url=?3, notes=?4, updated_at=?5 WHERE id=?6",
+            params![title, username, url, notes, now, id],
+        )?;
+        Ok(())
+    }
+
     /// 删除密码
     pub fn delete_password(&self, id: i64) -> Result<()> {
         let conn = self.conn.lock().unwrap();
@@ -323,13 +343,6 @@ impl Db {
         app_type: &str,
         app_subtype: &str,
     ) -> Result<i64> {
-        // P0-#DEBUG#APPTYPE：SQL INSERT 前最后一道关卡——打印将写入 DB 的值
-        eprintln!("[db.create_app] 🟡 === 写入 SQLite apps 表前最终值 ===");
-        eprintln!("[db.create_app]   name = {:?}", name);
-        eprintln!("[db.create_app]   path = {:?}", path);
-        eprintln!("[db.create_app]   app_type = {:?} （这是最终会存进 DB 的值！）", app_type);
-        eprintln!("[db.create_app]   app_subtype = {:?}", app_subtype);
-        eprintln!("[db.create_app]   category_id = {:?}", category_id);
         let now = chrono::Utc::now().timestamp_millis();
         let conn = self.conn.lock().unwrap();
         conn.execute(
@@ -338,7 +351,6 @@ impl Db {
             params![name, path, icon_path, args, category_id, app_type, app_subtype, now],
         )?;
         let id = conn.last_insert_rowid();
-        eprintln!("[db.create_app] 🟢 写入成功！id={}, DB中的app_type={:?}", id, app_type);
         Ok(id)
     }
 
@@ -1678,5 +1690,81 @@ impl Db {
         }
 
         Ok(stats)
+    }
+}
+
+#[cfg(test)]
+mod password_patch_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn temp_db() -> (Db, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("drawer_box_test_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("pw_{}.db", std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()));
+        let _ = std::fs::remove_file(&path);
+        (Db::open(&path).unwrap(), path)
+    }
+
+    fn cleanup(path: &PathBuf) {
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// P0-B 场景1-4：单独修改标题/用户名/URL/备注，password 密文必须字节级不变
+    #[test]
+    fn metadata_field_updates_keep_ciphertext() {
+        let (db, path) = temp_db();
+        let cipher = "ciphertext-placeholder";
+        let id = db.create_password("t", "u", cipher, "u0", "n0").unwrap();
+
+        db.update_password_metadata(id, "t2", "u", "u0", "n0").unwrap();
+        assert_eq!(db.get_password_encrypted(id).unwrap().unwrap().2, cipher, "改标题不得动密文");
+
+        db.update_password_metadata(id, "t2", "u2", "u0", "n0").unwrap();
+        assert_eq!(db.get_password_encrypted(id).unwrap().unwrap().2, cipher, "改用户名不得动密文");
+
+        db.update_password_metadata(id, "t2", "u2", "u2", "n0").unwrap();
+        assert_eq!(db.get_password_encrypted(id).unwrap().unwrap().2, cipher, "改URL不得动密文");
+
+        db.update_password_metadata(id, "t2", "u2", "u2", "n2").unwrap();
+        let (_, _, encrypted, url, notes) = db.get_password_encrypted(id).unwrap().unwrap();
+        assert_eq!(encrypted, cipher);
+        assert_eq!(url, "u2");
+        assert_eq!(notes, "n2");
+        cleanup(&path);
+    }
+
+    /// P0-B 场景5：明确更新密码 → 密文改变，且新密文可用同一密钥解出明文
+    #[test]
+    fn explicit_password_update_replaces_ciphertext() {
+        let (db, path) = temp_db();
+        let salt = crypto::generate_salt();
+        let key = crypto::derive_key("master-pw", &salt);
+        let c1 = crypto::encrypt("old-pass", &key).unwrap();
+        let id = db.create_password("t", "u", &c1, "", "").unwrap();
+
+        let c2 = crypto::encrypt("new-pass", &key).unwrap();
+        db.update_password(id, "t", "u", &c2, "", "").unwrap();
+
+        let (_, _, encrypted, _, _) = db.get_password_encrypted(id).unwrap().unwrap();
+        assert_ne!(encrypted, c1, "改密码后密文必须改变");
+        assert_eq!(crypto::decrypt(&encrypted, &key).unwrap(), "new-pass");
+        cleanup(&path);
+    }
+
+    /// P0-B 场景6（DB 侧）：元数据更新绝不触碰密文（哨兵值只允许出现在标题位）
+    #[test]
+    fn metadata_update_never_touches_ciphertext() {
+        let (db, path) = temp_db();
+        let cipher = "real-cipher-bytes";
+        let id = db.create_password("t", "u", cipher, "", "").unwrap();
+        for sentinel in ["UNCHANGED", "（解密失败）"] {
+            db.update_password_metadata(id, sentinel, "u", "", "").unwrap();
+            let (title, _username, encrypted, _, _) = db.get_password_encrypted(id).unwrap().unwrap();
+            assert_eq!(encrypted, cipher, "哨兵串不得进入密码位");
+            assert_eq!(title, sentinel);
+        }
+        cleanup(&path);
     }
 }

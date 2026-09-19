@@ -57,10 +57,19 @@ export const updatePassword = (params: {
   id: number;
   title: string;
   username: string;
-  password: string;
+  /** P0-B 契约：缺省（undefined/null）= 本次不修改密码，DB 原密文字节级保持不变 */
+  password?: string;
   url: string;
   notes: string;
-}) => invoke<void>("update_password", params);
+}) =>
+  invoke<void>("update_password", {
+    id: params.id,
+    title: params.title,
+    username: params.username,
+    password: params.password ?? null,
+    url: params.url,
+    notes: params.notes,
+  });
 
 export const deletePassword = (id: number) =>
   invoke<void>("delete_password", { id });

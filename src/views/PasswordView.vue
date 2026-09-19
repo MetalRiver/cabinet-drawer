@@ -38,6 +38,8 @@ type RowMode = "collapsed" | "expanded" | "editing" | "deleting";
 interface RowState {
   mode: RowMode;
   decryptedPassword: string;
+  /** 解密失败标记：失败时绝不把提示文案写入 decryptedPassword（P0-B 哨兵清除） */
+  decryptFailed: boolean;
   showPassword: boolean;
   isLoading: boolean;
   // 编辑表单
@@ -141,11 +143,12 @@ async function submitVerify() {
 async function doCopyPassword(item: PasswordMeta) {
   passwordStore.bumpUseCount(item.id);
   const s = getRowState(item.id);
-  let pwd = s.decryptedPassword;
+  let pwd = s.decryptFailed ? "" : s.decryptedPassword;
   if (!pwd) {
     try {
       pwd = await passwordStore.reveal(item.id);
       s.decryptedPassword = pwd;
+      s.decryptFailed = false;
     } catch (e) {
       appStore.showClipToast("info", "复制失败：" + String(e));
       return;
@@ -159,6 +162,7 @@ function getRowState(id: number): RowState {
     rowStates[id] = {
       mode: "collapsed",
       decryptedPassword: "",
+      decryptFailed: false,
       showPassword: false,
       isLoading: false,
       form: { title: "", username: "", password: "", url: "", notes: "" },
@@ -231,8 +235,9 @@ async function toggleRow(item: PasswordMeta) {
       s.isLoading = true;
       try {
         s.decryptedPassword = await passwordStore.reveal(item.id);
+        s.decryptFailed = false;
       } catch (e) {
-        s.decryptedPassword = "（解密失败）";
+        s.decryptFailed = true;
         appStore.showClipToast("info", "解密失败：" + String(e));
       } finally {
         s.isLoading = false;
@@ -309,24 +314,18 @@ async function saveEdit(item: PasswordMeta) {
     return;
   }
   try {
-    // 如果密码字段为空，视为不修改
+    const base = {
+      title: s.form.title.trim(),
+      username: s.form.username.trim(),
+      url: s.form.url.trim(),
+      notes: s.form.notes.trim(),
+    };
     if (s.form.password) {
-      await passwordStore.edit(item.id, {
-        title: s.form.title.trim(),
-        username: s.form.username.trim(),
-        password: s.form.password,
-        url: s.form.url.trim(),
-        notes: s.form.notes.trim(),
-      });
+      // 明确修改密码
+      await passwordStore.edit(item.id, { ...base, password: s.form.password });
     } else {
-      // 仅更新非密码字段（用原密码）
-      await passwordStore.edit(item.id, {
-        title: s.form.title.trim(),
-        username: s.form.username.trim(),
-        password: s.decryptedPassword || "UNCHANGED",
-        url: s.form.url.trim(),
-        notes: s.form.notes.trim(),
-      });
+      // P0-B：仅更新元数据——DB 原密码密文字节级保持不变，绝不回写任何占位文案
+      await passwordStore.edit(item.id, base);
     }
     // 更新本地缓存
     item.title = s.form.title.trim();
@@ -713,7 +712,9 @@ function fmtTime(ts: number) {
                   <span v-if="getRowState(item.id).isLoading" class="muted">解密中...</span>
                   <span v-else class="password">
                     {{ getRowState(item.id).showPassword
-                        ? getRowState(item.id).decryptedPassword
+                        ? (getRowState(item.id).decryptFailed
+                            ? "（解密失败）"
+                            : getRowState(item.id).decryptedPassword)
                         : "••••••••••••" }}
                   </span>
                   <button

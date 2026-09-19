@@ -94,7 +94,8 @@ export const usePasswordStore = defineStore("passwords", () => {
     params: {
       title: string;
       username: string;
-      password: string;
+      /** P0-B 契约：缺省 = 本次不修改密码（不传 password 字段） */
+      password?: string;
       url: string;
       notes: string;
     }
