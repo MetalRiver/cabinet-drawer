@@ -22,22 +22,6 @@ use std::ptr;
 use std::process::Command;
 
 use windows_sys::Win32::UI::Shell::ShellExecuteW;
-
-/// 📝 诊断日志写磁盘（%APPDATA%\drawer-box\debug_apptype.log）
-fn win_debug_log(msg: &str) {
-    use std::io::Write;
-    if let Ok(appdata) = std::env::var("APPDATA") {
-        let dir = std::path::PathBuf::from(appdata).join("drawer-box");
-        let _ = std::fs::create_dir_all(&dir);
-        let path = dir.join("debug_apptype.log");
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
-            let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
-            let _ = writeln!(f, "[{}] {}", now, msg);
-        }
-    }
-    eprintln!("{}", msg);
-}
-
 /// 判断是否是 URL 协议（http/https/steam:// 等）
 pub fn is_url(s: &str) -> bool {
     let s = s.trim().to_lowercase();
@@ -130,7 +114,6 @@ pub fn launch(path: &str, args: &str) -> Result<(), String> {
     let path_trim = path.trim();
     if !is_url(path_trim) && looks_like_domain(path_trim) {
         let fixed_url = format!("https://{}", path_trim);
-        win_debug_log(&format!("[win_launch::launch] ⚠️  裸域名（无协议前缀）自动补 https://： {:?} → {:?}", path_trim, fixed_url));
         return launch_url_via_explorer(&fixed_url);
     }
     if is_url(path_trim) {
@@ -144,7 +127,6 @@ pub fn launch(path: &str, args: &str) -> Result<(), String> {
         .unwrap_or(false);
     if is_dot_url {
         if let Some(inner_url) = crate::win_icon::parse_url_shortcut(path_trim) {
-            win_debug_log(&format!("[win_launch::launch] .url 文件内部 URL = {:?}", inner_url));
             return launch_url_via_explorer(&inner_url);
         }
     }
@@ -208,7 +190,6 @@ fn launch_url_via_explorer(url: &str) -> Result<(), String> {
     if url_trim.is_empty() {
         return Err("URL 是空字符串，拒绝启动（否则 explorer 会误开「文档」文件夹！）".to_string());
     }
-    win_debug_log(&format!("[launch_url_via_explorer] 🟢 ShellExecuteW(open) → URL = {:?}", url_trim));
     let wide_url: Vec<u16> = OsStr::new(url_trim)
         .encode_wide()
         .chain(once(0))
@@ -230,16 +211,7 @@ fn launch_url_via_explorer(url: &str) -> Result<(), String> {
         if code > 32 {
             Ok(())
         } else {
-            let msg = match code {
-                0 => "系统内存或资源不足".to_string(),
-                2 => format!("找不到文件: {}", url_trim),
-                3 => format!("找不到路径: {}", url_trim),
-                5 => "权限不足".to_string(),
-                31 => format!("没有关联程序处理此 URL: {}", url_trim),
-                other => format!("ShellExecuteW(open URL) 错误码 {}", other),
-            };
-            // 终极兜底：如果 ShellExecuteW 失败，才 fallback 到 explorer.exe
-            win_debug_log(&format!("[launch_url_via_explorer] ⚠️  ShellExecuteW 失败，兜底 explorer.exe： {}（URL={:?}）", msg, url_trim));
+            // ShellExecuteW 失败 → 兜底 explorer.exe（原错误码文案仅用于已删除的调试日志）
             match Command::new("explorer.exe").arg(url_trim).spawn() {
                 Ok(_) => Ok(()),
                 Err(e) => Err(format!("打开 URL 彻底失败（ShellExecuteW={}, explorer.exe 兜底也失败）: {} ({})", code, url_trim, e)),

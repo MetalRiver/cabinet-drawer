@@ -18,26 +18,6 @@ use crate::win_launch;
 use std::path::PathBuf;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
-
-// ============================================================
-// 📝 诊断日志写磁盘（%APPDATA%\drawer-box\debug_apptype.log）
-//   用途：release 版 App 看不到 eprintln，直接写文件给用户发过来就能定位
-// ============================================================
-fn app_debug_log(msg: &str) {
-    use std::io::Write;
-    if let Ok(appdata) = std::env::var("APPDATA") {
-        let dir = std::path::PathBuf::from(appdata).join("drawer-box");
-        let _ = std::fs::create_dir_all(&dir);
-        let path = dir.join("debug_apptype.log");
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
-            let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
-            let _ = writeln!(f, "[{}] {}", now, msg);
-        }
-    }
-    // 同时也 eprintln（dev 模式能看到）
-    eprintln!("{}", msg);
-}
-
 // ============================================================
 // 📦 扫描系统软件时返回的条目
 // ============================================================
@@ -619,11 +599,6 @@ pub fn list_apps_with_icons(
 ) -> Result<Vec<AppWithIcon>, String> {
     let db = state.db.lock().unwrap();
     let apps = db.list_apps(&query, category_id).map_err(|e| e.to_string())?;
-    // P0-#DEBUG#APPTYPE：DB 查询返回前打印每条的 app_type
-    eprintln!("[list_apps_with_icons] 🔵 共返回 {} 条记录给前端：", apps.len());
-    for a in &apps {
-        eprintln!("  id={}, name={:?}, path={:?}, app_type={:?}, app_subtype={:?}", a.id, a.name, a.path, a.app_type, a.app_subtype);
-    }
     let result: Vec<AppWithIcon> = apps.into_iter().map(|a| {
         let icon_data_url = if a.icon_path.is_empty() {
             None
@@ -882,23 +857,13 @@ pub fn create_app(
     app_subtype: Option<String>,
 ) -> Result<i64, String> {
     // P0-#DEBUG#APPTYPE：入口立刻打印所有入参（最关键）→ 同时写磁盘日志
-    app_debug_log(&format!("[create_app] 🔴 === 收到前端 create_app 调用 ==="));
-    app_debug_log(&format!("[create_app]   name = {:?}", name));
-    app_debug_log(&format!("[create_app]   path = {:?}", path));
-    app_debug_log(&format!("[create_app]   app_type (前端原始传入 Option<String>) = {:?}", app_type));
-    app_debug_log(&format!("[create_app]   app_subtype = {:?}", app_subtype));
-    app_debug_log(&format!("[create_app]   icon_path = {:?}", icon_path));
-    app_debug_log(&format!("[create_app]   category_id = {:?}", category_id));
-    app_debug_log(&format!("[create_app]   args = {:?}", args));
     let db = state.db.lock().unwrap();
     let path_obj = std::path::Path::new(&path);
 
     // P0-#Y#FIX#URL#APPTYPE#SANITY：app_type 二次校验（双保险）
     let mut at = app_type.unwrap_or_else(|| {
-        app_debug_log(&format!("[create_app] ⚠️  app_type 是 None！ 用 detect_type_from_path 回退推断！path={:?}", path));
         detect_type_from_path(path_obj).to_string()
     });
-    app_debug_log(&format!("[create_app]   二次校验前 at = {:?}", at));
 
     #[cfg(windows)]
     {
@@ -927,7 +892,6 @@ pub fn create_app(
             at = corrected.to_string();
         }
     }
-    app_debug_log(&format!("[create_app]   二次校验最终 at = {:?}（将以这个值写入 DB）", at));
 
     let sub = match app_subtype {
         Some(s) if !s.is_empty() => s,
@@ -947,7 +911,6 @@ pub fn create_app(
     } else {
         String::new()
     };
-    app_debug_log(&format!("[create_app] 🟢 调用 db.create_app 入库：name={:?}, path={:?}, app_type={:?}, sub={:?}", name, path, at, sub));
     db.create_app(
         &name,
         &path,
@@ -1195,16 +1158,11 @@ async fn launch_with_path(
 
     // 🛡️ 第一道 + 终极防线：只要是 URL 形式或含 :// → 永远强制 URL 打开，不看 app_type！
     if definitely_url || contains_protocol_sep {
-        app_debug_log(&format!(
-            "[launch_with_path] 🛡️🛡️🛡️ 终极防线命中：强制按 URL 启动（DB.app_type={}, is_url_path={}, contains://={}, path={}）",
-            app_type, definitely_url, contains_protocol_sep, path
-        ));
         return match win_launch::launch(&path, &args) {
             Ok(()) => Ok(()),
             Err(e) => {
                 if is_dot_url_file {
                     if let Some(url) = win_icon::parse_url_shortcut(&path) {
-                        app_debug_log(&format!("[launch_with_path] .url 关联失败，explorer 兜底: {}", url));
                         let _ = std::process::Command::new("explorer.exe").arg(&url).spawn();
                         return Ok(());
                     }
@@ -1223,17 +1181,11 @@ async fn launch_with_path(
                 Err(e) => { return Err(format!("打开文件夹失败: {} ({})", path, e)); }
             }
         } else {
-            app_debug_log(&format!(
-                "[launch_with_path] ⚠️  DB.app_type=\"folder\"，但 path 不是真实目录（exists={}, is_dir={}），path={:?}",
-                p.exists(), p.is_dir(), path
-            ));
             // 再检查一次是不是 URL 形式（裸域名）
             if win_launch::looks_like_domain(&path) {
-                app_debug_log(&format!("[launch_with_path] ⚠️  看起来还是裸域名，强制 URL 启动"));
                 return win_launch::launch(&path, &args);
             }
             // 兜底：ShellExecuteW 打开 whatever 这个 path
-            app_debug_log(&format!("[launch_with_path] ⚠️  兜底：ShellExecuteW 直接打开 path"));
             return match win_launch::launch(&path, &args) {
                 Ok(()) => Ok(()),
                 Err(e) => Err(format!(
@@ -1563,7 +1515,6 @@ pub fn get_data_dir(state: State<AppState>) -> Result<String, String> {
 /// - 规则 3：app_type="document" 但扩展名不在文档列表 → 重新推断
 /// **每次启动必执行一次，保证 DB 与实际语义永远一致**
 pub fn sanitize_db_on_startup(state: &tauri::State<'_, AppState>) -> Result<usize, String> {
-    app_debug_log(&format!("[sanitize_db_on_startup] 🟢 === 开始启动时脏数据修正 ==="));
     let db = state.db.lock().map_err(|e| e.to_string())?;
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
 
@@ -1576,11 +1527,10 @@ pub fn sanitize_db_on_startup(state: &tauri::State<'_, AppState>) -> Result<usiz
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
         .collect();
-    let total = rows.len();
     drop(stmt);
 
     let mut fixed_count = 0usize;
-    for (id, name, path, old_app_type) in rows {
+    for (id, _name, path, old_app_type) in rows {
         let path_obj = std::path::Path::new(&path);
         #[cfg(windows)]
         let path_is_url = win_launch::is_url_path(&path) || path.contains("://");
@@ -1594,19 +1544,11 @@ pub fn sanitize_db_on_startup(state: &tauri::State<'_, AppState>) -> Result<usiz
         // 规则 1：URL 形式但 app_type != url → 强制 url
         if path_is_url && old_app_type != "url" {
             new_app_type = Some("url".to_string());
-            app_debug_log(&format!(
-                "[sanitize_db_on_startup] ✏️  修正 #{}「{}」：path 是 URL 但 app_type={:?} → url，path={:?}",
-                id, name, old_app_type, path
-            ));
         }
         // 规则 2：app_type=folder 但 path 不是真实目录 → 重新推断
         else if old_app_type == "folder" && !path_obj.is_dir() {
             let corrected = detect_type_from_path(path_obj);
             new_app_type = Some(corrected.to_string());
-            app_debug_log(&format!(
-                "[sanitize_db_on_startup] ✏️  修正 #{}「{}」：app_type=folder 但 path 不是目录（exists={:?}, is_dir={:?}）→ {:?}，path={:?}",
-                id, name, path_obj.exists(), path_obj.is_dir(), corrected, path
-            ));
         }
 
         if let Some(new_at) = new_app_type {
@@ -1615,20 +1557,11 @@ pub fn sanitize_db_on_startup(state: &tauri::State<'_, AppState>) -> Result<usiz
                 rusqlite::params![new_at, id],
             ) {
                 Ok(_) => { fixed_count += 1; }
-                Err(e) => {
-                    app_debug_log(&format!(
-                        "[sanitize_db_on_startup] ❌ UPDATE 失败 id={}, err={}",
-                        id, e
-                    ));
-                }
+                Err(_) => { /* 写失败按未修正处理，不中断启动 */ }
             }
         }
     }
 
-    app_debug_log(&format!(
-        "[sanitize_db_on_startup] 🟢 === 脏数据修正完成，共修正 {} 条 / 总 {} 条 ===",
-        fixed_count, total
-    ));
     Ok(fixed_count)
 }
 
