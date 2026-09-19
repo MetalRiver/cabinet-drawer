@@ -269,7 +269,9 @@ async function reextractIcons() {
 // 原因：用户报"图标变紫色羽毛"，但 cache 文件 + db 路径都对，需要看实际渲染状态
 const showIconDebug = ref(false);
 // ✅ 命名处理器（原为匿名监听且从不清理，锁屏-解锁每轮累积一份）
+// 仅开发构建可用：vite build 产物 import.meta.env.DEV=false → 生产按键不生效、浮层永不出现
 const onIconDebugKeydown = (e: KeyboardEvent) => {
+  if (!import.meta.env.DEV) return;
   if (e.altKey && e.shiftKey && (e.key === "D" || e.key === "d")) {
     e.preventDefault();
     showIconDebug.value = !showIconDebug.value;
@@ -333,7 +335,6 @@ onMounted(() => {
     dragCounter = 0;
     isDraggingOver.value = false;
     const files = e.dataTransfer?.files;
-    console.log("[drag:drop] native event, files.length =", files?.length ?? 0);
     if (!files || files.length === 0) return;
     // Tauri 2 会把 webkitRelativePath 写成空，但 path 属性包含 Windows 路径
     const paths: string[] = [];
@@ -344,14 +345,12 @@ onMounted(() => {
     }
     // P0-#V：拖拽去重 + 详细日志
     const uniquePaths = [...new Set(paths.map((p) => p.toLowerCase()))];
-    console.log("[drag:drop] paths:", paths, "→ unique:", uniquePaths);
     if (!uniquePaths.length) {
       appStore.showClipToast("info", "无法识别拖入的文件路径");
       return;
     }
     try {
       const result = await softwareStore.importPaths(uniquePaths);
-      console.log("[drag:drop] importPaths →", result);
       // P0-#X：精确 toast 反馈
       const newCount = result.new_ids.length;
       const skipCount = result.skipped.length;
@@ -391,12 +390,10 @@ onMounted(() => {
         } else if (p.type === "drop") {
           isDraggingOver.value = false;
           const paths: string[] = Array.isArray(p.paths) ? p.paths : [];
-          console.log("[drag:drop] tauri event, paths:", paths);
           if (!paths.length) return;
           const uniquePaths = [...new Set(paths.map((p) => p.toLowerCase()))];
           try {
             const result = await softwareStore.importPaths(uniquePaths);
-            console.log("[drag:drop] tauri importPaths →", result);
             const newCount = result.new_ids.length;
             const skipCount = result.skipped.length;
             const errCount = result.errors.length;
@@ -968,14 +965,6 @@ async function submitAdd() {
   let appSubtype = (appType === "app" || appType === "document")
     ? inferred.appSubtype
     : "";
-  console.log(
-    `[submitAdd] 🟢 最终写入 DB：appType=${JSON.stringify(appType)}, ` +
-    `activeTemplate=${JSON.stringify(activeTemplate.value)}, ` +
-    `looksLikeDomain=${looksLikeDomain(addForm.value.path)}, ` +
-    `inferred.appType=${JSON.stringify(inferred.appType)}, ` +
-    `path=${addForm.value.path}`
-  );
-
   try {
     await softwareStore.create({
       name: addForm.value.name,
@@ -1288,14 +1277,6 @@ async function confirmDeleteApp(id: number | null) {
                 >{{ typeEmoji(item.app_type) }}</span>
               </div>
               <div class="app-name" :title="item.name">{{ item.name }}</div>
-              <!-- P0-#DIAG#APPTYPE：🔴 诊断标签 - 直接显示 SQLite 中 app_type 字段的原始值（肉眼排查数据错误） -->
-              <div
-                class="app_type_diag_chip"
-                :class="'dtc-' + (item.app_type || 'EMPTY')"
-                :title="'DB.app_type = ' + JSON.stringify(item.app_type) + '; DB.app_subtype = ' + JSON.stringify(item.app_subtype)"
-              >
-                DB:{{ item.app_type || "空!" }}
-              </div>
               <!-- P0-#Y#FIX#LABEL#FALLBACK：副标显示逻辑
                    1. 有 subtype（细分）→ 显示细分 label（游戏 / Word / PDF / 工具...）
                    2. 没 subtype（自动判失败或 url/folder）→ 显示一级 label（应用 / 网址 / 文件夹 / 文档）
@@ -1414,55 +1395,6 @@ async function confirmDeleteApp(id: number | null) {
                   <span class="path-template-label">{{ t.label }}</span>
                 </button>
               </div>
-              <!-- 🔴 P0-#UI#DIAG：诊断面板直接放在 chip 红框正下方（用户一打开弹窗就能看到，不会被裁掉！） -->
-              <div class="diag-panel">
-                <div class="diag-title">🔴 实时诊断面板（写入前请核对！）</div>
-                <div class="diag-row">
-                  <span class="diag-k">① 当前选中的 chip → key:</span>
-                  <span class="diag-v" :class="{ 'dtc-url': activeTemplate === 'url', 'dtc-folder': activeTemplate === 'folder', 'dtc-app': activeTemplate === 'exe' }">
-                    activeTemplate = <b>{{ JSON.stringify(activeTemplate) }}</b>
-                    （{{ activeTemplate === 'exe' ? '🚀 应用模板' : activeTemplate === 'url' ? '🌐 网址模板 - 100% 写入 DB.url' : activeTemplate === 'folder' ? '📁 文件夹模板 - 100% 写入 DB.folder' : '未知模板！' }}）
-                  </span>
-                </div>
-                <div class="diag-row">
-                  <span class="diag-k">② inferAppAndSubtype 推断:</span>
-                  <span class="diag-v" :class="'dtc-' + inferAppAndSubtype(addForm.path).appType">
-                    appType={{ JSON.stringify(inferAppAndSubtype(addForm.path).appType) }},
-                    subtype={{ JSON.stringify(inferAppAndSubtype(addForm.path).appSubtype) }}
-                  </span>
-                </div>
-                <div class="diag-row">
-                  <span class="diag-k">③ TLD 域名识别 (looksLikeDomain):</span>
-                  <span class="diag-v" :class="{ 'dtc-url': looksLikeDomain(addForm.path), 'dtc-folder': !looksLikeDomain(addForm.path) }">
-                    {{ looksLikeDomain(addForm.path) ? '✅ 命中 TLD（.com/.cn/.fun 等）是 URL 形式' : '❌ 未命中 TLD，不是明显 URL' }}
-                  </span>
-                </div>
-                <div class="diag-row diag-final">
-                  <span class="diag-k">④ 🔥 最终写入 DB.appType:</span>
-                  <span
-                    class="diag-v diag-final-v"
-                    :class="'dtc-' + finalDiagnosedAppType"
-                  >
-                    <b>{{ JSON.stringify(finalDiagnosedAppType) }}</b>
-                    <template v-if="activeTemplate === 'url'">
-                      🌐（用户选了「🌐网址」模板 → 100% 强制 url，完全覆盖推断结果）
-                    </template>
-                    <template v-else-if="activeTemplate === 'folder'">
-                      📁（用户选了「📁文件夹」模板 → 100% 强制 folder）
-                    </template>
-                    <template v-else-if="looksLikeDomain(addForm.path)">
-                      🌐（TLD 命中 URL → 强制 url，覆盖 exe 模板默认）
-                    </template>
-                    <template v-else>
-                      （🚀 应用模板自动推断结果）
-                    </template>
-                  </span>
-                </div>
-                <div class="diag-hint">
-                  <b>核心规则：</b>用户选 🌐网址 / 📁文件夹 模板 → 100% 按模板写入（无视路径推断），🚀应用模板才走自动识别。
-                  <br>网址（DB:app_type=url）会出现在侧边栏「🔗 网址」tab，文件夹（DB:app_type=folder）出现在「📁 文件夹」tab！
-                </div>
-              </div>
               <!-- P0-#Y#FIX#REMOVE#URL#SUB：删掉"协议："子模板区段
                    用户要求"如果虚类型选择了网址后，那么填写上传的就默认分类链接中，
                    人工可二次修改"——所以上传时不再让用户选子协议（普通网页/Steam/Epic）
@@ -1512,23 +1444,8 @@ async function confirmDeleteApp(id: number | null) {
             </div>
           </div>
           <div class="modal-footer">
-            <div class="footer-diag">
-              <span class="footer-diag-label">写入 DB:</span>
-              <span
-                class="footer-diag-chip"
-                :class="'dtc-' + finalDiagnosedAppType"
-              >
-                app_type = <b>{{ JSON.stringify(finalDiagnosedAppType) }}</b>
-                <template v-if="finalDiagnosedAppType === 'url'">🌐 网址分类</template>
-                <template v-else-if="finalDiagnosedAppType === 'folder'">📁 文件夹分类</template>
-                <template v-else-if="finalDiagnosedAppType === 'document'">📄 文档分类</template>
-                <template v-else>🚀 应用分类</template>
-              </span>
-            </div>
             <button class="btn-secondary tap" @click="showAddForm = false">取消</button>
-            <button class="btn-primary tap" @click="submitAdd">
-              保存（写入 {{ JSON.stringify(finalDiagnosedAppType) }}）
-            </button>
+            <button class="btn-primary tap" @click="submitAdd">保存</button>
           </div>
         </div>
       </div>
@@ -2765,147 +2682,9 @@ async function confirmDeleteApp(id: number | null) {
   text-overflow: ellipsis;
 }
 
-/* 🔴 诊断标签：直接显示 SQLite 中 app_type 字段的原始值（肉眼排查数据错误） */
-.app_type_diag_chip {
-  font-size: 9px;
-  font-weight: 700;
-  line-height: 1;
-  padding: 3px 6px;
-  border-radius: 6px;
-  letter-spacing: 0.2px;
-  margin-top: -2px;
-  user-select: all;
-  cursor: help;
-  font-family: "Consolas", "JetBrains Mono", monospace;
-}
-/* url：蓝色 */
-.app_type_diag_chip.dtc-url {
-  background: rgba(59, 130, 246, 0.18);
-  color: #60a5fa;
-  border: 1px solid rgba(59, 130, 246, 0.45);
-}
-/* folder：黄色（告警！如果是网址卡片显示黄色，说明 DB 存错了！） */
-.app_type_diag_chip.dtc-folder {
-  background: rgba(234, 179, 8, 0.22);
-  color: #eab308;
-  border: 1px solid rgba(234, 179, 8, 0.55);
-  animation: dtc-warn-blink 1.8s ease-in-out infinite;
-}
-@keyframes dtc-warn-blink {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.55; }
-}
-/* app：灰色 */
-.app_type_diag_chip.dtc-app {
-  background: rgba(156, 163, 175, 0.18);
-  color: #9ca3af;
-  border: 1px solid rgba(156, 163, 175, 0.4);
-}
-/* document：绿色 */
-.app_type_diag_chip.dtc-document {
-  background: rgba(34, 197, 94, 0.18);
-  color: #22c55e;
-  border: 1px solid rgba(34, 197, 94, 0.45);
-}
-/* EMPTY / 其他：红色严重告警（DB 里 app_type 是空字符串或未知值！） */
-.app_type_diag_chip.dtc-EMPTY,
-.app_type_diag_chip:not(.dtc-url):not(.dtc-folder):not(.dtc-app):not(.dtc-document) {
-  background: rgba(239, 68, 68, 0.22);
-  color: #ef4444;
-  border: 1px solid rgba(239, 68, 68, 0.6);
-  animation: dtc-err-blink 1s ease-in-out infinite;
-}
-@keyframes dtc-err-blink {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
-}
+/* modal-footer */
 
-/* 🔴 诊断面板（添加弹窗里实时显示 activeTemplate / 推断结果 / 最终写入值） */
-.diag-panel {
-  background: rgba(239, 68, 68, 0.08);
-  border: 1.5px dashed rgba(239, 68, 68, 0.55);
-  border-radius: 10px;
-  padding: 10px 12px;
-  margin-top: 8px;
-  user-select: text;
-}
-.diag-title {
-  font-size: 11.5px;
-  font-weight: 700;
-  color: #ef4444;
-  margin-bottom: 8px;
-  letter-spacing: 0.2px;
-}
-.diag-row {
-  display: flex;
-  flex-direction: row;
-  gap: 8px;
-  align-items: flex-start;
-  padding: 3px 0;
-  font-size: 11px;
-  line-height: 1.5;
-}
-.diag-row.diag-final {
-  border-top: 1px dashed rgba(239, 68, 68, 0.4);
-  margin-top: 5px;
-  padding-top: 7px;
-}
-.diag-k {
-  flex-shrink: 0;
-  color: var(--text-muted);
-  min-width: 200px;
-  font-weight: 600;
-}
-.diag-v {
-  flex: 1;
-  font-family: "Consolas", "JetBrains Mono", monospace;
-  padding: 2px 6px;
-  border-radius: 5px;
-  font-weight: 700;
-  word-break: break-all;
-  white-space: pre-wrap;
-}
-.diag-v.dtc-url {
-  background: rgba(59, 130, 246, 0.18);
-  color: #60a5fa;
-}
-.diag-v.dtc-folder {
-  background: rgba(234, 179, 8, 0.22);
-  color: #eab308;
-}
-.diag-v.dtc-app {
-  background: rgba(156, 163, 175, 0.18);
-  color: #9ca3af;
-}
-.diag-v.dtc-document {
-  background: rgba(34, 197, 94, 0.18);
-  color: #22c55e;
-}
-.diag-v.dtc-EMPTY,
-.diag-v:not(.dtc-url):not(.dtc-folder):not(.dtc-app):not(.dtc-document) {
-  background: rgba(239, 68, 68, 0.22);
-  color: #ef4444;
-}
-.diag-final-v {
-  font-size: 12px;
-  padding: 4px 8px;
-  animation: dtc-warn-blink 2.5s ease-in-out infinite;
-}
-.diag-hint {
-  font-size: 10px;
-  color: var(--text-muted);
-  margin-top: 6px;
-  line-height: 1.5;
-}
-.diag-hint code {
-  background: rgba(255, 255, 255, 0.08);
-  padding: 1px 5px;
-  border-radius: 4px;
-  font-family: "Consolas", monospace;
-  color: var(--accent-bright);
-}
-
-/* 🔴 modal-footer 诊断区（保存按钮旁边直接显示最终写入值） */
+/* modal-footer */
 .modal-footer {
   display: flex;
   align-items: center;
@@ -2915,49 +2694,6 @@ async function confirmDeleteApp(id: number | null) {
   border-top: 1px solid var(--border);
   background: var(--bg-tertiary);
   border-radius: 0 0 14px 14px;
-}
-.footer-diag {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.footer-diag-label {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-muted);
-}
-.footer-diag-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 10px;
-  border-radius: 8px;
-  font-family: "Consolas", "JetBrains Mono", monospace;
-  font-size: 11px;
-  font-weight: 700;
-}
-.footer-diag-chip.dtc-url {
-  background: rgba(59, 130, 246, 0.18);
-  color: #60a5fa;
-  border: 1px solid rgba(59, 130, 246, 0.5);
-}
-.footer-diag-chip.dtc-folder {
-  background: rgba(234, 179, 8, 0.22);
-  color: #eab308;
-  border: 1px solid rgba(234, 179, 8, 0.55);
-  animation: dtc-warn-blink 1.5s ease-in-out infinite;
-}
-.footer-diag-chip.dtc-document {
-  background: rgba(34, 197, 94, 0.18);
-  color: #22c55e;
-  border: 1px solid rgba(34, 197, 94, 0.45);
-}
-.footer-diag-chip.dtc-app,
-.footer-diag-chip:not(.dtc-url):not(.dtc-folder):not(.dtc-document) {
-  background: rgba(156, 163, 175, 0.18);
-  color: #9ca3af;
-  border: 1px solid rgba(156, 163, 175, 0.4);
 }
 
 /* ============ P0-#Y：类型筛选 chips ============ */

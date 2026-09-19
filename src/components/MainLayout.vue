@@ -117,7 +117,6 @@ onMounted(() => {
   //   → 用户感觉"启动卡顿"
   // 现在：所有初始化都进 void 包裹，UI 立即渲染，IPC 在后台跑
   console.log("[MainLayout] onMounted START (fire-and-forget init)");
-  (window as any).__ml_mounted = true;
 
   // ===== 后台任务 1：后端日志冒泡（证明 MainLayout 真的 mount 了）=====
   void (async () => {

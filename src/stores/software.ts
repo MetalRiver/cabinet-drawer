@@ -85,19 +85,6 @@ export const useSoftwareStore = defineStore("software", () => {
         last_used_at: it.last_used_at,
         created_at: it.created_at,
       }));
-      // P0-#DEBUG#APPTYPE：深度调试 - 打印从 DB 加载的每条记录的 app_type
-      console.group("[softwareStore.loadItems] 从后端 list_apps_with_icons 加载完成，共", items.value.length, "条记录：");
-      for (const it of items.value) {
-        console.log(`  id=${it.id}  name=${JSON.stringify(it.name)}  path=${JSON.stringify(it.path)}  app_type=${JSON.stringify(it.app_type)}  app_subtype=${JSON.stringify(it.app_subtype)}`);
-      }
-      // 统计各类数量
-      const counts = items.value.reduce((acc, x) => {
-        const t = x.app_type || "EMPTY_STRING_DB_BUG";
-        acc[t] = (acc[t] || 0) + 1;
-        return acc;
-      }, {} as Record<string, number>);
-      console.log("📊 app_type 分类统计：", counts);
-      console.groupEnd();
       // 一次性填满 cache（所有 data URL 已经在 list 里了）
       const newCache: Record<number, string> = {};
       for (const it of list) {
@@ -194,22 +181,8 @@ export const useSoftwareStore = defineStore("software", () => {
     appType?: string; // "app" / "folder" / "document" / "url"
     appSubtype?: string; // P0-#Y#FIX#URL#SUB：细分（url-web / url-steam / url-epic / url-other / game / office / ...）
   }) {
-    // P0-#DEBUG#APPTYPE：深度调试 - 打印传给后端 createApp 的完整参数
-    console.log("[softwareStore.create] 传入参数 =", JSON.stringify(params, null, 2));
-    console.log("[softwareStore.create] 重点检查：appType =", params.appType, "| 类型 =", typeof params.appType);
     await apiCreateApp(params);
     await loadItems();
-    // P0-#DEBUG#APPTYPE：重新加载后检查新记录在 items 列表里的 app_type 实际值
-    const match = items.value.findLast((x) => x.path === params.path && x.name === params.name);
-    if (match) {
-      console.log(`[softwareStore.create] ✅ 数据库已写入：id=${match.id}, name=${match.name}, path=${match.path}, DB.app_type=${JSON.stringify(match.app_type)}`);
-      if (match.app_type !== params.appType) {
-        console.warn(`[softwareStore.create] ⚠️  app_type MISMATCH! 前端传 ${JSON.stringify(params.appType)}，DB 实际存 ${JSON.stringify(match.app_type)}`);
-      }
-    } else {
-      console.warn("[softwareStore.create] ⚠️  写入后未在 items 中找到匹配项（可能 loadItems 尚未刷新完成）");
-      console.log("[softwareStore.create] 当前 items 所有记录的 app_type：", items.value.map(x => ({id:x.id, name:x.name, app_type: x.app_type})));
-    }
   }
 
   /// P0-#Y：拖入/选中多个路径，后端自动按扩展名或 .lnk 目标识别 app_type
