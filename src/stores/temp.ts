@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
 import { useAppStore } from "./app";
+import { useWidgetStore } from "./widget";
 import {
   listTemp as apiListTemp,
   createTemp as apiCreateTemp,
@@ -49,9 +50,10 @@ export const useTempStore = defineStore("temp", () => {
     return n;
   }
 
-  /** 复制临时内容到剪贴板 */
+  /** 复制临时内容到剪贴板（清除时长=设置页唯一事实源） */
   async function copy(text: string) {
-    await copyToClipboardWithTimeout(text, 30);
+    const widgetStore = useWidgetStore();
+    await copyToClipboardWithTimeout(text, widgetStore.clipboardClearSeconds);
   }
 
   /** 把剩余时间格式化为 mm:ss */

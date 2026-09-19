@@ -2,10 +2,12 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useAppStore } from "../stores/app";
 import { useTempStore } from "../stores/temp";
+import { useWidgetStore } from "../stores/widget";
 import { copyToClipboardWithTimeout } from "../api";
 
 const appStore = useAppStore();
 const tempStore = useTempStore();
+const widgetStore = useWidgetStore();
 
 // P0-#SUMMARY#REAL#DATA：汇总按钮的真正用途
 // 之前：硬编码 mockData（3 条假数据） + 复制按钮没接 → 用户根本不知道这按钮干嘛的
@@ -80,9 +82,10 @@ async function copySummary() {
   }
   copyBusy.value = true;
   try {
-    await copyToClipboardWithTimeout(summaryText.value, 30);
-    copyTip.value = "✓ 已复制，30 秒后自动清空";
-    appStore.showClipToast("success", "汇总已复制，30 秒后自动清空");
+    const secs = widgetStore.clipboardClearSeconds;
+    await copyToClipboardWithTimeout(summaryText.value, secs);
+    copyTip.value = `✓ 已复制，${secs} 秒后自动清空`;
+    appStore.showClipToast("success", `汇总已复制，${secs} 秒后自动清空`);
     setTimeout(() => (copyTip.value = ""), 2000);
   } catch (e) {
     appStore.showClipToast("info", "复制失败：" + String(e));

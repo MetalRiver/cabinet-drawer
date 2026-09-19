@@ -10,10 +10,12 @@ import {
   type SnippetMeta,
 } from "../api";
 import { useAppStore } from "./app";
+import { useWidgetStore } from "./widget";
 import { useClipboardCountdown } from "../composables/useClipboardCountdown";
 
 export const useSnippetsStore = defineStore("snippets", () => {
   const appStore = useAppStore();
+  const widgetStore = useWidgetStore();
   const clipboardCountdown = useClipboardCountdown();
   const items = ref<SnippetMeta[]>([]);
   const loading = ref(false);
@@ -26,7 +28,9 @@ export const useSnippetsStore = defineStore("snippets", () => {
     loading.value = true;
     error.value = "";
     try {
-      items.value = await apiListSnippets(appStore.searchQuery);
+      // P1（搜索修复）：全量拉取 + 客户端过滤。
+      // 之前把当时的 searchQuery 传给后端 LIKE——加载后清空搜索框列表也不会恢复（陈旧查询污染）。
+      items.value = await apiListSnippets();
       hasLoaded.value = true;
     } catch (e) {
       error.value = String(e);
@@ -39,17 +43,26 @@ export const useSnippetsStore = defineStore("snippets", () => {
     activeLanguage.value = lang;
   }
 
-  // 客户端按语言过滤（不再触发 DB 查询）
-  // P0-#Y#FIX#UNCAT：activeLanguage="uncategorized" 命中 language 为空或 "text" 的默认项
+  // 客户端过滤（P1 搜索修复）：搜索（标题/内容/标签，不区分大小写）与语言筛选叠加
   const filteredItems = computed(() => {
-    if (!activeLanguage.value) return items.value;
+    const q = appStore.searchQuery.trim().toLowerCase();
+    let result = items.value;
+    if (q) {
+      result = result.filter(
+        (s) =>
+          s.title.toLowerCase().includes(q) ||
+          s.content.toLowerCase().includes(q) ||
+          (s.tags || "").toLowerCase().includes(q)
+      );
+    }
+    if (!activeLanguage.value) return result;
     if (activeLanguage.value === "uncategorized") {
       // 未分类：language 为空 / null / "text"（text 是默认值）
-      return items.value.filter(
+      return result.filter(
         (s) => !s.language || !s.language.trim() || s.language === "text"
       );
     }
-    return items.value.filter(
+    return result.filter(
       (s) => (s.language || "text") === activeLanguage.value
     );
   });
@@ -81,14 +94,15 @@ export const useSnippetsStore = defineStore("snippets", () => {
     useAppStore().refreshTrashCount();
   }
 
-  /** 复制片段到剪贴板，带自动清空倒计时（统一由 useClipboardCountdown 管理） */
-  async function copy(id: number, timeoutSecs = 30) {
+  /** 复制片段到剪贴板（清除时长=设置页唯一事实源 widget.clipboard_clear_seconds） */
+  async function copy(id: number) {
     const item = items.value.find((i) => i.id === id);
     if (!item) return;
-    await copyToClipboardWithTimeout(item.content, timeoutSecs);
+    const secs = widgetStore.clipboardClearSeconds;
+    await copyToClipboardWithTimeout(item.content, secs);
     await apiRecordSnippetUsage(id);
     // 修复 P1-#19：使用统一 composable，与 PasswordView 共享一个 timer
-    clipboardCountdown.start(timeoutSecs);
+    clipboardCountdown.start(secs);
   }
 
   return {

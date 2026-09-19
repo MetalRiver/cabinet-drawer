@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { useAppStore } from "../stores/app";
+import { useWidgetStore } from "../stores/widget";
 
 const appStore = useAppStore();
+const widgetStore = useWidgetStore();
 </script>
 
 <template>
@@ -17,7 +19,7 @@ const appStore = useAppStore();
               <div class="clip-bar">
                 <div
                   class="clip-bar-fill"
-                  :style="{ width: (appStore.clipboardCountdown / 15 * 100) + '%' }"
+                  :style="{ width: Math.min(100, appStore.clipboardCountdown / Math.max(1, widgetStore.clipboardClearSeconds) * 100) + '%' }"
                 ></div>
               </div>
               <div class="clip-count-text">

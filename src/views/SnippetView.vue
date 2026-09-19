@@ -114,8 +114,8 @@ async function submit() {
 
 async function copy(item: any) {
   try {
-    await snippetsStore.copy(item.id, 30);
-    appStore.showClipToast("success", "已复制，30 秒后自动清空");
+    await snippetsStore.copy(item.id);
+    appStore.showClipToast("success", "已复制");
   } catch (e) {
     appStore.showClipToast("info", String(e));
   }

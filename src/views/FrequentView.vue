@@ -7,7 +7,6 @@ import { useSoftwareStore } from "../stores/software";
 import { useSnippetsStore } from "../stores/snippets";
 import { useTempStore } from "../stores/temp";
 import { usePasswordStore as usePasswordsStore } from "../stores/passwords";
-import { copyToClipboardWithTimeout } from "../api";
 
 const appStore = useAppStore();
 const router = useRouter();
@@ -249,8 +248,7 @@ async function activate(item: FrequentItem) {
         appStore.showClipToast("info", result.message || "启动失败");
       }
     } else if (item.type === "snippet") {
-      await copyToClipboardWithTimeout(item.subtitle.replace(/…$/, ""), 30);
-      await snippetsStore.copy(item.id, 30);
+      await snippetsStore.copy(item.id);
       appStore.showClipToast("success", `已复制 "${item.title}"`);
     } else if (item.type === "password") {
       router.push("/passwords");
