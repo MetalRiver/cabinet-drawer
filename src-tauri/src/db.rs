@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection, Result};
+use rusqlite::{params, Connection, OptionalExtension, Result};
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -194,6 +194,36 @@ impl Db {
         Ok(conn.last_insert_rowid())
     }
 
+    /// 创建 v2 密码记录。record_uuid 由 command 层生成，一经写入不提供修改 API。
+    pub fn create_password_v2(
+        &self,
+        record_uuid: &str,
+        title: &str,
+        username: &str,
+        encrypted_password: &str,
+        url: &str,
+        notes: &str,
+    ) -> Result<i64> {
+        let now = chrono::Utc::now().timestamp_millis();
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO passwords
+             (record_uuid, title, username, password, url, notes, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                record_uuid,
+                title,
+                username,
+                encrypted_password,
+                url,
+                notes,
+                now,
+                now
+            ],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
     /// 列出所有密码（仅元数据，password 字段是加密的）
     pub fn list_passwords(&self) -> Result<Vec<PasswordMeta>> {
         let conn = self.conn.lock().unwrap();
@@ -213,6 +243,31 @@ impl Db {
                     updated_at: row.get(6)?,
                     use_count: row.get::<_, i64>(7).unwrap_or(0),
                     last_used_at: row.get::<_, i64>(8).unwrap_or(0),
+                })
+            })?
+            .collect::<Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// v2 列表读取入口。显式命名，避免 command 层根据列存在与否猜测安全模型。
+    pub fn list_passwords_v2(&self) -> Result<Vec<PasswordMeta>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, title, username, url, notes, created_at, updated_at, use_count, last_used_at
+             FROM passwords WHERE deleted_at IS NULL ORDER BY updated_at DESC",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(PasswordMeta {
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    username: row.get(2)?,
+                    url: row.get(3)?,
+                    notes: row.get(4)?,
+                    created_at: row.get(5)?,
+                    updated_at: row.get(6)?,
+                    use_count: row.get(7)?,
+                    last_used_at: row.get(8)?,
                 })
             })?
             .collect::<Result<Vec<_>>>()?;
@@ -239,6 +294,49 @@ impl Db {
         Ok(result)
     }
 
+    /// 读取 v2 解密所需的最小材料，不加载其它用户元数据。
+    pub fn get_password_v2(&self, id: i64) -> Result<Option<V2PasswordRecord>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT record_uuid, password FROM passwords WHERE id = ?1",
+        )?;
+        let result = stmt
+            .query_row(params![id], |row| {
+                Ok(V2PasswordRecord {
+                    record_uuid: row.get(0)?,
+                    encrypted_password: row.get(1)?,
+                })
+            })
+            .optional()?;
+        Ok(result)
+    }
+
+    #[cfg(test)]
+    pub fn get_password_v2_snapshot(&self, id: i64) -> Result<Option<V2PasswordSnapshot>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT record_uuid, title, username, password, url, notes,
+                    use_count, last_used_at, deleted_at
+             FROM passwords WHERE id = ?1",
+        )?;
+        let result = stmt
+            .query_row(params![id], |row| {
+                Ok(V2PasswordSnapshot {
+                    record_uuid: row.get(0)?,
+                    title: row.get(1)?,
+                    username: row.get(2)?,
+                    encrypted_password: row.get(3)?,
+                    url: row.get(4)?,
+                    notes: row.get(5)?,
+                    use_count: row.get(6)?,
+                    last_used_at: row.get(7)?,
+                    deleted_at: row.get(8)?,
+                })
+            })
+            .optional()?;
+        Ok(result)
+    }
+
     /// 更新密码
     pub fn update_password(
         &self,
@@ -253,6 +351,27 @@ impl Db {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "UPDATE passwords SET title=?1, username=?2, password=?3, url=?4, notes=?5, updated_at=?6
+             WHERE id=?7",
+            params![title, username, encrypted_password, url, notes, now, id],
+        )?;
+        Ok(())
+    }
+
+    /// 显式更新 v2 密码密文与可编辑元数据；record_uuid 永不进入 UPDATE 集合。
+    pub fn update_password_v2(
+        &self,
+        id: i64,
+        title: &str,
+        username: &str,
+        encrypted_password: &str,
+        url: &str,
+        notes: &str,
+    ) -> Result<()> {
+        let now = chrono::Utc::now().timestamp_millis();
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE passwords
+             SET title=?1, username=?2, password=?3, url=?4, notes=?5, updated_at=?6
              WHERE id=?7",
             params![title, username, encrypted_password, url, notes, now, id],
         )?;
@@ -279,6 +398,25 @@ impl Db {
         Ok(())
     }
 
+    /// v2 metadata-only patch：不读取也不写入 password / record_uuid。
+    pub fn update_password_metadata_v2(
+        &self,
+        id: i64,
+        title: &str,
+        username: &str,
+        url: &str,
+        notes: &str,
+    ) -> Result<()> {
+        let now = chrono::Utc::now().timestamp_millis();
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE passwords SET title=?1, username=?2, url=?3, notes=?4, updated_at=?5
+             WHERE id=?6",
+            params![title, username, url, notes, now, id],
+        )?;
+        Ok(())
+    }
+
     /// 删除密码
     pub fn delete_password(&self, id: i64) -> Result<()> {
         let conn = self.conn.lock().unwrap();
@@ -297,6 +435,24 @@ impl Db {
         let mut stmt = conn.prepare("SELECT use_count FROM passwords WHERE id = ?1")?;
         let count: i64 = stmt
             .query_row(params![id], |row| row.get(0))
+            .unwrap_or(0);
+        Ok(count)
+    }
+
+    /// v2 使用统计入口：只更新 use_count / last_used_at。
+    pub fn bump_password_use_count_v2(&self, id: i64) -> Result<i64> {
+        let now = chrono::Utc::now().timestamp_millis();
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE passwords SET use_count = use_count + 1, last_used_at = ?1 WHERE id = ?2",
+            params![now, id],
+        )?;
+        let count = conn
+            .query_row(
+                "SELECT use_count FROM passwords WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
             .unwrap_or(0);
         Ok(count)
     }
@@ -947,6 +1103,27 @@ pub struct PasswordMeta {
     pub use_count: i64,
     #[serde(default)]
     pub last_used_at: i64,
+}
+
+/// v2 解密所需的最小 DB 内部表示。record_uuid 只读，不提供普通更新 API。
+#[derive(Debug, Clone)]
+pub struct V2PasswordRecord {
+    pub record_uuid: String,
+    pub encrypted_password: String,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone)]
+pub struct V2PasswordSnapshot {
+    pub record_uuid: String,
+    pub title: String,
+    pub username: String,
+    pub encrypted_password: String,
+    pub url: String,
+    pub notes: String,
+    pub use_count: i64,
+    pub last_used_at: i64,
+    pub deleted_at: Option<i64>,
 }
 
 /// P1-#SETTINGS#PW#CHANGE#FULL：主密码修改时全量重加密用的内部结构
