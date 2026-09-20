@@ -12,9 +12,8 @@ use crate::AppState;
 // ============================================================
 #[tauri::command]
 pub fn list_passwords(state: State<AppState>) -> Result<Vec<db::PasswordMeta>, String> {
-    if state.key.lock().unwrap().is_none() {
-        return Err("应用已锁定".to_string());
-    }
+    state.require_legacy_model()?;
+    let _key = state.legacy_key()?;
     let db = state.db.lock().unwrap();
     db.list_passwords().map_err(|e| e.to_string())
 }
@@ -31,10 +30,9 @@ pub fn create_password(
     url: String,
     notes: String,
 ) -> Result<i64, String> {
-    let key_guard = state.key.lock().unwrap();
-    let key = key_guard.as_ref().ok_or_else(|| "应用已锁定".to_string())?;
-    let encrypted = crypto::encrypt(&password, key).map_err(|e| e.to_string())?;
-    drop(key_guard);
+    state.require_legacy_model()?;
+    let key = state.legacy_key()?;
+    let encrypted = crypto::encrypt(&password, &key).map_err(|e| e.to_string())?;
 
     let db = state.db.lock().unwrap();
     db.create_password(&title, &username, &encrypted, &url, &notes)
@@ -47,8 +45,8 @@ pub fn create_password(
 // ============================================================
 #[tauri::command]
 pub fn get_password_decrypted(state: State<AppState>, id: i64) -> Result<String, String> {
-    let key_guard = state.key.lock().unwrap();
-    let key = key_guard.as_ref().ok_or_else(|| "应用已锁定".to_string())?;
+    state.require_legacy_model()?;
+    let key = state.legacy_key()?;
     let db = state.db.lock().unwrap();
     let (_, _, encrypted, _, _) = db
         .get_password_encrypted(id)
@@ -56,7 +54,7 @@ pub fn get_password_decrypted(state: State<AppState>, id: i64) -> Result<String,
         .ok_or_else(|| "密码不存在".to_string())?;
     drop(db);
     // 解密失败时只返回固定文案，不携带密文/密钥/nonce 等任何材料
-    crypto::decrypt(&encrypted, key)
+    crypto::decrypt(&encrypted, &key)
         .map_err(|_| "解密失败：密文损坏或与当前主密码不匹配".to_string())
 }
 
@@ -65,6 +63,7 @@ pub fn get_password_decrypted(state: State<AppState>, id: i64) -> Result<String,
 // ============================================================
 #[tauri::command]
 pub fn bump_password_use_count(state: State<AppState>, id: i64) -> Result<i64, String> {
+    state.require_legacy_model()?;
     let db = state.db.lock().unwrap();
     db.bump_password_use_count(id).map_err(|e| e.to_string())
 }
@@ -87,17 +86,15 @@ pub fn update_password(
     url: String,
     notes: String,
 ) -> Result<(), String> {
+    state.require_legacy_model()?;
     // 1) 锁定检查 + 需要时加密（只持 key 锁，避免 db→key 交叉加锁顺序）
     let encrypted: Option<String> = match password {
         Some(pw) => {
-            let key_guard = state.key.lock().unwrap();
-            let key = key_guard.as_ref().ok_or_else(|| "应用已锁定".to_string())?;
-            Some(crypto::encrypt(&pw, key).map_err(|e| e.to_string())?)
+            let key = state.legacy_key()?;
+            Some(crypto::encrypt(&pw, &key).map_err(|e| e.to_string())?)
         }
         None => {
-            if state.key.lock().unwrap().is_none() {
-                return Err("应用已锁定".to_string());
-            }
+            let _key = state.legacy_key()?;
             None
         }
     };
@@ -119,6 +116,7 @@ pub fn update_password(
 // ============================================================
 #[tauri::command]
 pub fn delete_password(state: State<AppState>, id: i64) -> Result<(), String> {
+    state.require_legacy_model()?;
     let db = state.db.lock().unwrap();
     db.soft_delete("passwords", id).map_err(|e| e.to_string())?;
     Ok(())

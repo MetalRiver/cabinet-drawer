@@ -11,6 +11,7 @@ use crate::backup;
 use crate::crypto;
 use crate::db::{self, Db};
 use crate::AppState;
+use zeroize::Zeroizing;
 
 // ============================================================
 // 🔐 验证主密码（100% 照 lib.rs unlock_app 前半段，零臆想！）
@@ -18,11 +19,9 @@ use crate::AppState;
 fn verify_master_password_inner(
     state: &State<'_, AppState>,
     master_password: &str,
-) -> Result<Vec<u8>, String> {
-    let key_opt = state.key.lock().unwrap().clone();
-    if let Some(k) = key_opt {
-        return Ok(k);
-    }
+) -> Result<Zeroizing<Vec<u8>>, String> {
+    state.require_legacy_model()?;
+    if let Ok(k) = state.legacy_key() { return Ok(k); }
     let db = state.db.lock().unwrap();
     // 注意：key 是 master_password_hash / master_password_salt（不是 master_salt！不是 hex！是 BASE64！）
     let hash = db
@@ -39,8 +38,8 @@ fn verify_master_password_inner(
     if crypto::hash_password(master_password, &salt) != hash {
         return Err("主密码错误".to_string());
     }
-    let key = crypto::derive_key(master_password, &salt);
-    *state.key.lock().unwrap() = Some(key.clone());
+    let key = Zeroizing::new(crypto::derive_key(master_password, &salt));
+    state.set_legacy_key(Zeroizing::new(key.to_vec()));
     Ok(key)
 }
 
@@ -49,6 +48,7 @@ fn verify_master_password_inner(
 // ============================================================
 #[tauri::command]
 pub fn factory_reset(state: State<AppState>, app: AppHandle) -> Result<(), String> {
+    state.require_legacy_model()?;
     let _ = state;
     let app_clone = app.clone();
     use tauri::Manager;
@@ -99,6 +99,7 @@ pub fn export_encrypted_backup(
     state: State<AppState>,
     master_password: String,
 ) -> Result<ExportResult, String> {
+    state.require_legacy_model()?;
     // 0. 验证主密码（导出必须知道密码才能加密）
     let _key = verify_master_password_inner(&state, &master_password)?;
 
@@ -136,8 +137,7 @@ pub fn export_encrypted_backup(
     // 2b. ✨ 关键修复：先解密所有密码成明文存到 password_plaintext！
     // 🔴 【风险2修复】不再跳过回收站密码！回收站的也必须解密成明文，否则换电脑导入后还原解密失败！
     {
-        let key_opt = state.key.lock().unwrap().clone();
-        let key = key_opt.ok_or_else(|| "应用未锁定状态异常（缺少主密钥）".to_string())?;
+        let key = state.legacy_key().map_err(|_| "应用未锁定状态异常（缺少主密钥）".to_string())?;
         let mut decrypted_ok = 0usize;
         let mut decrypted_failed = 0usize;
         let mut trash_count = 0usize;
@@ -200,6 +200,8 @@ pub fn import_encrypted_backup(
     master_password: String,
     policy: db::ImportConflictPolicy,
 ) -> Result<db::ImportStats, String> {
+    // v2 备份格式尚未设计完成：必须在读取/解密任何备份内容前关闭。
+    state.require_legacy_model()?;
     let p = Path::new(&file_path);
     let exists = p.exists();
     let size = if exists {
@@ -261,21 +263,11 @@ pub fn import_encrypted_backup(
         json_bytes.len()
     );
 
-    // ✅【关键调试】先把 JSON 转成 Value，打印所有顶级字段名！100% 搞清楚旧版备份结构！
+    // 先转成 Value 以兼容旧版结构。不得记录解密后的备份正文。
     let json_value: serde_json::Value = match serde_json::from_slice(&json_bytes) {
         Ok(v) => v,
         Err(e) => return Err(format!("备份 JSON 语法错误: {}", e)),
     };
-    eprintln!(
-        "[import_encrypted_backup] JSON 前300字符：{}",
-        &String::from_utf8_lossy(&json_bytes[..json_bytes.len().min(300)])
-    );
-    if json_bytes.len() > 600 {
-        eprintln!(
-            "[import_encrypted_backup] JSON 后300字符：{}",
-            &String::from_utf8_lossy(&json_bytes[json_bytes.len()-300..])
-        );
-    }
     if let Some(obj) = json_value.as_object() {
         let keys: Vec<&String> = obj.keys().collect();
         eprintln!(
@@ -309,17 +301,16 @@ pub fn import_encrypted_backup(
     // 优先级 2：V2 新备份有 export_master_password_salt_b64 → 旧salt+备份密码派生出旧key解密 → 新key重加密
     // 优先级 3：只有旧格式 encrypted_password 密文 → 直接保留（仅同电脑同salt同主密码可用，否则需救援功能）
     {
-        let key_opt = state.key.lock().unwrap().clone();
-        let key = key_opt.ok_or_else(|| "应用未锁定状态异常（缺少主密钥）".to_string())?;
+        let key = state.legacy_key().map_err(|_| "应用未锁定状态异常（缺少主密钥）".to_string())?;
 
         // 提前计算优先级 2 需要的旧 key（如果备份有存旧salt）
-        let old_key_from_backup_salt: Option<Vec<u8>> = match data.export_master_password_salt_b64.as_ref() {
+        let old_key_from_backup_salt: Option<Zeroizing<Vec<u8>>> = match data.export_master_password_salt_b64.as_ref() {
             Some(old_salt_b64) => {
                 use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
                 match B64.decode(old_salt_b64) {
                     Ok(old_salt) if old_salt.len() >= 8 => {
                         // 备份密码 = 导出时用户设的主密码（常规操作习惯）
-                        Some(crypto::derive_key(&master_password, &old_salt))
+                        Some(Zeroizing::new(crypto::derive_key(&master_password, &old_salt)))
                     }
                     _ => None,
                 }
@@ -410,7 +401,7 @@ pub fn import_encrypted_backup(
     // 用户能直接看到导入结果！
     /* （旧逻辑已删除）
     // 6. 清空主密码缓存（备份里带了另一个 master_salt / hash）
-    *state.key.lock().unwrap() = None;
+    state.clear_key();
     */
 
     Ok(stats)
@@ -437,6 +428,7 @@ pub struct MigrateResult {
 
 #[tauri::command]
 pub fn migrate_data(state: State<AppState>, target_path: String) -> Result<MigrateResult, String> {
+    state.require_legacy_model()?;
     use std::fs;
     let source = state.db_path.parent().ok_or("无法获取源目录")?.to_path_buf();
     let target = PathBuf::from(&target_path);
@@ -488,6 +480,7 @@ pub fn migrate_data(state: State<AppState>, target_path: String) -> Result<Migra
 // ============================================================
 #[tauri::command]
 pub fn hard_purge_trash(state: State<AppState>) -> Result<usize, String> {
+    state.require_legacy_model()?;
     let db = state.db.lock().unwrap();
     let mut total = 0;
     for table in ["apps", "passwords", "snippets", "temp_contents"] {
@@ -509,11 +502,13 @@ pub fn hard_purge_trash(state: State<AppState>) -> Result<usize, String> {
 // ============================================================
 #[tauri::command]
 pub fn get_setting(state: State<AppState>, key: String) -> Result<Option<String>, String> {
+    state.require_legacy_model()?;
     let db = state.db.lock().unwrap();
     db.get_setting(&key).map_err(|e| e.to_string())
 }
 #[tauri::command]
 pub fn set_setting(state: State<AppState>, key: String, value: String) -> Result<(), String> {
+    state.require_legacy_model()?;
     let db = state.db.lock().unwrap();
     db.set_setting(&key, &value).map_err(|e| e.to_string())
 }

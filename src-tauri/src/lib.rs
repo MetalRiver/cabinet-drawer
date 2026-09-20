@@ -27,17 +27,35 @@ use commands::*;
 
 use std::path::PathBuf;
 use std::sync::Mutex;
+use zeroize::Zeroizing;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 
 use db::Db;
 
 // ===== 应用状态 =====
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecurityModel { Legacy, StableDekV2 }
+
+enum ActiveKey { Legacy(Zeroizing<Vec<u8>>), StableDek(Zeroizing<Vec<u8>>) }
+
 pub struct AppState {
     pub db: Mutex<Db>,
     pub db_path: PathBuf,
-    /// 内存中的当前加密密钥（解锁后注入，锁定时清空）
-    pub key: Mutex<Option<Vec<u8>>>,
+    pub security_model: SecurityModel,
+    /// 唯一活动秘密：legacy key 或 v2 Stable DEK，不能混用。
+    key: Mutex<Option<ActiveKey>>,
+}
+
+impl AppState {
+    pub fn is_unlocked(&self) -> bool { self.key.lock().unwrap().is_some() }
+    pub fn clear_key(&self) { *self.key.lock().unwrap() = None; }
+    pub fn set_legacy_key(&self, key: Zeroizing<Vec<u8>>) { *self.key.lock().unwrap() = Some(ActiveKey::Legacy(key)); }
+    pub fn set_stable_dek(&self, dek: Zeroizing<Vec<u8>>) { *self.key.lock().unwrap() = Some(ActiveKey::StableDek(dek)); }
+    pub fn legacy_key(&self) -> Result<Zeroizing<Vec<u8>>, String> { match &*self.key.lock().unwrap() { Some(ActiveKey::Legacy(key)) => Ok(Zeroizing::new(key.to_vec())), _ => Err("应用已锁定或当前数据库需要 v2 密码记录实现".into()) } }
+    pub fn stable_dek(&self) -> Result<Zeroizing<Vec<u8>>, String> { match &*self.key.lock().unwrap() { Some(ActiveKey::StableDek(dek)) => Ok(Zeroizing::new(dek.to_vec())), _ => Err("应用尚未以 v2 Stable DEK 解锁".into()) } }
+    pub fn require_legacy_model(&self) -> Result<(), String> { if self.security_model == SecurityModel::Legacy { Ok(()) } else { Err("该操作尚未接入 v2 安全格式".into()) } }
+    pub fn unlock_v2_and_store(&self, password: &str) -> Result<(), String> { let db = self.db.lock().map_err(|_| "安全状态不可用".to_string())?; let dek = migration::unlock_v2_core(&db, password).map_err(|_| "主密码不正确或安全数据损坏".to_string())?; drop(db); self.set_stable_dek(dek); Ok(()) }
 }
 
 // ===== 应用入口 =====
@@ -54,7 +72,13 @@ pub fn run() {
                 .app_data_dir()
                 .expect("failed to get app data dir");
             std::fs::create_dir_all(&app_dir).expect("failed to create app data dir");
-            let db_path = app_dir.join("drawer_box.db");
+            let arbitration = migration::resolve_startup_db(&app_dir, false);
+            let (db_path, security_model) = match arbitration.selection {
+                migration::DbSelection::V2(path) => (path, SecurityModel::StableDekV2),
+                migration::DbSelection::Legacy(path) => (path, SecurityModel::Legacy),
+                migration::DbSelection::FreshV2(_) => unreachable!("正常启动未授权创建 fresh v2"),
+                migration::DbSelection::Blocked(reason) => return Err(std::io::Error::new(std::io::ErrorKind::Other, reason).into()),
+            };
 
             // ============================================================
             // 🔴 B3-factory_reset 核心修复：启动前先删（100% 无句柄）
@@ -63,7 +87,7 @@ pub fn run() {
             // → 在 SQLite 打开之前（绝对零句柄）物理删掉 db + WAL/SHM + 图标缓存
             // → Windows os error 32 文件锁问题彻底解决
             let pending_flag = app_dir.join(".factory_reset_pending");
-            if pending_flag.exists() {
+            if pending_flag.exists() && security_model == SecurityModel::Legacy {
                 use std::fs;
                 eprintln!("[factory_reset] 检测到 .factory_reset_pending → 在 SQLite 打开前执行物理删除");
                 let db_file_name = db_path.file_name().unwrap().to_string_lossy().to_string();
@@ -81,13 +105,16 @@ pub fn run() {
                 // 最后删掉标记文件，避免下次启动再删一次
                 let _ = fs::remove_file(&pending_flag);
                 eprintln!("[factory_reset] 启动前清理完成，共删除 {} 项 → 进入首次设置向导", n);
+            } else if pending_flag.exists() {
+                return Err(std::io::Error::new(std::io::ErrorKind::Other, "v2 模式拒绝执行 legacy factory reset pending").into());
             }
 
-            let db = Db::open(&db_path).expect("failed to open database");
+            let db = match security_model { SecurityModel::Legacy => Db::open(&db_path), SecurityModel::StableDekV2 => migration::open_existing_v2_db(&db_path).map_err(|_| rusqlite::Error::InvalidQuery) }.expect("failed to open database");
 
             app.manage(AppState {
                 db: Mutex::new(db),
                 db_path,
+                security_model,
                 key: Mutex::new(None),
             });
 
@@ -145,7 +172,7 @@ pub fn run() {
                             }
                             "lock" => {
                                 if let Some(state) = app.try_state::<AppState>() {
-                                    *state.key.lock().unwrap() = None;
+                                    state.clear_key();
                                 }
                                 let _ = window.emit("app:lock", ());
                                 let _ = window.hide();
@@ -277,7 +304,7 @@ pub fn run() {
                 }
                 if let Some(win) = app_handle_l.get_webview_window("main") {
                     if let Some(state) = _app.try_state::<AppState>() {
-                        *state.key.lock().unwrap() = None;
+                        state.clear_key();
                     }
                     let _ = win.emit("app:lock", ());
                     let _ = win.hide();
@@ -312,6 +339,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             is_first_run,
+            get_security_status,
             setup_master_password,
             unlock_app,
             lock_app,

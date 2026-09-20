@@ -628,7 +628,7 @@ pub fn list_apps_with_icons(
 // ============================================================
 #[tauri::command]
 pub fn get_app_status(state: State<AppState>) -> serde_json::Value {
-    let unlocked = state.key.lock().unwrap().is_some();
+    let unlocked = state.is_unlocked();
     serde_json::json!({
         "unlocked": unlocked,
         "build_timestamp": env!("BUILD_TIMESTAMP"),

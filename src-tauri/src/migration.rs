@@ -98,52 +98,83 @@ pub fn open_v2_db(path: &Path) -> Result<Db, String> {
 }
 
 /// 启动仲裁结果
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DbSelection {
     V2(PathBuf),
     Legacy(PathBuf),
-    Fresh,
+    FreshV2(PathBuf),
+    Blocked(&'static str),
 }
 
-/// 启动仲裁（幂等；含 tmp 清理与 legacy 隔离归档）
-pub fn resolve_startup_db(app_dir: &Path) -> DbSelection {
+/// 启动仲裁。只观察文件系统，绝不在启动时迁移、删除或重命名用户数据。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartupArbitration {
+    pub selection: DbSelection,
+    pub migration_required: bool,
+    pub writes_allowed: bool,
+    pub tmp_present: bool,
+    pub legacy_backup_present: bool,
+    pub stray_legacy_present: bool,
+}
+
+pub fn resolve_startup_db(app_dir: &Path, allow_fresh_v2: bool) -> StartupArbitration {
     let v2 = app_dir.join(V2_DB_FILENAME);
     let tmp = app_dir.join(V2_TMP_FILENAME);
     let legacy = app_dir.join(LEGACY_DB_FILENAME);
+    let backup = app_dir.join(format!("{}{}", LEGACY_DB_FILENAME, LEGACY_BACKUP_SUFFIX));
+    let stray_legacy_present = std::fs::read_dir(app_dir).ok().into_iter().flatten().filter_map(|entry| entry.ok()).any(|entry| entry.file_name().to_string_lossy().starts_with(&format!("{}.stray-", LEGACY_DB_FILENAME)));
 
-    // 上次迁移残留的 tmp：直接清理（重新迁移会重建）
     if tmp.exists() {
-        let _ = std::fs::remove_file(&tmp);
+        return StartupArbitration { selection: DbSelection::Blocked("检测到未完成的 v2 迁移临时库"), migration_required: legacy.exists(), writes_allowed: false, tmp_present: true, legacy_backup_present: backup.exists(), stray_legacy_present };
     }
 
     if v2.exists() {
-        // 隔离归档 legacy 原件（迁移前原件）或降级期 stray（不自动合并）
-        if legacy.exists() {
-            let backup = app_dir.join(format!("{}{}", LEGACY_DB_FILENAME, LEGACY_BACKUP_SUFFIX));
-            let target = if backup.exists() {
-                app_dir.join(format!(
-                    "{}.stray-{}",
-                    LEGACY_DB_FILENAME,
-                    chrono_now_millis()
-                ))
-            } else {
-                backup
-            };
-            let _ = std::fs::rename(&legacy, &target);
-        }
-        return DbSelection::V2(v2);
+        return StartupArbitration { selection: DbSelection::V2(v2), migration_required: false, writes_allowed: true, tmp_present: tmp.exists(), legacy_backup_present: backup.exists(), stray_legacy_present };
     }
     if legacy.exists() {
-        return DbSelection::Legacy(legacy);
+        if backup.exists() {
+            return StartupArbitration { selection: DbSelection::Blocked("legacy 与备份并存但 v2 不存在"), migration_required: true, writes_allowed: false, tmp_present: false, legacy_backup_present: true, stray_legacy_present };
+        }
+        return StartupArbitration { selection: DbSelection::Legacy(legacy), migration_required: true, writes_allowed: true, tmp_present: tmp.exists(), legacy_backup_present: backup.exists(), stray_legacy_present };
     }
-    DbSelection::Fresh
+    if backup.exists() || stray_legacy_present {
+        return StartupArbitration { selection: DbSelection::Blocked("发现遗留数据库痕迹但正式数据库缺失"), migration_required: false, writes_allowed: false, tmp_present: false, legacy_backup_present: backup.exists(), stray_legacy_present };
+    }
+    if allow_fresh_v2 {
+        StartupArbitration { selection: DbSelection::FreshV2(v2), migration_required: false, writes_allowed: true, tmp_present: false, legacy_backup_present: false, stray_legacy_present: false }
+    } else {
+        StartupArbitration { selection: DbSelection::Blocked("Phase 2A 不允许正常启动自动创建 v2 数据库"), migration_required: false, writes_allowed: false, tmp_present: false, legacy_backup_present: false, stray_legacy_present: false }
+    }
 }
 
-fn chrono_now_millis() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
+/// 打开已经完成迁移的 v2 库。不开启 CREATE，也不补 schema；异常状态直接拒绝。
+pub fn open_existing_v2_db(path: &Path) -> Result<Db, String> {
+    let conn = rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
+        .map_err(|_| "v2 数据库无法安全打开".to_string())?;
+    let db = Db { conn: std::sync::Mutex::new(conn) };
+    let version = db.get_setting("security_version").map_err(|_| "v2 安全元数据无效".to_string())?;
+    if version.as_deref() != Some(SECURITY_VERSION_V2) {
+        return Err("v2 安全元数据无效".to_string());
+    }
+    for key in ["kdf_params_m", "wrapped_dek_m", "kdf_params_r", "wrapped_dek_r"] {
+        if db.get_setting(key).map_err(|_| "v2 安全元数据无效".to_string())?.filter(|v| !v.is_empty()).is_none() {
+            return Err("v2 安全元数据无效".to_string());
+        }
+    }
+    {
+        let conn = db.conn.lock().map_err(|_| "v2 数据库无法安全打开".to_string())?;
+        let integrity: String = conn.query_row("PRAGMA integrity_check", [], |row| row.get(0))
+            .map_err(|_| "v2 数据库完整性校验失败".to_string())?;
+        let uuid_columns: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('passwords') WHERE name='record_uuid'",
+            [],
+            |row| row.get(0),
+        ).map_err(|_| "v2 数据库 schema 无效".to_string())?;
+        if integrity != "ok" || uuid_columns != 1 {
+            return Err("v2 数据库完整性或 schema 无效".to_string());
+        }
+    }
+    Ok(db)
 }
 
 /// 迁移引擎错误（本地类型，绕开孤儿规则；Display 不泄漏密码学细节）
@@ -531,6 +562,14 @@ pub fn unlock_v2_core(v2: &Db, password: &str) -> Result<Zeroizing<Vec<u8>>, Str
         .ok_or("安全数据缺失：kdf_params_m")?;
     let params: crypto::KdfParams =
         serde_json::from_str(&params_json).map_err(|_| "主密码不正确或安全数据损坏".to_string())?;
+    if params.algo != "argon2id"
+        || params.version != 1
+        || params.m_cost != 19456
+        || params.t_cost != 2
+        || params.p_cost != 1
+    {
+        return Err("主密码不正确或安全数据损坏".to_string());
+    }
     let wrapped = v2
         .get_setting("wrapped_dek_m")
         .map_err(|e| e.to_string())?
@@ -711,10 +750,15 @@ mod migration_tests {
                 "注入点 {:?}: drawer-v2.db 不得成为 active",
                 fp
             );
-            // 启动仲裁清理：tmp 残留被清掉，仲裁结果仍为 Legacy（可重试迁移）
-            let sel = resolve_startup_db(&dir);
-            assert_eq!(sel, DbSelection::Legacy(dir.join(LEGACY_DB_FILENAME)), "注入点 {:?}", fp);
-            assert!(!dir.join(V2_TMP_FILENAME).exists(), "注入点 {:?}: tmp 残留未清理", fp);
+            // 启动仲裁只观察：tmp 保留给后续明确的恢复流程，仍识别为 Legacy。
+            let sel = resolve_startup_db(&dir, false);
+            if dir.join(V2_TMP_FILENAME).exists() {
+                assert!(matches!(sel.selection, DbSelection::Blocked(_)), "注入点 {:?}: tmp 状态必须 fail closed", fp);
+                assert!(!sel.writes_allowed);
+            } else {
+                assert_eq!(sel.selection, DbSelection::Legacy(dir.join(LEGACY_DB_FILENAME)), "注入点 {:?}", fp);
+            }
+            assert_eq!(sel.tmp_present, dir.join(V2_TMP_FILENAME).exists(), "注入点 {:?}: tmp 状态必须如实报告", fp);
             cleanup_dir(&dir);
         }
     }
@@ -731,51 +775,66 @@ mod migration_tests {
         let d = base.join("c1");
         std::fs::create_dir_all(&d).unwrap();
         mk(&d, LEGACY_DB_FILENAME);
-        assert_eq!(resolve_startup_db(&d), DbSelection::Legacy(d.join(LEGACY_DB_FILENAME)));
+        let a = resolve_startup_db(&d, false); assert_eq!(a.selection, DbSelection::Legacy(d.join(LEGACY_DB_FILENAME))); assert!(a.migration_required); assert!(!d.join(V2_DB_FILENAME).exists());
         // 2. 只有 v2
         let d = base.join("c2");
         std::fs::create_dir_all(&d).unwrap();
         mk(&d, V2_DB_FILENAME);
-        assert_eq!(resolve_startup_db(&d), DbSelection::V2(d.join(V2_DB_FILENAME)));
-        // 3. 两者都有 → v2 胜出 + legacy 隔离归档
+        assert_eq!(resolve_startup_db(&d, false).selection, DbSelection::V2(d.join(V2_DB_FILENAME)));
+        // 3. 两者都有 → v2 胜出，legacy 保留且绝不被启动路径改写
         let d = base.join("c3");
         std::fs::create_dir_all(&d).unwrap();
         mk(&d, LEGACY_DB_FILENAME);
         mk(&d, V2_DB_FILENAME);
-        assert_eq!(resolve_startup_db(&d), DbSelection::V2(d.join(V2_DB_FILENAME)));
-        assert!(!d.join(LEGACY_DB_FILENAME).exists(), "legacy 应被归档改名");
-        assert!(d.join(format!("{}{}", LEGACY_DB_FILENAME, LEGACY_BACKUP_SUFFIX)).exists());
+        assert_eq!(resolve_startup_db(&d, false).selection, DbSelection::V2(d.join(V2_DB_FILENAME)));
+        assert!(d.join(LEGACY_DB_FILENAME).exists(), "legacy 必须保留");
         // 4. 两者皆无
         let d = base.join("c4");
         std::fs::create_dir_all(&d).unwrap();
-        assert_eq!(resolve_startup_db(&d), DbSelection::Fresh);
-        // 5. 存在 tmp → 清理
+        assert!(matches!(resolve_startup_db(&d, false).selection, DbSelection::Blocked(_)));
+        assert_eq!(resolve_startup_db(&d, true).selection, DbSelection::FreshV2(d.join(V2_DB_FILENAME)));
+        assert!(!d.join(V2_DB_FILENAME).exists(), "仲裁本身不得创建数据库");
+        // 5. 存在 tmp → 不可作为 active DB，也不在启动时删除
         let d = base.join("c5");
         std::fs::create_dir_all(&d).unwrap();
         mk(&d, V2_TMP_FILENAME);
         mk(&d, V2_DB_FILENAME);
-        assert_eq!(resolve_startup_db(&d), DbSelection::V2(d.join(V2_DB_FILENAME)));
-        assert!(!d.join(V2_TMP_FILENAME).exists(), "tmp 必须被清理");
+        let a = resolve_startup_db(&d, false); assert!(matches!(a.selection, DbSelection::Blocked(_))); assert!(a.tmp_present); assert!(!a.writes_allowed);
+        assert!(d.join(V2_TMP_FILENAME).exists(), "tmp 必须保留供明确恢复流程处理");
         // 6. 存在 legacy backup + v2（正常升级后状态）
         let d = base.join("c6");
         std::fs::create_dir_all(&d).unwrap();
         mk(&d, V2_DB_FILENAME);
         mk(&d, format!("{}{}", LEGACY_DB_FILENAME, LEGACY_BACKUP_SUFFIX).as_str());
-        assert_eq!(resolve_startup_db(&d), DbSelection::V2(d.join(V2_DB_FILENAME)));
-        // 7. downgrade stray：backup 已存在 + 出现新的 legacy → 封存为 stray
+        assert_eq!(resolve_startup_db(&d, false).selection, DbSelection::V2(d.join(V2_DB_FILENAME)));
+        // 7. stray 被显式报告，仲裁不重命名任何文件
         let d = base.join("c7");
         std::fs::create_dir_all(&d).unwrap();
         mk(&d, V2_DB_FILENAME);
         mk(&d, format!("{}{}", LEGACY_DB_FILENAME, LEGACY_BACKUP_SUFFIX).as_str());
         mk(&d, LEGACY_DB_FILENAME);
-        assert_eq!(resolve_startup_db(&d), DbSelection::V2(d.join(V2_DB_FILENAME)));
-        assert!(!d.join(LEGACY_DB_FILENAME).exists(), "stray 应被封存改名");
-        let strays: Vec<_> = std::fs::read_dir(&d)
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_name().to_string_lossy().contains(".stray-"))
-            .collect();
-        assert_eq!(strays.len(), 1, "stray 必须恰好 1 个");
+        mk(&d, format!("{}.stray-fixture", LEGACY_DB_FILENAME).as_str());
+        let a = resolve_startup_db(&d, false);
+        assert_eq!(a.selection, DbSelection::V2(d.join(V2_DB_FILENAME)));
+        assert!(d.join(LEGACY_DB_FILENAME).exists(), "legacy 不得被启动仲裁改写");
+        assert!(a.stray_legacy_present);
+
+        // 8. backup + legacy 但无 v2：状态矛盾，禁止猜测 active DB。
+        let d = base.join("c8");
+        std::fs::create_dir_all(&d).unwrap();
+        mk(&d, LEGACY_DB_FILENAME);
+        mk(&d, format!("{}{}", LEGACY_DB_FILENAME, LEGACY_BACKUP_SUFFIX).as_str());
+        let a = resolve_startup_db(&d, false);
+        assert!(matches!(a.selection, DbSelection::Blocked(_)));
+        assert!(!a.writes_allowed);
+
+        // 9. 仅 tmp：不得把 tmp 当正式库，也不得顺手创建空 v2。
+        let d = base.join("c9");
+        std::fs::create_dir_all(&d).unwrap();
+        mk(&d, V2_TMP_FILENAME);
+        let a = resolve_startup_db(&d, true);
+        assert!(matches!(a.selection, DbSelection::Blocked(_)));
+        assert!(!d.join(V2_DB_FILENAME).exists());
         cleanup_dir(&base);
     }
 
@@ -791,6 +850,30 @@ mod migration_tests {
         let err = unlock_v2_core(&v2, "wrong-password").unwrap_err();
         assert_eq!(err, "主密码不正确或安全数据损坏", "错误消息必须统一");
         drop(v2);
+        cleanup_dir(&dir);
+    }
+
+    #[test]
+    fn i1_i7_v2_unlock_stores_expected_stable_dek() {
+        let dir = temp_app_dir("i1-i7");
+        build_legacy_fixture(&dir, MASTER);
+        let output = migrate_legacy_to_v2(&dir, MASTER).unwrap();
+        let expected = output.dek.to_vec();
+        let state = crate::AppState {
+            db: std::sync::Mutex::new(open_existing_v2_db(&output.v2_path).unwrap()),
+            db_path: output.v2_path.clone(),
+            security_model: crate::SecurityModel::StableDekV2,
+            key: std::sync::Mutex::new(None),
+        };
+        let hash_before = file_hash(&output.v2_path);
+        assert!(state.unlock_v2_and_store("wrong-password").is_err());
+        assert!(state.stable_dek().is_err(), "错误密码不得污染 AppState");
+        assert_eq!(file_hash(&output.v2_path), hash_before, "错误密码不得修改 v2 DB");
+        state.unlock_v2_and_store(MASTER).unwrap();
+        assert_eq!(state.stable_dek().unwrap().to_vec(), expected);
+        assert!(state.legacy_key().is_err());
+        state.clear_key();
+        drop(state);
         cleanup_dir(&dir);
     }
 

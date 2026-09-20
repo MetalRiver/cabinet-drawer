@@ -5,8 +5,13 @@ use tauri::State;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 
 use crate::crypto;
-use crate::db::Db;
-use crate::AppState;
+use crate::{AppState, SecurityModel};
+use zeroize::Zeroizing;
+
+#[derive(serde::Serialize)]
+pub struct SecurityStatus { security_model: &'static str, migration_required: bool, write_allowed: bool }
+#[tauri::command]
+pub fn get_security_status(state: State<AppState>) -> SecurityStatus { match state.security_model { SecurityModel::Legacy => SecurityStatus { security_model: "legacy_security_model", migration_required: true, write_allowed: true }, SecurityModel::StableDekV2 => SecurityStatus { security_model: "stable_dek_v2", migration_required: false, write_allowed: true } } }
 
 // ============================================================
 // 🔒 首次启动判断
@@ -15,7 +20,7 @@ use crate::AppState;
 pub fn is_first_run(state: State<AppState>) -> bool {
     eprintln!("[IPC] is_first_run ENTER");
     let db = state.db.lock().unwrap();
-    let r = db.get_setting("master_password_hash").map(|v| v.is_none()).unwrap_or(true);
+    let r = match state.security_model { SecurityModel::Legacy => db.get_setting("master_password_hash").map(|v| v.is_none()).unwrap_or(true), SecurityModel::StableDekV2 => db.get_setting("security_version").map(|v| v.is_none()).unwrap_or(true) };
     eprintln!("[IPC] is_first_run EXIT -> {}", r);
     r
 }
@@ -29,6 +34,7 @@ pub fn setup_master_password(
     master_password: String,
     recovery_phrase: Vec<String>,
 ) -> Result<(), String> {
+    state.require_legacy_model()?;
     if master_password.len() < 6 {
         return Err("主密码长度至少 6 位".to_string());
     }
@@ -37,7 +43,7 @@ pub fn setup_master_password(
     }
 
     let salt = crypto::generate_salt();
-    let key = crypto::derive_key(&master_password, &salt);
+    let key = Zeroizing::new(crypto::derive_key(&master_password, &salt));
     let hash = crypto::hash_password(&master_password, &salt);
     let salt_b64 = BASE64.encode(&salt);
     let recovery_json = serde_json::to_string(&recovery_phrase).map_err(|e| e.to_string())?;
@@ -55,6 +61,7 @@ pub fn setup_master_password(
 // ============================================================
 #[tauri::command]
 pub fn unlock_app(state: State<AppState>, master_password: String) -> Result<Vec<String>, String> {
+    if state.security_model == SecurityModel::StableDekV2 { state.unlock_v2_and_store(&master_password)?; return Ok(Vec::new()); }
     let db = state.db.lock().unwrap();
 
     let hash = db.get_setting("master_password_hash")
@@ -69,7 +76,7 @@ pub fn unlock_app(state: State<AppState>, master_password: String) -> Result<Vec
         return Err("主密码错误".to_string());
     }
 
-    let key = crypto::derive_key(&master_password, &salt);
+    let key = Zeroizing::new(crypto::derive_key(&master_password, &salt));
     drop(db);
 
     // 解密恢复短语返回给前端展示
@@ -85,7 +92,7 @@ pub fn unlock_app(state: State<AppState>, master_password: String) -> Result<Vec
     let recovery: Vec<String> = serde_json::from_str(&recovery_json).unwrap_or_default();
     drop(db);
 
-    *state.key.lock().unwrap() = Some(key);
+    state.set_legacy_key(key);
     Ok(recovery)
 }
 
@@ -105,6 +112,7 @@ pub fn change_master_password(
     current_password: String,
     new_password: String,
 ) -> Result<ReencryptStats, String> {
+    state.require_legacy_model()?;
     if new_password.len() < 6 {
         return Err("新主密码长度至少 6 位".to_string());
     }
@@ -126,7 +134,7 @@ pub fn change_master_password(
     if crypto::hash_password(&current_password, &old_salt) != old_hash {
         return Err("当前主密码错误".to_string());
     }
-    let old_key = crypto::derive_key(&current_password, &old_salt);
+    let old_key = Zeroizing::new(crypto::derive_key(&current_password, &old_salt));
 
     // 3. 读所有密码 + 恢复短语
     let passwords = db
@@ -144,7 +152,7 @@ pub fn change_master_password(
 
     // 4. 派生新 key
     let new_salt = crypto::generate_salt();
-    let new_key = crypto::derive_key(&new_password, &new_salt);
+    let new_key = Zeroizing::new(crypto::derive_key(&new_password, &new_salt));
     let new_hash = crypto::hash_password(&new_password, &new_salt);
     let new_salt_b64 = BASE64.encode(&new_salt);
 
@@ -192,7 +200,7 @@ pub fn change_master_password(
     drop(db);
 
     // 8. 写入新 key 到内存（保持解锁状态，不需重新输入）
-    *state.key.lock().unwrap() = Some(new_key);
+    state.set_legacy_key(new_key);
 
     Ok(ReencryptStats {
         passwords_reencrypted: reencrypted_passwords,
@@ -206,7 +214,7 @@ pub fn change_master_password(
 // ============================================================
 #[tauri::command]
 pub fn lock_app(state: State<AppState>) {
-    *state.key.lock().unwrap() = None;
+    state.clear_key();
 }
 
 // ============================================================
@@ -214,6 +222,7 @@ pub fn lock_app(state: State<AppState>) {
 // ============================================================
 #[tauri::command]
 pub fn has_second_password(state: State<AppState>) -> bool {
+    if state.security_model != SecurityModel::Legacy { return false; }
     let db = match state.db.lock() {
         Ok(g) => g,
         Err(_) => return false,
@@ -230,6 +239,7 @@ pub fn change_second_password(
     old_verify_input: String,
     new_second_password_opt: Option<String>,
 ) -> Result<(), String> {
+    state.require_legacy_model()?;
     let db = state.db.lock().map_err(|e| e.to_string())?;
     let has_2nd = matches!(db.get_setting("pw2nd_hash"), Ok(Some(v)) if !v.is_empty());
 
@@ -299,6 +309,7 @@ pub fn change_second_password(
 // ============================================================
 #[tauri::command]
 pub fn verify_password_for_pw_view(state: State<AppState>, input_password: String) -> bool {
+    if state.security_model != SecurityModel::Legacy { return false; }
     let db = match state.db.lock() {
         Ok(g) => g,
         Err(_) => return false,
@@ -349,6 +360,7 @@ pub fn rescue_passwords_with_master(
     state: State<AppState>,
     old_master_password: String,
 ) -> Result<RescueStats, String> {
+    state.require_legacy_model()?;
     if old_master_password.len() < 6 {
         return Err("主密码长度至少 6 位".to_string());
     }
@@ -362,11 +374,10 @@ pub fn rescue_passwords_with_master(
     let mp_salt = BASE64.decode(&mp_salt_b64).map_err(|e| e.to_string())?;
 
     // 2. 派生 OLD_KEY（用户记得的「当初加密时的主密码」+ 不变的 salt）
-    let old_key = crypto::derive_key(&old_master_password, &mp_salt);
+    let old_key = Zeroizing::new(crypto::derive_key(&old_master_password, &mp_salt));
 
-    // 3. 当前密钥（NEW_KEY）：state.key 里的（解锁 app 时主密码派生的那个）
-    let new_key_opt = state.key.lock().unwrap().clone();
-    let new_key = new_key_opt.ok_or_else(|| "应用未解锁，请先解锁主界面再救援".to_string())?;
+    // 3. 当前 legacy key（v2 Stable DEK 无法进入此分支）
+    let new_key = state.legacy_key().map_err(|_| "应用未解锁，请先解锁主界面再救援".to_string())?;
 
     // 4. 读所有密码密文
     let passwords = db.list_passwords_full().map_err(|e| e.to_string())?;
