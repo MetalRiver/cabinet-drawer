@@ -12,6 +12,7 @@ use tauri_plugin_clipboard_manager::ClipboardExt;
 use std::os::windows::process::CommandExt;
 
 mod db;
+pub mod migration;
 mod crypto;
 mod backup;
 #[cfg(windows)]
