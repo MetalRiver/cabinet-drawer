@@ -81,6 +81,20 @@ pub fn recover_v2_with_phrase(
 }
 
 // ============================================================
+// 🔒 v2 普通修改主密码：验证旧 wrap → 原子重包同一个 Stable DEK
+// ============================================================
+#[tauri::command]
+pub fn change_v2_master_password(
+    state: State<AppState>,
+    current_password: String,
+    new_password: String,
+) -> Result<(), String> {
+    let current_password = Zeroizing::new(current_password);
+    let new_password = Zeroizing::new(new_password);
+    state.change_v2_master_password(current_password.as_str(), new_password.as_str())
+}
+
+// ============================================================
 // 🔒 设置主密码（首次启动向导）
 // ============================================================
 #[tauri::command]

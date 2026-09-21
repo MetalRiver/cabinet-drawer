@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, reactive, watch, onMounted, computed } from "vue";
+import { ref, reactive, watch, onMounted, onUnmounted, computed } from "vue";
 import { useRouter } from "vue-router";
 import { useWidgetStore } from "../stores/widget";
 import { useSoftwareStore } from "../stores/software";
@@ -19,6 +19,8 @@ import {
   getSetting,
   setSetting,
   changeMasterPassword,
+  changeV2MasterPassword,
+  getSecurityStatus,
   rescuePasswordsWithMaster,
   hasSecondPassword as apiHasSecondPassword,
   changeSecondPassword,
@@ -113,24 +115,43 @@ const newPassword = ref("");
 const confirmPassword = ref("");
 const pwChanging = ref(false);
 const pwChangeResult = ref("");
+const securityModel = ref<"legacy_security_model" | "stable_dek_v2" | null>(null);
+const isV2Security = computed(() => securityModel.value === "stable_dek_v2");
+async function loadSecurityModel() {
+  try { securityModel.value = (await getSecurityStatus()).security_model; }
+  catch { securityModel.value = null; }
+}
+onMounted(loadSecurityModel);
+function clearMasterPasswordInputs() {
+  currentPassword.value = "";
+  newPassword.value = "";
+  confirmPassword.value = "";
+}
+onUnmounted(clearMasterPasswordInputs);
 async function onChangePassword() {
   if (pwChanging.value) return;
   if (!currentPassword.value) { pwChangeResult.value = "请输入当前密码"; return; }
   if (newPassword.value.length < 6) { pwChangeResult.value = "新密码至少 6 位"; return; }
   if (newPassword.value !== confirmPassword.value) { pwChangeResult.value = "两次输入的新密码不一致"; return; }
   if (newPassword.value === currentPassword.value) { pwChangeResult.value = "新密码不能与当前密码相同"; return; }
-  if (!confirm("修改主密码将重新加密所有密码和恢复短语（约 1-3 秒），确定吗？")) return;
+  if (securityModel.value === null) { pwChangeResult.value = "无法确认当前安全模式，请重试"; return; }
+  if (!isV2Security.value && !confirm("修改主密码将重新加密所有密码和恢复短语（约 1-3 秒），确定吗？")) return;
   pwChanging.value = true;
-  pwChangeResult.value = "正在重加密…";
+  pwChangeResult.value = isV2Security.value ? "正在保存…" : "正在重加密…";
   try {
-    const stats = await changeMasterPassword(currentPassword.value, newPassword.value);
-    void passwordStore.refresh();
-    const lines = [`✓ 已重加密 ${stats.passwords_reencrypted} 条密码`];
-    if (stats.recovery_phrase_reencrypted) lines.push("✓ 恢复短语已重加密");
-    if (stats.passwords_failed > 0) lines.push(`⚠ ${stats.passwords_failed} 条无法解密（已跳过）`);
-    pwChangeResult.value = lines.join(" · ");
+    if (isV2Security.value) {
+      await changeV2MasterPassword(currentPassword.value, newPassword.value);
+      pwChangeResult.value = "✓ 主密码已更新，恢复短语和密码数据保持不变";
+    } else {
+      const stats = await changeMasterPassword(currentPassword.value, newPassword.value);
+      void passwordStore.refresh();
+      const lines = [`✓ 已重加密 ${stats.passwords_reencrypted} 条密码`];
+      if (stats.recovery_phrase_reencrypted) lines.push("✓ 恢复短语已重加密");
+      if (stats.passwords_failed > 0) lines.push(`⚠ ${stats.passwords_failed} 条无法解密（已跳过）`);
+      pwChangeResult.value = lines.join(" · ");
+    }
     appStore.showClipToast("success", "主密码已更新");
-    currentPassword.value = ""; newPassword.value = ""; confirmPassword.value = "";
+    clearMasterPasswordInputs();
   } catch (e) {
     pwChangeResult.value = "✗ 失败：" + String(e);
   } finally { pwChanging.value = false; }
@@ -603,7 +624,8 @@ onMounted(() => {
           <span class="section-badge section-badge-purple">核心</span>
         </div>
         <p class="section-hint section-hint-purple">
-          修改后会立即用新密码重加密所有密码条目和恢复短语（保持解锁状态，无需重新输入）。<br>
+          <template v-if="isV2Security">修改后只更新主密码保护，密码数据与 Recovery Phrase 保持不变。</template>
+          <template v-else>修改后会立即用新密码重加密所有密码条目和恢复短语（保持解锁状态，无需重新输入）。</template><br>
           <b>注意：</b> 修改主密码 <b>不会</b> 影响您的「独立二次验证密码」（两套密码独立）。
         </p>
         <div class="form-grid">
@@ -622,7 +644,7 @@ onMounted(() => {
         </div>
         <div class="action-row">
           <button class="btn-primary" :disabled="pwChanging" @click="onChangePassword" data-interactive>
-            {{ pwChanging ? "重加密中…" : "🔐 修改主密码" }}
+            {{ pwChanging ? (isV2Security ? "保存中…" : "重加密中…") : "🔐 修改主密码" }}
           </button>
         </div>
         <p v-if="pwChangeResult" class="hint-inline" :class="{ 'hint-ok': pwChangeResult.startsWith('✓'), 'hint-err': pwChangeResult.startsWith('✗') }">

@@ -317,7 +317,7 @@ mod phase2a2_tests {
             security_model: SecurityModel::StableDekV2,
             startup_mode: Mutex::new(crate::StartupMode::ExistingV2),
             pending_v2: Mutex::new(None),
-            recovery_gate: Mutex::new(()),
+            master_wrap_gate: Mutex::new(()),
             key: Mutex::new(None),
         };
         state.set_stable_dek(Zeroizing::new(V2_DEK.to_vec()));
@@ -336,7 +336,7 @@ mod phase2a2_tests {
             security_model: SecurityModel::Legacy,
             startup_mode: Mutex::new(crate::StartupMode::Legacy),
             pending_v2: Mutex::new(None),
-            recovery_gate: Mutex::new(()),
+            master_wrap_gate: Mutex::new(()),
             key: Mutex::new(None),
         };
         state.set_legacy_key(Zeroizing::new(key.to_vec()));

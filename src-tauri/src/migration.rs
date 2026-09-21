@@ -847,10 +847,10 @@ pub fn recover_v2_core(v2: &Db, recovery_phrase: &str) -> Result<Zeroizing<Vec<u
 
 /// 主密码重包故障注入点。生产入口始终传 None。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RecoveryResetFailPoint {
+pub enum MasterRewrapFailPoint {
     AfterNewSalt,
     AfterMasterKek,
-    BeforeMetadataWrite,
+    AfterWrappedDek,
     DuringMetadataWrite,
     BeforeCommit,
 }
@@ -869,26 +869,74 @@ pub fn recover_v2_with_phrase_inject(
     v2: &Db,
     recovery_phrase: &str,
     new_master_password: &str,
-    fail_at: Option<RecoveryResetFailPoint>,
+    fail_at: Option<MasterRewrapFailPoint>,
 ) -> Result<Zeroizing<Vec<u8>>, String> {
     if new_master_password.len() < 6 {
         return Err("新主密码长度至少 6 位".to_string());
     }
-    let fail = |point| fail_at == Some(point);
     let dek = recover_v2_core(v2, recovery_phrase)?;
+    rewrap_master_dek_inject(v2, dek.as_slice(), new_master_password, fail_at)?;
+    Ok(dek)
+}
+
+/// 已知旧主密码时的 v2 普通改密。旧 wrap 必须真实解封，且结果必须等于当前活动 DEK。
+pub fn change_v2_master_password(
+    v2: &Db,
+    current_password: &str,
+    new_master_password: &str,
+    active_dek: &[u8],
+) -> Result<(), String> {
+    change_v2_master_password_inject(
+        v2,
+        current_password,
+        new_master_password,
+        active_dek,
+        None,
+    )
+}
+
+pub fn change_v2_master_password_inject(
+    v2: &Db,
+    current_password: &str,
+    new_master_password: &str,
+    active_dek: &[u8],
+    fail_at: Option<MasterRewrapFailPoint>,
+) -> Result<(), String> {
+    if new_master_password.len() < 6 {
+        return Err("新主密码长度至少 6 位".to_string());
+    }
+    if new_master_password == current_password {
+        return Err("新主密码必须与当前主密码不同".to_string());
+    }
+    let verified_dek = unlock_v2_core(v2, current_password)
+        .map_err(|_| "当前主密码错误".to_string())?;
+    if verified_dek.as_slice() != active_dek {
+        return Err("活动密钥与安全数据库不一致".to_string());
+    }
+    rewrap_master_dek_inject(v2, verified_dek.as_slice(), new_master_password, fail_at)
+}
+
+/// 共用的 master-wrap 原子更新。调用方必须先完成 Master 或 Recovery 身份验证。
+fn rewrap_master_dek_inject(
+    v2: &Db,
+    dek: &[u8],
+    new_master_password: &str,
+    fail_at: Option<MasterRewrapFailPoint>,
+) -> Result<(), String> {
+    let fail = |point| fail_at == Some(point);
     let salt_m = Zeroizing::new(crypto::generate_salt());
-    if fail(RecoveryResetFailPoint::AfterNewSalt) {
+    if fail(MasterRewrapFailPoint::AfterNewSalt) {
         return Err("injected:AfterNewSalt".to_string());
     }
     let params_m = crypto::default_kdf_params(crypto::b64_encode(&salt_m));
     let kek_m = crypto::derive_master_kek(new_master_password, &params_m);
-    if fail(RecoveryResetFailPoint::AfterMasterKek) {
+    if fail(MasterRewrapFailPoint::AfterMasterKek) {
         return Err("injected:AfterMasterKek".to_string());
     }
-    let wrapped_m = crypto::wrap_dek(&dek, &kek_m, crypto::AAD_WRAP_MASTER)
+    let wrapped_m = crypto::wrap_dek(dek, &kek_m, crypto::AAD_WRAP_MASTER)
         .map_err(|_| "无法设置新主密码".to_string())?;
-    if fail(RecoveryResetFailPoint::BeforeMetadataWrite) {
-        return Err("injected:BeforeMetadataWrite".to_string());
+    if fail(MasterRewrapFailPoint::AfterWrappedDek) {
+        return Err("injected:AfterWrappedDek".to_string());
     }
     let params_json = serde_json::to_string(&params_m)
         .map_err(|_| "无法设置新主密码".to_string())?;
@@ -909,7 +957,7 @@ pub fn recover_v2_with_phrase_inject(
     if params_updated != 1 {
         return Err("无法设置新主密码".to_string());
     }
-    if fail(RecoveryResetFailPoint::DuringMetadataWrite) {
+    if fail(MasterRewrapFailPoint::DuringMetadataWrite) {
         return Err("injected:DuringMetadataWrite".to_string());
     }
     let wrap_updated = tx
@@ -921,12 +969,12 @@ pub fn recover_v2_with_phrase_inject(
     if wrap_updated != 1 {
         return Err("无法设置新主密码".to_string());
     }
-    if fail(RecoveryResetFailPoint::BeforeCommit) {
+    if fail(MasterRewrapFailPoint::BeforeCommit) {
         return Err("injected:BeforeCommit".to_string());
     }
     tx.commit()
         .map_err(|_| "无法设置新主密码".to_string())?;
-    Ok(dek)
+    Ok(())
 }
 
 fn chrono_now_millis_unused_guard() {}
@@ -1215,7 +1263,7 @@ mod migration_tests {
             security_model: crate::SecurityModel::StableDekV2,
             startup_mode: std::sync::Mutex::new(crate::StartupMode::ExistingV2),
             pending_v2: std::sync::Mutex::new(None),
-            recovery_gate: std::sync::Mutex::new(()),
+            master_wrap_gate: std::sync::Mutex::new(()),
             key: std::sync::Mutex::new(None),
         };
         let hash_before = file_hash(&output.v2_path);
@@ -1237,7 +1285,7 @@ mod migration_tests {
             security_model: crate::SecurityModel::StableDekV2,
             startup_mode: std::sync::Mutex::new(crate::StartupMode::FreshV2),
             pending_v2: std::sync::Mutex::new(None),
-            recovery_gate: std::sync::Mutex::new(()),
+            master_wrap_gate: std::sync::Mutex::new(()),
             key: std::sync::Mutex::new(None),
         }
     }
@@ -1500,7 +1548,7 @@ mod migration_tests {
             security_model: crate::SecurityModel::Legacy,
             startup_mode: std::sync::Mutex::new(crate::StartupMode::Legacy),
             pending_v2: std::sync::Mutex::new(None),
-            recovery_gate: std::sync::Mutex::new(()),
+            master_wrap_gate: std::sync::Mutex::new(()),
             key: std::sync::Mutex::new(None),
         };
         assert!(legacy_state.verify_v2_recovery_phrase(&words.join(" ")).is_err());
@@ -1627,11 +1675,11 @@ mod migration_tests {
     #[test]
     fn r6_every_master_rewrap_failure_rolls_back_atomically() {
         let fail_points = [
-            RecoveryResetFailPoint::AfterNewSalt,
-            RecoveryResetFailPoint::AfterMasterKek,
-            RecoveryResetFailPoint::BeforeMetadataWrite,
-            RecoveryResetFailPoint::DuringMetadataWrite,
-            RecoveryResetFailPoint::BeforeCommit,
+            MasterRewrapFailPoint::AfterNewSalt,
+            MasterRewrapFailPoint::AfterMasterKek,
+            MasterRewrapFailPoint::AfterWrappedDek,
+            MasterRewrapFailPoint::DuringMetadataWrite,
+            MasterRewrapFailPoint::BeforeCommit,
         ];
         for (index, fail_point) in fail_points.into_iter().enumerate() {
             let (dir, state, words, expected) = completed_v2_state(&format!("r6_{index}"));
@@ -1679,6 +1727,294 @@ mod migration_tests {
             unlock_v2_core(&db, "New-Master-Password!").unwrap().to_vec(),
             expected
         );
+        drop(db);
+        drop(state);
+        cleanup_dir(&dir);
+    }
+
+    // ===== Phase 2B.3a：已知旧主密码 → 普通修改主密码 =====
+    fn security_metadata_snapshot(
+        db: &Db,
+    ) -> (Option<String>, Option<String>, Option<String>, Option<String>, Option<String>) {
+        (
+            db.get_setting("kdf_params_m").unwrap(),
+            db.get_setting("wrapped_dek_m").unwrap(),
+            db.get_setting("kdf_params_r").unwrap(),
+            db.get_setting("wrapped_dek_r").unwrap(),
+            db.get_setting("security_version").unwrap(),
+        )
+    }
+
+    #[test]
+    fn m1_correct_old_master_enables_new_master_and_invalidates_old() {
+        let (dir, state, _, expected) = completed_v2_state("m1");
+        state.unlock_v2_and_store(MASTER).unwrap();
+        state
+            .change_v2_master_password(MASTER, "M1-New-Master!")
+            .unwrap();
+        let db = state.db.lock().unwrap();
+        assert!(unlock_v2_core(&db, MASTER).is_err());
+        assert_eq!(
+            unlock_v2_core(&db, "M1-New-Master!").unwrap().to_vec(),
+            expected
+        );
+        drop(db);
+        drop(state);
+        cleanup_dir(&dir);
+    }
+
+    #[test]
+    fn m2_wrong_old_master_changes_neither_db_nor_app_state() {
+        let (dir, state, _, expected) = completed_v2_state("m2");
+        state.unlock_v2_and_store(MASTER).unwrap();
+        let path = dir.join(V2_DB_FILENAME);
+        let hash_before = file_hash(&path);
+        let metadata_before = security_metadata_snapshot(&state.db.lock().unwrap());
+
+        assert!(state
+            .change_v2_master_password("wrong-old-master", "M2-New-Master!")
+            .is_err());
+        assert_eq!(file_hash(&path), hash_before);
+        assert_eq!(security_metadata_snapshot(&state.db.lock().unwrap()), metadata_before);
+        assert_eq!(state.stable_dek().unwrap().to_vec(), expected);
+        drop(state);
+        cleanup_dir(&dir);
+    }
+
+    #[test]
+    fn m3_stable_dek_and_active_app_state_key_are_identical_after_change() {
+        let (dir, state, _, expected) = completed_v2_state("m3");
+        state.unlock_v2_and_store(MASTER).unwrap();
+        let active_before = state.stable_dek().unwrap().to_vec();
+        state
+            .change_v2_master_password(MASTER, "M3-New-Master!")
+            .unwrap();
+        assert_eq!(active_before, expected);
+        assert_eq!(state.stable_dek().unwrap().to_vec(), active_before);
+        let db = state.db.lock().unwrap();
+        assert_eq!(
+            unlock_v2_core(&db, "M3-New-Master!").unwrap().to_vec(),
+            expected
+        );
+        drop(db);
+        drop(state);
+        cleanup_dir(&dir);
+    }
+
+    #[test]
+    fn m4_password_ciphertext_and_record_uuid_remain_byte_for_byte_unchanged() {
+        let (dir, state, _, expected) = completed_v2_state("m4");
+        state.unlock_v2_and_store(MASTER).unwrap();
+        let uuids = [
+            "3cf44ab9-7780-4d7d-b96c-378894036d43",
+            "0799a190-c46d-466c-a1cc-d54c2ec0f81e",
+            "968920cf-28ce-435e-b5fc-558d37f8ba74",
+        ];
+        let mut ids = Vec::new();
+        for (index, record_uuid) in uuids.iter().enumerate() {
+            let ciphertext = crypto::encrypt_password_dw2(
+                &format!("m4-secret-{index}"),
+                &expected,
+                record_uuid,
+            )
+            .unwrap();
+            ids.push(
+                state
+                    .db
+                    .lock()
+                    .unwrap()
+                    .create_password_v2(record_uuid, "fixture", "user", &ciphertext, "", "")
+                    .unwrap(),
+            );
+        }
+        let before: Vec<_> = ids
+            .iter()
+            .map(|id| state.db.lock().unwrap().get_password_v2_snapshot(*id).unwrap().unwrap())
+            .collect();
+        state
+            .change_v2_master_password(MASTER, "M4-New-Master!")
+            .unwrap();
+        let after: Vec<_> = ids
+            .iter()
+            .map(|id| state.db.lock().unwrap().get_password_v2_snapshot(*id).unwrap().unwrap())
+            .collect();
+        for (before, after) in before.iter().zip(after.iter()) {
+            assert_eq!(after.record_uuid, before.record_uuid);
+            assert_eq!(after.encrypted_password, before.encrypted_password);
+        }
+        drop(state);
+        cleanup_dir(&dir);
+    }
+
+    #[test]
+    fn m5_recovery_wrap_and_metadata_remain_byte_for_byte_unchanged() {
+        let (dir, state, words, expected) = completed_v2_state("m5");
+        state.unlock_v2_and_store(MASTER).unwrap();
+        let before = security_metadata_snapshot(&state.db.lock().unwrap());
+        state
+            .change_v2_master_password(MASTER, "M5-New-Master!")
+            .unwrap();
+        let db = state.db.lock().unwrap();
+        let after = security_metadata_snapshot(&db);
+        assert_ne!(after.0, before.0, "master KDF metadata 必须更新");
+        assert_ne!(after.1, before.1, "master wrap 必须更新");
+        assert_eq!(after.2, before.2, "Recovery KDF metadata 不得变化");
+        assert_eq!(after.3, before.3, "Recovery wrap 不得变化");
+        assert_eq!(after.4, before.4, "security_version 不得变化");
+        assert_eq!(recover_v2_core(&db, &words.join(" ")).unwrap().to_vec(), expected);
+        drop(db);
+        drop(state);
+        cleanup_dir(&dir);
+    }
+
+    #[test]
+    fn m6_every_master_change_failure_point_keeps_old_master_valid() {
+        let fail_points = [
+            MasterRewrapFailPoint::AfterNewSalt,
+            MasterRewrapFailPoint::AfterMasterKek,
+            MasterRewrapFailPoint::AfterWrappedDek,
+            MasterRewrapFailPoint::DuringMetadataWrite,
+            MasterRewrapFailPoint::BeforeCommit,
+        ];
+        for (index, fail_point) in fail_points.into_iter().enumerate() {
+            let (dir, state, _, expected) = completed_v2_state(&format!("m6_{index}"));
+            state.unlock_v2_and_store(MASTER).unwrap();
+            let active = state.stable_dek().unwrap();
+            let db = state.db.lock().unwrap();
+            let before = security_metadata_snapshot(&db);
+            assert!(change_v2_master_password_inject(
+                &db,
+                MASTER,
+                "M6-New-Master!",
+                active.as_slice(),
+                Some(fail_point),
+            )
+            .is_err());
+            assert_eq!(security_metadata_snapshot(&db), before);
+            assert_eq!(unlock_v2_core(&db, MASTER).unwrap().to_vec(), expected);
+            assert!(unlock_v2_core(&db, "M6-New-Master!").is_err());
+            drop(db);
+            drop(active);
+            drop(state);
+            cleanup_dir(&dir);
+        }
+    }
+
+    #[test]
+    fn m7_concurrent_master_changes_allow_exactly_one_complete_commit() {
+        use std::sync::{Arc, Barrier};
+
+        let (dir, state, _, expected) = completed_v2_state("m7");
+        state.unlock_v2_and_store(MASTER).unwrap();
+        let state = Arc::new(state);
+        let barrier = Arc::new(Barrier::new(2));
+        let new_passwords = ["M7-New-Master-A!", "M7-New-Master-B!"];
+        let mut handles = Vec::new();
+        for new_password in new_passwords {
+            let state = Arc::clone(&state);
+            let barrier = Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                state.change_v2_master_password(MASTER, new_password)
+            }));
+        }
+        let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(results.iter().filter(|result| result.is_err()).count(), 1);
+        assert_eq!(state.stable_dek().unwrap().to_vec(), expected);
+        let db = state.db.lock().unwrap();
+        let valid_new: Vec<_> = new_passwords
+            .iter()
+            .filter_map(|password| unlock_v2_core(&db, password).ok())
+            .collect();
+        assert_eq!(valid_new.len(), 1, "最终 metadata 必须完整属于一个请求");
+        assert_eq!(valid_new[0].to_vec(), expected);
+        assert!(unlock_v2_core(&db, MASTER).is_err());
+        drop(db);
+        drop(state);
+        cleanup_dir(&dir);
+    }
+
+    #[test]
+    fn m8_same_password_and_legacy_api_calls_fail_closed_without_writes() {
+        let (dir, state, _, expected) = completed_v2_state("m8");
+        state.unlock_v2_and_store(MASTER).unwrap();
+        let before = security_metadata_snapshot(&state.db.lock().unwrap());
+        assert_eq!(
+            state.change_v2_master_password(MASTER, MASTER).unwrap_err(),
+            "新主密码必须与当前主密码不同"
+        );
+        assert_eq!(security_metadata_snapshot(&state.db.lock().unwrap()), before);
+        assert_eq!(state.stable_dek().unwrap().to_vec(), expected);
+        drop(state);
+        cleanup_dir(&dir);
+
+        let legacy_dir = temp_app_dir("m8_legacy");
+        build_legacy_fixture(&legacy_dir, MASTER);
+        let legacy_path = legacy_dir.join(LEGACY_DB_FILENAME);
+        let legacy_state = crate::AppState {
+            db: std::sync::Mutex::new(Db::open(&legacy_path).unwrap()),
+            db_path: legacy_path,
+            security_model: crate::SecurityModel::Legacy,
+            startup_mode: std::sync::Mutex::new(crate::StartupMode::Legacy),
+            pending_v2: std::sync::Mutex::new(None),
+            master_wrap_gate: std::sync::Mutex::new(()),
+            key: std::sync::Mutex::new(None),
+        };
+        assert!(legacy_state
+            .change_v2_master_password(MASTER, "M8-New-Master!")
+            .is_err());
+        assert!(!legacy_dir.join(V2_DB_FILENAME).exists());
+        drop(legacy_state);
+        cleanup_dir(&legacy_dir);
+    }
+
+    #[test]
+    fn m9_master_change_and_recovery_reset_cannot_concurrently_write_master_metadata() {
+        use std::sync::{Arc, Barrier};
+
+        let (dir, state, words, expected) = completed_v2_state("m9");
+        state.unlock_v2_and_store(MASTER).unwrap();
+        let state = Arc::new(state);
+        let recovery_before = {
+            let db = state.db.lock().unwrap();
+            (
+                db.get_setting("kdf_params_r").unwrap(),
+                db.get_setting("wrapped_dek_r").unwrap(),
+            )
+        };
+        let barrier = Arc::new(Barrier::new(2));
+
+        let change_handle = {
+            let state = Arc::clone(&state);
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                state.change_v2_master_password(MASTER, "M9-Normal-New-Master!")
+            })
+        };
+        let recovery_handle = {
+            let state = Arc::clone(&state);
+            let barrier = Arc::clone(&barrier);
+            let phrase = words.join(" ");
+            std::thread::spawn(move || {
+                barrier.wait();
+                state.recover_v2_with_phrase_and_store(&phrase, "M9-Recovery-New-Master!")
+            })
+        };
+
+        assert!(change_handle.join().unwrap().is_ok());
+        assert!(recovery_handle.join().unwrap().is_err());
+        assert_eq!(state.stable_dek().unwrap().to_vec(), expected);
+        let db = state.db.lock().unwrap();
+        assert_eq!(
+            unlock_v2_core(&db, "M9-Normal-New-Master!").unwrap().to_vec(),
+            expected
+        );
+        assert!(unlock_v2_core(&db, MASTER).is_err());
+        assert!(unlock_v2_core(&db, "M9-Recovery-New-Master!").is_err());
+        assert_eq!(db.get_setting("kdf_params_r").unwrap(), recovery_before.0);
+        assert_eq!(db.get_setting("wrapped_dek_r").unwrap(), recovery_before.1);
         drop(db);
         drop(state);
         cleanup_dir(&dir);

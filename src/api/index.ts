@@ -18,6 +18,11 @@ export const recoverV2WithPhrase = (
   newMasterPassword: string
 ) => invoke<void>("recover_v2_with_phrase", { recoveryPhrase, newMasterPassword });
 
+export const changeV2MasterPassword = (
+  currentPassword: string,
+  newPassword: string
+) => invoke<void>("change_v2_master_password", { currentPassword, newPassword });
+
 export interface SecurityStatus {
   security_model: "legacy_security_model" | "stable_dek_v2";
   migration_required: boolean;
