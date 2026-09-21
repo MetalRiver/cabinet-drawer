@@ -4,7 +4,9 @@ import { isFirstRun as apiIsFirstRun, trashCount as apiTrashCount } from "../api
 
 export const useAppStore = defineStore("app", () => {
   const isLocked = ref(true);
-  const isFirstRun = ref(true);
+  // fail closed：只有后端明确确认 FreshV2 才进入初始化向导。
+  // IPC 失败或 legacy/v2 已存在时都不得默认创建新密码库。
+  const isFirstRun = ref(false);
   const currentView = ref("passwords");
   const searchQuery = ref("");
   const showSummaryModal = ref(false);
@@ -20,6 +22,7 @@ export const useAppStore = defineStore("app", () => {
     try {
       isFirstRun.value = await apiIsFirstRun();
     } catch (e) {
+      isFirstRun.value = false;
       console.error("检查首次启动失败", e);
     }
   }

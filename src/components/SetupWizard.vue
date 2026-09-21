@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref, computed } from "vue";
+import { ref, computed, onBeforeUnmount } from "vue";
 import { useAppStore } from "../stores/app";
-import { setupMasterPassword, generateRandomPassword, passwordStrength as apiStrength } from "../api";
+import { finalizeV2Security, initializeV2Security, passwordStrength as apiStrength } from "../api";
 import { useWindowDrag } from "../composables/useWindowDrag";
 // 品牌 Logo
 import logo from "@/assets/logo.png";
@@ -19,6 +19,8 @@ const strengthLabel = ref("");
 const strengthColor = ref("");
 const recoveryWords = ref<string[]>([]);
 const recoveryConfirmed = ref(false);
+const confirmationIndexes = ref<number[]>([]);
+const confirmationInputs = ref<string[]>(["", "", ""]);
 const submitting = ref(false);
 const error = ref("");
 
@@ -63,43 +65,71 @@ async function nextStep() {
       error.value = "请检查密码要求";
       return;
     }
-    // 生成 12 词恢复短语
-    recoveryWords.value = [];
-    for (let i = 0; i < 12; i++) {
-      const w = (await generateRandomPassword(4, true, true, true, false)).toLowerCase();
-      recoveryWords.value.push(w);
+    submitting.value = true;
+    try {
+      recoveryWords.value = await initializeV2Security(masterPassword.value);
+      masterPassword.value = "";
+      confirmPassword.value = "";
+      step.value = 2;
+    } catch (e) {
+      error.value = String(e);
+    } finally {
+      submitting.value = false;
     }
-    step.value = 2;
   } else if (step.value === 2) {
     if (!recoveryConfirmed.value) {
       error.value = "请确认已保存恢复短语";
       return;
     }
-    submit();
+    const indexes = new Set<number>();
+    while (indexes.size < 3) {
+      const random = new Uint32Array(1);
+      window.crypto.getRandomValues(random);
+      indexes.add(random[0] % 12);
+    }
+    confirmationIndexes.value = [...indexes].sort((a, b) => a - b);
+    confirmationInputs.value = ["", "", ""];
+    step.value = 3;
   }
 }
 
-function back() {
-  if (step.value > 1) step.value--;
-}
+const confirmationMatches = computed(() =>
+  confirmationIndexes.value.length === 3 &&
+  confirmationIndexes.value.every(
+    (wordIndex, inputIndex) =>
+      confirmationInputs.value[inputIndex].trim().toLowerCase() === recoveryWords.value[wordIndex]
+  )
+);
 
-async function submit() {
-  submitting.value = true;
+async function finishSetup() {
   error.value = "";
+  if (!confirmationMatches.value) {
+    error.value = "恢复词不匹配，请按编号重新输入";
+    return;
+  }
+  submitting.value = true;
   try {
-    await setupMasterPassword(masterPassword.value, recoveryWords.value);
-    appStore.setFirstRun(false);
-    // 修复 P1-#16：恢复短语只保留在组件本地 ref，
-    // setupMasterPassword 已把它加密存盘，这里立即清空组件内数组。
-    // 之后 v-if 卸载 SetupWizard → ref 被 GC，不会泄漏到全局。
+    await finalizeV2Security();
     recoveryWords.value = [];
-    appStore.lock();
+    confirmationInputs.value = ["", "", ""];
+    confirmationIndexes.value = [];
+    appStore.setFirstRun(false);
+    appStore.unlock();
   } catch (e) {
+    // 正式完成失败时保留当前恢复词与确认输入，允许用户重试，不重新生成。
     error.value = String(e);
   } finally {
     submitting.value = false;
   }
 }
+
+onBeforeUnmount(() => {
+  masterPassword.value = "";
+  confirmPassword.value = "";
+  recoveryWords.value = [];
+  confirmationInputs.value = ["", "", ""];
+  confirmationIndexes.value = [];
+});
 </script>
 
 <template>
@@ -129,9 +159,17 @@ async function submit() {
           <div class="step-label">设置主密码</div>
         </div>
         <div class="step-line" :class="{ active: step > 1 }"></div>
-        <div class="step" :class="{ active: step >= 2 }">
-          <div class="step-dot">2</div>
+        <div class="step" :class="{ active: step >= 2, done: step > 2 }">
+          <div class="step-dot">
+            <span v-if="step > 2">✓</span>
+            <span v-else>2</span>
+          </div>
           <div class="step-label">保存恢复短语</div>
+        </div>
+        <div class="step-line" :class="{ active: step > 2 }"></div>
+        <div class="step" :class="{ active: step >= 3 }">
+          <div class="step-dot">3</div>
+          <div class="step-label">确认恢复词</div>
         </div>
       </div>
 
@@ -195,18 +233,21 @@ async function submit() {
 
           <button
             class="wizard-btn"
-            :disabled="!canProceed1"
+            :disabled="!canProceed1 || submitting"
             @click="nextStep"
           >
-            下一步 →
+            <span v-if="submitting" class="btn-spinner"></span>
+            <span v-else>建立安全密码库 →</span>
           </button>
         </div>
 
         <!-- 步骤 2: 恢复短语 -->
-        <div v-else key="step2" class="step-content">
+        <div v-else-if="step === 2" key="step2" class="step-content">
           <div class="wizard-icon icon-orange">📜</div>
           <h1 class="wizard-title">保存恢复短语</h1>
-          <p class="wizard-subtitle">请把以下 12 个单词抄写在纸上，丢失主密码时可用它重置</p>
+          <p class="wizard-subtitle">
+            如果忘记主密码，这 12 个词可以帮助你恢复密码库。请把它们保存到安全的地方。
+          </p>
 
           <div class="recovery-grid">
             <div
@@ -236,19 +277,43 @@ async function submit() {
             <p v-if="error" class="wizard-error">{{ error }}</p>
           </Transition>
 
-          <div class="wizard-actions">
-            <button class="wizard-btn btn-secondary" @click="back" :disabled="submitting">
-              ← 上一步
-            </button>
-            <button
-              class="wizard-btn"
-              :disabled="!recoveryConfirmed || submitting"
-              @click="nextStep"
-            >
-              <span v-if="submitting" class="btn-spinner"></span>
-              <span v-else>完成设置</span>
-            </button>
+          <button
+            class="wizard-btn"
+            :disabled="!recoveryConfirmed"
+            @click="nextStep"
+          >
+            验证已保存 →
+          </button>
+        </div>
+
+        <!-- 步骤 3: 随机确认 3 个恢复词 -->
+        <div v-else key="step3" class="step-content">
+          <div class="wizard-icon icon-blue">✓</div>
+          <h1 class="wizard-title">确认恢复词</h1>
+          <p class="wizard-subtitle">请按编号输入你刚才保存的 3 个恢复词</p>
+
+          <div class="confirmation-list">
+            <label v-for="(wordIndex, inputIndex) in confirmationIndexes" :key="wordIndex">
+              <span>第 {{ wordIndex + 1 }} 个词</span>
+              <input
+                v-model="confirmationInputs[inputIndex]"
+                class="wizard-input"
+                type="text"
+                autocomplete="off"
+                :spellcheck="false"
+                placeholder="输入恢复词"
+              />
+            </label>
           </div>
+
+          <Transition name="error-slide">
+            <p v-if="error" class="wizard-error">{{ error }}</p>
+          </Transition>
+
+          <button class="wizard-btn" :disabled="!confirmationMatches || submitting" @click="finishSetup">
+            <span v-if="submitting" class="btn-spinner"></span>
+            <span v-else>完成并进入抽屉柜</span>
+          </button>
         </div>
       </Transition>
     </div>
@@ -640,6 +705,20 @@ async function submit() {
 }
 
 .check-row input { cursor: pointer; accent-color: var(--accent); }
+
+.confirmation-list {
+  display: grid;
+  gap: 14px;
+  margin-bottom: 18px;
+  text-align: left;
+}
+
+.confirmation-list label {
+  display: grid;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
 
 .wizard-actions {
   display: flex;

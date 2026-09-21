@@ -18,6 +18,7 @@ pub const V2_DB_FILENAME: &str = "drawer-v2.db";
 pub const LEGACY_DB_FILENAME: &str = "drawer_box.db";
 pub const LEGACY_BACKUP_SUFFIX: &str = ".legacy-v0.2.0";
 pub const V2_TMP_FILENAME: &str = "drawer-v2.db.tmp";
+pub const V2_SETUP_LOCK_FILENAME: &str = "drawer-v2.db.setup.lock";
 pub const SECURITY_VERSION_V2: &str = "1";
 
 /// legacy 库中被视为安全敏感、迁移时**不拷贝**进 v2 的设置键
@@ -106,6 +107,13 @@ pub enum DbSelection {
     Blocked(&'static str),
 }
 
+/// FreshV2 启动阶段的占位库。只存在于内存，初始化完成前不会创建正式文件。
+pub fn open_v2_db_in_memory() -> Result<Db, String> {
+    let conn = rusqlite::Connection::open_in_memory().map_err(|e| e.to_string())?;
+    init_v2_schema(&conn).map_err(|e| e.to_string())?;
+    Ok(Db { conn: std::sync::Mutex::new(conn) })
+}
+
 /// 启动仲裁。只观察文件系统，绝不在启动时迁移、删除或重命名用户数据。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StartupArbitration {
@@ -175,6 +183,225 @@ pub fn open_existing_v2_db(path: &Path) -> Result<Db, String> {
         }
     }
     Ok(db)
+}
+
+/// 新用户初始化故障注入点。仅由测试调用，生产入口始终传 None。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InitializationFailPoint {
+    AfterSchema,
+    AfterMasterWrap,
+    BeforeRecoveryWrap,
+    DuringMetadataWrite,
+    BeforeRename,
+}
+
+/// 已完整校验、尚未正式生效的新用户初始化产物。
+/// 恢复短语只通过此返回值交给一次性 UI 展示，不持久化。
+pub struct PreparedInitialization {
+    pub tmp_path: PathBuf,
+    pub v2_path: PathBuf,
+    pub dek: Zeroizing<Vec<u8>>,
+    pub mnemonic: Vec<String>,
+    pub setup_lock: std::fs::File,
+    pub setup_lock_path: PathBuf,
+}
+
+pub fn prepare_fresh_v2(
+    app_dir: &Path,
+    master_password: &str,
+) -> Result<PreparedInitialization, String> {
+    prepare_fresh_v2_inject(app_dir, master_password, None)
+}
+
+/// FreshV2 准备阶段：只写同目录 tmp；正式库必须由确认阶段单独发布。
+pub fn prepare_fresh_v2_inject(
+    app_dir: &Path,
+    master_password: &str,
+    fail_at: Option<InitializationFailPoint>,
+) -> Result<PreparedInitialization, String> {
+    let v2_path = app_dir.join(V2_DB_FILENAME);
+    let tmp_path = app_dir.join(V2_TMP_FILENAME);
+    let setup_lock_path = app_dir.join(V2_SETUP_LOCK_FILENAME);
+    let fail = |point| fail_at == Some(point);
+
+    if resolve_startup_db(app_dir, true).selection != DbSelection::FreshV2(v2_path.clone()) {
+        return Err("当前数据目录不允许新用户初始化".to_string());
+    }
+
+    let mut owns_setup_lock = false;
+    let mut owns_tmp = false;
+    let result = (|| -> Result<PreparedInitialization, String> {
+        let mut lock_options = std::fs::OpenOptions::new();
+        lock_options.write(true).create_new(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            lock_options.share_mode(0);
+        }
+        let setup_lock = lock_options
+            .open(&setup_lock_path)
+            .map_err(|_| "安全数据库初始化正在进行或存在未完成状态".to_string())?;
+        owns_setup_lock = true;
+        // create_new 是跨线程/进程的第二道门禁；已有 tmp 时绝不复用或覆盖。
+        let reservation = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp_path)
+            .map_err(|_| "安全数据库初始化正在进行或存在未完成状态".to_string())?;
+        owns_tmp = true;
+        drop(reservation);
+        let v2 = open_v2_db(&tmp_path).map_err(|_| "无法创建安全数据库".to_string())?;
+        if fail(InitializationFailPoint::AfterSchema) {
+            return Err("injected:AfterSchema".to_string());
+        }
+
+        let dek = crypto::generate_dek();
+        let salt_m = crypto::generate_salt();
+        let params_m = crypto::default_kdf_params(crypto::b64_encode(&salt_m));
+        let kek_m = crypto::derive_master_kek(master_password, &params_m);
+        let wrapped_m = crypto::wrap_dek(&dek, &kek_m, crypto::AAD_WRAP_MASTER)
+            .map_err(|_| "无法建立主密码保护".to_string())?;
+        if fail(InitializationFailPoint::AfterMasterWrap) {
+            return Err("injected:AfterMasterWrap".to_string());
+        }
+
+        let entropy = crypto::generate_recovery_entropy();
+        let phrase = Zeroizing::new(
+            crypto::entropy_to_mnemonic(&entropy)
+                .map_err(|_| "无法生成恢复短语".to_string())?,
+        );
+        let salt_r = crypto::generate_salt();
+        let params_r = crypto::KdfParams {
+            algo: "hkdf-sha256".into(),
+            version: 1,
+            m_cost: 0,
+            t_cost: 0,
+            p_cost: 0,
+            salt: crypto::b64_encode(&salt_r),
+        };
+        if fail(InitializationFailPoint::BeforeRecoveryWrap) {
+            return Err("injected:BeforeRecoveryWrap".to_string());
+        }
+        let wrapped_r = crypto::wrap_dek_recovery(&dek, &entropy, &salt_r)
+            .map_err(|_| "无法建立恢复保护".to_string())?;
+
+        {
+            let mut conn = v2.conn.lock().map_err(|_| "安全数据库不可用".to_string())?;
+            let tx = conn.transaction().map_err(|_| "无法写入安全元数据".to_string())?;
+            tx.execute(
+                "INSERT INTO settings (key, value) VALUES ('kdf_params_m', ?1)",
+                params![serde_json::to_string(&params_m).map_err(|_| "安全元数据无效".to_string())?],
+            )
+            .map_err(|_| "无法写入安全元数据".to_string())?;
+            tx.execute(
+                "INSERT INTO settings (key, value) VALUES ('wrapped_dek_m', ?1)",
+                params![wrapped_m],
+            )
+            .map_err(|_| "无法写入安全元数据".to_string())?;
+            if fail(InitializationFailPoint::DuringMetadataWrite) {
+                return Err("injected:DuringMetadataWrite".to_string());
+            }
+            tx.execute(
+                "INSERT INTO settings (key, value) VALUES ('kdf_params_r', ?1)",
+                params![serde_json::to_string(&params_r).map_err(|_| "安全元数据无效".to_string())?],
+            )
+            .map_err(|_| "无法写入安全元数据".to_string())?;
+            tx.execute(
+                "INSERT INTO settings (key, value) VALUES ('wrapped_dek_r', ?1)",
+                params![wrapped_r],
+            )
+            .map_err(|_| "无法写入安全元数据".to_string())?;
+            // 提交标记必须最后写，并与其余安全元数据处于同一事务。
+            tx.execute(
+                "INSERT INTO settings (key, value) VALUES ('security_version', ?1)",
+                params![SECURITY_VERSION_V2],
+            )
+            .map_err(|_| "无法写入安全元数据".to_string())?;
+            tx.commit().map_err(|_| "无法提交安全元数据".to_string())?;
+        }
+        drop(v2);
+
+        // 正式就位前同时验证 schema/integrity、Master 与 Recovery 两条解封路径。
+        let verified = open_existing_v2_db(&tmp_path)?;
+        let master_dek = unlock_v2_core(&verified, master_password)?;
+        let recovery_dek = crypto::unwrap_dek_recovery(&wrapped_r, &entropy, &salt_r)
+            .map_err(|_| "安全数据校验失败".to_string())?;
+        if master_dek.as_slice() != dek.as_slice() || recovery_dek.as_slice() != dek.as_slice() {
+            return Err("安全数据校验失败".to_string());
+        }
+        drop(verified);
+
+        if fail(InitializationFailPoint::BeforeRename) {
+            return Err("injected:BeforeRename".to_string());
+        }
+        Ok(PreparedInitialization {
+            tmp_path: tmp_path.clone(),
+            v2_path,
+            dek,
+            mnemonic: phrase.split_whitespace().map(String::from).collect(),
+            setup_lock,
+            setup_lock_path: setup_lock_path.clone(),
+        })
+    })();
+
+    if result.is_err() && owns_tmp && tmp_path.exists() {
+        let _ = std::fs::remove_file(&tmp_path);
+    }
+    if result.is_err() && owns_setup_lock && setup_lock_path.exists() {
+        let _ = std::fs::remove_file(&setup_lock_path);
+    }
+    result
+}
+
+/// 用户确认已保存 Recovery Phrase 后，才把已校验的 tmp 原子发布为正式 v2。
+pub fn finalize_prepared_v2(tmp_path: &Path, v2_path: &Path) -> Result<(), String> {
+    if v2_path.exists() || !tmp_path.exists() {
+        return Err("当前状态不允许完成安全数据库初始化".to_string());
+    }
+    let verified = open_existing_v2_db(tmp_path)?;
+    drop(verified);
+    // Windows 同目录 rename：目标存在时失败，不覆盖现有正式库。
+    std::fs::rename(tmp_path, v2_path)
+        .map_err(|_| "无法完成安全数据库初始化".to_string())
+}
+
+/// 仅清理“无 legacy、无正式 v2、无备份/stray”的中断新用户 setup tmp。
+/// 迁移 tmp 或任何含真实数据痕迹的目录一律不碰。
+pub fn discard_abandoned_fresh_initialization(app_dir: &Path) -> Result<bool, String> {
+    let v2_path = app_dir.join(V2_DB_FILENAME);
+    let legacy_path = app_dir.join(LEGACY_DB_FILENAME);
+    let backup_path = app_dir.join(format!("{}{}", LEGACY_DB_FILENAME, LEGACY_BACKUP_SUFFIX));
+    let arbitration = resolve_startup_db(app_dir, true);
+    if v2_path.exists()
+        || legacy_path.exists()
+        || backup_path.exists()
+        || arbitration.stray_legacy_present
+        || !arbitration.tmp_present
+    {
+        return Ok(false);
+    }
+
+    let setup_lock_path = app_dir.join(V2_SETUP_LOCK_FILENAME);
+    if setup_lock_path.exists() {
+        // 活动初始化持有 Windows 独占句柄时删除会失败，此时必须 fail closed。
+        std::fs::remove_file(&setup_lock_path)
+            .map_err(|_| "检测到仍在进行的新用户初始化".to_string())?;
+    }
+
+    let mut removed = false;
+    for path in [
+        app_dir.join(V2_TMP_FILENAME),
+        app_dir.join(format!("{}-wal", V2_TMP_FILENAME)),
+        app_dir.join(format!("{}-shm", V2_TMP_FILENAME)),
+        app_dir.join(format!("{}-journal", V2_TMP_FILENAME)),
+    ] {
+        if path.exists() {
+            std::fs::remove_file(&path)
+                .map_err(|_| "无法清理未完成的新用户初始化".to_string())?;
+            removed = true;
+        }
+    }
+    Ok(removed)
 }
 
 /// 迁移引擎错误（本地类型，绕开孤儿规则；Display 不泄漏密码学细节）
@@ -863,6 +1090,8 @@ mod migration_tests {
             db: std::sync::Mutex::new(open_existing_v2_db(&output.v2_path).unwrap()),
             db_path: output.v2_path.clone(),
             security_model: crate::SecurityModel::StableDekV2,
+            startup_mode: std::sync::Mutex::new(crate::StartupMode::ExistingV2),
+            pending_v2: std::sync::Mutex::new(None),
             key: std::sync::Mutex::new(None),
         };
         let hash_before = file_hash(&output.v2_path);
@@ -873,6 +1102,218 @@ mod migration_tests {
         assert_eq!(state.stable_dek().unwrap().to_vec(), expected);
         assert!(state.legacy_key().is_err());
         state.clear_key();
+        drop(state);
+        cleanup_dir(&dir);
+    }
+
+    fn fresh_v2_state(dir: &Path) -> crate::AppState {
+        crate::AppState {
+            db: std::sync::Mutex::new(open_v2_db_in_memory().unwrap()),
+            db_path: dir.join(V2_DB_FILENAME),
+            security_model: crate::SecurityModel::StableDekV2,
+            startup_mode: std::sync::Mutex::new(crate::StartupMode::FreshV2),
+            pending_v2: std::sync::Mutex::new(None),
+            key: std::sync::Mutex::new(None),
+        }
+    }
+
+    // ===== Phase 2B.1：新用户初始化 + Recovery 首次建立 =====
+    #[test]
+    fn n1_fresh_initialization_writes_complete_metadata_and_stores_dek() {
+        let dir = temp_app_dir("n1");
+        let state = fresh_v2_state(&dir);
+
+        let words = state.prepare_v2_initialization(MASTER).unwrap();
+        assert_eq!(words.len(), 12);
+        assert!(!dir.join(V2_DB_FILENAME).exists());
+        assert!(dir.join(V2_TMP_FILENAME).exists());
+        assert!(state.stable_dek().is_err(), "确认恢复词前不得激活 DEK");
+        state.finalize_v2_initialization().unwrap();
+        assert!(dir.join(V2_DB_FILENAME).exists());
+        assert!(!dir.join(V2_TMP_FILENAME).exists());
+
+        let db = open_existing_v2_db(&dir.join(V2_DB_FILENAME)).unwrap();
+        for key in [
+            "kdf_params_m",
+            "wrapped_dek_m",
+            "kdf_params_r",
+            "wrapped_dek_r",
+            "security_version",
+        ] {
+            assert!(db.get_setting(key).unwrap().filter(|v| !v.is_empty()).is_some());
+        }
+        assert!(db.get_setting("recovery_phrase").unwrap().is_none());
+        assert!(db.get_setting("recovery_phrase_encrypted").unwrap().is_none());
+
+        let unlocked = unlock_v2_core(&db, MASTER).unwrap();
+        assert_eq!(state.stable_dek().unwrap().as_slice(), unlocked.as_slice());
+        cleanup_dir(&dir);
+    }
+
+    #[test]
+    fn n2_returns_valid_bip39_words_but_never_persists_phrase() {
+        let dir = temp_app_dir("n2");
+        let state = fresh_v2_state(&dir);
+        let words = state.prepare_v2_initialization(MASTER).unwrap();
+        let phrase = words.join(" ");
+
+        assert_eq!(words.len(), 12);
+        assert_eq!(crypto::mnemonic_to_entropy(&phrase).unwrap().len(), 16);
+        let bytes = std::fs::read(dir.join(V2_TMP_FILENAME)).unwrap();
+        assert!(
+            !bytes.windows(phrase.len()).any(|window| window == phrase.as_bytes()),
+            "恢复短语不得以明文写入数据库文件"
+        );
+        let db = open_existing_v2_db(&dir.join(V2_TMP_FILENAME)).unwrap();
+        let settings: String = db
+            .conn
+            .lock()
+            .unwrap()
+            .query_row("SELECT COALESCE(GROUP_CONCAT(value, ''), '') FROM settings", [], |r| r.get(0))
+            .unwrap();
+        assert!(!settings.contains(&phrase));
+        drop(db);
+        state.finalize_v2_initialization().unwrap();
+        cleanup_dir(&dir);
+    }
+
+    #[test]
+    fn n3_master_unlock_recovers_same_dek_and_wrong_password_does_not_pollute_state() {
+        let dir = temp_app_dir("n3");
+        let state = fresh_v2_state(&dir);
+        state.prepare_v2_initialization(MASTER).unwrap();
+        state.finalize_v2_initialization().unwrap();
+        let expected = state.stable_dek().unwrap().to_vec();
+        state.clear_key();
+
+        assert!(state.unlock_v2_and_store("wrong-password").is_err());
+        assert!(!state.is_unlocked());
+        state.unlock_v2_and_store(MASTER).unwrap();
+        assert_eq!(state.stable_dek().unwrap().to_vec(), expected);
+        cleanup_dir(&dir);
+    }
+
+    #[test]
+    fn n4_recovery_words_unwrap_the_same_stable_dek() {
+        let dir = temp_app_dir("n4");
+        let state = fresh_v2_state(&dir);
+        let words = state.prepare_v2_initialization(MASTER).unwrap();
+        state.finalize_v2_initialization().unwrap();
+        let expected = state.stable_dek().unwrap().to_vec();
+        let db = open_existing_v2_db(&dir.join(V2_DB_FILENAME)).unwrap();
+        let params: crypto::KdfParams = serde_json::from_str(
+            &db.get_setting("kdf_params_r").unwrap().unwrap(),
+        )
+        .unwrap();
+        let wrapped = db.get_setting("wrapped_dek_r").unwrap().unwrap();
+        let entropy = crypto::mnemonic_to_entropy(&words.join(" ")).unwrap();
+        let salt = crypto::b64_decode(&params.salt).unwrap();
+        let recovered = crypto::unwrap_dek_recovery(&wrapped, &entropy, &salt).unwrap();
+        assert_eq!(recovered.to_vec(), expected);
+        cleanup_dir(&dir);
+    }
+
+    #[test]
+    fn n5_duplicate_initialization_fails_closed_without_overwrite() {
+        let dir = temp_app_dir("n5");
+        let state = fresh_v2_state(&dir);
+        state.prepare_v2_initialization(MASTER).unwrap();
+        state.finalize_v2_initialization().unwrap();
+        let v2_path = dir.join(V2_DB_FILENAME);
+        let hash_before = file_hash(&v2_path);
+        let dek_before = state.stable_dek().unwrap().to_vec();
+
+        assert!(state.prepare_v2_initialization("Another-Master!").is_err());
+        assert!(prepare_fresh_v2(&dir, "Another-Master!").is_err());
+        assert_eq!(file_hash(&v2_path), hash_before);
+        assert_eq!(state.stable_dek().unwrap().to_vec(), dek_before);
+        assert!(!dir.join(V2_TMP_FILENAME).exists());
+        cleanup_dir(&dir);
+    }
+
+    #[test]
+    fn n6_every_initialization_failure_point_leaves_no_formal_or_tmp_database() {
+        let fail_points = [
+            InitializationFailPoint::AfterSchema,
+            InitializationFailPoint::AfterMasterWrap,
+            InitializationFailPoint::BeforeRecoveryWrap,
+            InitializationFailPoint::DuringMetadataWrite,
+            InitializationFailPoint::BeforeRename,
+        ];
+        for (index, fail_point) in fail_points.iter().enumerate() {
+            let dir = temp_app_dir(&format!("n6_{}", index));
+            let result = prepare_fresh_v2_inject(&dir, MASTER, Some(*fail_point));
+            assert!(result.is_err(), "注入点 {:?} 必须失败", fail_point);
+            assert!(!dir.join(V2_DB_FILENAME).exists());
+            assert!(!dir.join(V2_TMP_FILENAME).exists());
+            assert!(!dir.join(format!("{}-wal", V2_TMP_FILENAME)).exists());
+            assert!(!dir.join(format!("{}-shm", V2_TMP_FILENAME)).exists());
+            assert!(!dir.join(format!("{}-journal", V2_TMP_FILENAME)).exists());
+            assert!(!dir.join(V2_SETUP_LOCK_FILENAME).exists());
+            cleanup_dir(&dir);
+        }
+    }
+
+    #[test]
+    fn n7_closing_before_recovery_confirmation_discards_only_setup_tmp_and_restarts_fresh() {
+        let dir = temp_app_dir("n7");
+        let state = fresh_v2_state(&dir);
+        let abandoned_words = state.prepare_v2_initialization(MASTER).unwrap();
+        assert!(!dir.join(V2_DB_FILENAME).exists());
+        assert!(dir.join(V2_TMP_FILENAME).exists());
+        assert!(dir.join(V2_SETUP_LOCK_FILENAME).exists());
+        assert!(state.stable_dek().is_err());
+        assert!(discard_abandoned_fresh_initialization(&dir).is_err());
+        assert!(dir.join(V2_TMP_FILENAME).exists());
+        drop(state);
+
+        assert!(discard_abandoned_fresh_initialization(&dir).unwrap());
+        assert!(!dir.join(V2_TMP_FILENAME).exists());
+        assert!(!dir.join(V2_SETUP_LOCK_FILENAME).exists());
+        assert!(!dir.join(V2_DB_FILENAME).exists());
+
+        let restarted = fresh_v2_state(&dir);
+        let replacement_words = restarted.prepare_v2_initialization(MASTER).unwrap();
+        assert_ne!(replacement_words, abandoned_words);
+        restarted.finalize_v2_initialization().unwrap();
+        assert!(dir.join(V2_DB_FILENAME).exists());
+        assert!(!dir.join(V2_SETUP_LOCK_FILENAME).exists());
+
+        let protected = dir.join("legacy-protected");
+        std::fs::create_dir_all(&protected).unwrap();
+        std::fs::write(protected.join(LEGACY_DB_FILENAME), b"legacy-marker").unwrap();
+        std::fs::write(protected.join(V2_TMP_FILENAME), b"migration-marker").unwrap();
+        assert!(!discard_abandoned_fresh_initialization(&protected).unwrap());
+        assert!(protected.join(LEGACY_DB_FILENAME).exists());
+        assert!(protected.join(V2_TMP_FILENAME).exists());
+        cleanup_dir(&dir);
+    }
+
+    #[test]
+    fn n8_concurrent_initialization_allows_exactly_one_pending_keyset() {
+        use std::sync::{Arc, Barrier};
+
+        let dir = temp_app_dir("n8");
+        let state = Arc::new(fresh_v2_state(&dir));
+        let barrier = Arc::new(Barrier::new(2));
+        let mut handles = Vec::new();
+        for _ in 0..2 {
+            let state = Arc::clone(&state);
+            let barrier = Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                state.prepare_v2_initialization(MASTER)
+            }));
+        }
+        let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
+        assert_eq!(results.iter().filter(|r| r.is_err()).count(), 1);
+        assert!(!dir.join(V2_DB_FILENAME).exists());
+        assert!(dir.join(V2_TMP_FILENAME).exists());
+
+        state.finalize_v2_initialization().unwrap();
+        assert!(dir.join(V2_DB_FILENAME).exists());
+        assert!(!dir.join(V2_TMP_FILENAME).exists());
         drop(state);
         cleanup_dir(&dir);
     }

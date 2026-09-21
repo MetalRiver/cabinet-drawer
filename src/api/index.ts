@@ -5,6 +5,11 @@ import { invoke } from "@tauri-apps/api/core";
 
 export const isFirstRun = () => invoke<boolean>("is_first_run");
 
+export const initializeV2Security = (masterPassword: string) =>
+  invoke<string[]>("initialize_v2_security", { masterPassword });
+
+export const finalizeV2Security = () => invoke<void>("finalize_v2_security");
+
 export const setupMasterPassword = (masterPassword: string, recoveryPhrase: string[]) =>
   invoke<void>("setup_master_password", { masterPassword, recoveryPhrase });
 

@@ -37,12 +37,25 @@ use db::Db;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SecurityModel { Legacy, StableDekV2 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartupMode { Legacy, ExistingV2, FreshV2, PendingV2 }
+
 enum ActiveKey { Legacy(Zeroizing<Vec<u8>>), StableDek(Zeroizing<Vec<u8>>) }
+
+struct PendingV2Initialization {
+    tmp_path: PathBuf,
+    v2_path: PathBuf,
+    dek: Zeroizing<Vec<u8>>,
+    setup_lock: std::fs::File,
+    setup_lock_path: PathBuf,
+}
 
 pub struct AppState {
     pub db: Mutex<Db>,
     pub db_path: PathBuf,
     pub security_model: SecurityModel,
+    pub startup_mode: Mutex<StartupMode>,
+    pending_v2: Mutex<Option<PendingV2Initialization>>,
     /// 唯一活动秘密：legacy key 或 v2 Stable DEK，不能混用。
     key: Mutex<Option<ActiveKey>>,
 }
@@ -56,6 +69,51 @@ impl AppState {
     pub fn stable_dek(&self) -> Result<Zeroizing<Vec<u8>>, String> { match &*self.key.lock().unwrap() { Some(ActiveKey::StableDek(dek)) => Ok(Zeroizing::new(dek.to_vec())), _ => Err("应用尚未以 v2 Stable DEK 解锁".into()) } }
     pub fn require_legacy_model(&self) -> Result<(), String> { if self.security_model == SecurityModel::Legacy { Ok(()) } else { Err("该操作尚未接入 v2 安全格式".into()) } }
     pub fn unlock_v2_and_store(&self, password: &str) -> Result<(), String> { let db = self.db.lock().map_err(|_| "安全状态不可用".to_string())?; let dek = migration::unlock_v2_core(&db, password).map_err(|_| "主密码不正确或安全数据损坏".to_string())?; drop(db); self.set_stable_dek(dek); Ok(()) }
+    pub fn prepare_v2_initialization(&self, password: &str) -> Result<Vec<String>, String> {
+        let mut startup_mode = self.startup_mode.lock().map_err(|_| "安全状态不可用".to_string())?;
+        if *startup_mode != StartupMode::FreshV2 || self.security_model != SecurityModel::StableDekV2 {
+            return Err("当前状态不允许初始化安全数据库".to_string());
+        }
+        let app_dir = self.db_path.parent().ok_or_else(|| "安全数据库路径无效".to_string())?;
+        let output = migration::prepare_fresh_v2(app_dir, password)
+            .map_err(|_| "安全数据库初始化失败".to_string())?;
+        let words = output.mnemonic;
+        let mut pending = self.pending_v2.lock().map_err(|_| "安全状态不可用".to_string())?;
+        *pending = Some(PendingV2Initialization {
+            tmp_path: output.tmp_path,
+            v2_path: output.v2_path,
+            dek: output.dek,
+            setup_lock: output.setup_lock,
+            setup_lock_path: output.setup_lock_path,
+        });
+        *startup_mode = StartupMode::PendingV2;
+        Ok(words)
+    }
+    pub fn finalize_v2_initialization(&self) -> Result<(), String> {
+        let mut startup_mode = self.startup_mode.lock().map_err(|_| "安全状态不可用".to_string())?;
+        if *startup_mode == StartupMode::ExistingV2 && self.is_unlocked() {
+            return Ok(());
+        }
+        if *startup_mode != StartupMode::PendingV2 {
+            return Err("当前状态不允许完成安全数据库初始化".to_string());
+        }
+        let mut pending = self.pending_v2.lock().map_err(|_| "安全状态不可用".to_string())?;
+        let prepared = pending.as_ref().ok_or_else(|| "安全初始化状态缺失".to_string())?;
+        // 在正式 rename 前先取得所有运行态锁，避免 rename 后因锁中毒留下半更新 AppState。
+        let mut db_slot = self.db.lock().map_err(|_| "安全状态不可用".to_string())?;
+        let mut key_slot = self.key.lock().map_err(|_| "安全状态不可用".to_string())?;
+        migration::finalize_prepared_v2(&prepared.tmp_path, &prepared.v2_path)
+            .map_err(|_| "安全数据库初始化失败".to_string())?;
+        let completed_db = migration::open_existing_v2_db(&prepared.v2_path)
+            .map_err(|_| "安全数据库初始化失败".to_string())?;
+        let prepared = pending.take().ok_or_else(|| "安全初始化状态缺失".to_string())?;
+        *db_slot = completed_db;
+        *key_slot = Some(ActiveKey::StableDek(prepared.dek));
+        *startup_mode = StartupMode::ExistingV2;
+        drop(prepared.setup_lock);
+        let _ = std::fs::remove_file(prepared.setup_lock_path);
+        Ok(())
+    }
 }
 
 // ===== 应用入口 =====
@@ -72,11 +130,13 @@ pub fn run() {
                 .app_data_dir()
                 .expect("failed to get app data dir");
             std::fs::create_dir_all(&app_dir).expect("failed to create app data dir");
-            let arbitration = migration::resolve_startup_db(&app_dir, false);
-            let (db_path, security_model) = match arbitration.selection {
-                migration::DbSelection::V2(path) => (path, SecurityModel::StableDekV2),
-                migration::DbSelection::Legacy(path) => (path, SecurityModel::Legacy),
-                migration::DbSelection::FreshV2(_) => unreachable!("正常启动未授权创建 fresh v2"),
+            migration::discard_abandoned_fresh_initialization(&app_dir)
+                .map_err(|reason| std::io::Error::new(std::io::ErrorKind::Other, reason))?;
+            let arbitration = migration::resolve_startup_db(&app_dir, true);
+            let (db_path, security_model, startup_mode) = match arbitration.selection {
+                migration::DbSelection::V2(path) => (path, SecurityModel::StableDekV2, StartupMode::ExistingV2),
+                migration::DbSelection::Legacy(path) => (path, SecurityModel::Legacy, StartupMode::Legacy),
+                migration::DbSelection::FreshV2(path) => (path, SecurityModel::StableDekV2, StartupMode::FreshV2),
                 migration::DbSelection::Blocked(reason) => return Err(std::io::Error::new(std::io::ErrorKind::Other, reason).into()),
             };
 
@@ -109,12 +169,19 @@ pub fn run() {
                 return Err(std::io::Error::new(std::io::ErrorKind::Other, "v2 模式拒绝执行 legacy factory reset pending").into());
             }
 
-            let db = match security_model { SecurityModel::Legacy => Db::open(&db_path), SecurityModel::StableDekV2 => migration::open_existing_v2_db(&db_path).map_err(|_| rusqlite::Error::InvalidQuery) }.expect("failed to open database");
+            let db = match startup_mode {
+                StartupMode::Legacy => Db::open(&db_path),
+                StartupMode::ExistingV2 => migration::open_existing_v2_db(&db_path).map_err(|_| rusqlite::Error::InvalidQuery),
+                StartupMode::FreshV2 => migration::open_v2_db_in_memory().map_err(|_| rusqlite::Error::InvalidQuery),
+                StartupMode::PendingV2 => unreachable!("PendingV2 只存在于当前进程内存"),
+            }.expect("failed to open database");
 
             app.manage(AppState {
                 db: Mutex::new(db),
                 db_path,
                 security_model,
+                startup_mode: Mutex::new(startup_mode),
+                pending_v2: Mutex::new(None),
                 key: Mutex::new(None),
             });
 
@@ -340,6 +407,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             is_first_run,
             get_security_status,
+            initialize_v2_security,
+            finalize_v2_security,
             setup_master_password,
             unlock_app,
             lock_app,

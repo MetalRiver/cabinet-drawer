@@ -5,24 +5,53 @@ use tauri::State;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 
 use crate::crypto;
-use crate::{AppState, SecurityModel};
+use crate::{AppState, SecurityModel, StartupMode};
 use zeroize::Zeroizing;
 
 #[derive(serde::Serialize)]
 pub struct SecurityStatus { security_model: &'static str, migration_required: bool, write_allowed: bool }
 #[tauri::command]
-pub fn get_security_status(state: State<AppState>) -> SecurityStatus { match state.security_model { SecurityModel::Legacy => SecurityStatus { security_model: "legacy_security_model", migration_required: true, write_allowed: true }, SecurityModel::StableDekV2 => SecurityStatus { security_model: "stable_dek_v2", migration_required: false, write_allowed: true } } }
+pub fn get_security_status(state: State<AppState>) -> SecurityStatus {
+    match state.security_model {
+        SecurityModel::Legacy => SecurityStatus { security_model: "legacy_security_model", migration_required: true, write_allowed: true },
+        SecurityModel::StableDekV2 => SecurityStatus { security_model: "stable_dek_v2", migration_required: false, write_allowed: true },
+    }
+}
 
 // ============================================================
 // 🔒 首次启动判断
 // ============================================================
 #[tauri::command]
 pub fn is_first_run(state: State<AppState>) -> bool {
-    eprintln!("[IPC] is_first_run ENTER");
-    let db = state.db.lock().unwrap();
-    let r = match state.security_model { SecurityModel::Legacy => db.get_setting("master_password_hash").map(|v| v.is_none()).unwrap_or(true), SecurityModel::StableDekV2 => db.get_setting("security_version").map(|v| v.is_none()).unwrap_or(true) };
-    eprintln!("[IPC] is_first_run EXIT -> {}", r);
-    r
+    state
+        .startup_mode
+        .lock()
+        .map(|mode| matches!(*mode, StartupMode::FreshV2 | StartupMode::PendingV2))
+        .unwrap_or(false)
+}
+
+// ============================================================
+// 🔒 v2 新用户初始化（恢复短语仅返回一次，不写数据库/日志）
+// ============================================================
+#[tauri::command]
+pub fn initialize_v2_security(
+    state: State<AppState>,
+    master_password: String,
+) -> Result<Vec<String>, String> {
+    let master_password = Zeroizing::new(master_password);
+    if master_password.len() < 6 {
+        return Err("主密码长度至少 6 位".to_string());
+    }
+    state
+        .prepare_v2_initialization(master_password.as_str())
+        .map_err(|_| "安全数据库初始化失败，请重试".to_string())
+}
+
+#[tauri::command]
+pub fn finalize_v2_security(state: State<AppState>) -> Result<(), String> {
+    state
+        .finalize_v2_initialization()
+        .map_err(|_| "安全数据库初始化失败，请重试".to_string())
 }
 
 // ============================================================
