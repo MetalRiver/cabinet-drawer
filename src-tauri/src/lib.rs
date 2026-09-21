@@ -56,6 +56,8 @@ pub struct AppState {
     pub security_model: SecurityModel,
     pub startup_mode: Mutex<StartupMode>,
     pending_v2: Mutex<Option<PendingV2Initialization>>,
+    /// 串行化 v2 Recovery 验证/提交；安全边界不能只依赖前端按钮 disabled。
+    recovery_gate: Mutex<()>,
     /// 唯一活动秘密：legacy key 或 v2 Stable DEK，不能混用。
     key: Mutex<Option<ActiveKey>>,
 }
@@ -69,6 +71,55 @@ impl AppState {
     pub fn stable_dek(&self) -> Result<Zeroizing<Vec<u8>>, String> { match &*self.key.lock().unwrap() { Some(ActiveKey::StableDek(dek)) => Ok(Zeroizing::new(dek.to_vec())), _ => Err("应用尚未以 v2 Stable DEK 解锁".into()) } }
     pub fn require_legacy_model(&self) -> Result<(), String> { if self.security_model == SecurityModel::Legacy { Ok(()) } else { Err("该操作尚未接入 v2 安全格式".into()) } }
     pub fn unlock_v2_and_store(&self, password: &str) -> Result<(), String> { let db = self.db.lock().map_err(|_| "安全状态不可用".to_string())?; let dek = migration::unlock_v2_core(&db, password).map_err(|_| "主密码不正确或安全数据损坏".to_string())?; drop(db); self.set_stable_dek(dek); Ok(()) }
+    pub fn verify_v2_recovery_phrase(&self, recovery_phrase: &str) -> Result<(), String> {
+        let _gate = self.recovery_gate.lock().map_err(|_| "安全状态不可用".to_string())?;
+        if self.security_model != SecurityModel::StableDekV2
+            || *self.startup_mode.lock().map_err(|_| "安全状态不可用".to_string())?
+                != StartupMode::ExistingV2
+        {
+            return Err("当前密码库不支持恢复短语".to_string());
+        }
+        if self.key.lock().map_err(|_| "安全状态不可用".to_string())?.is_some() {
+            return Err("当前状态不允许恢复主密码".to_string());
+        }
+        let db = self.db.lock().map_err(|_| "安全状态不可用".to_string())?;
+        migration::recover_v2_core(&db, recovery_phrase)
+            .map(|_| ())
+            .map_err(|_| "恢复短语无效".to_string())
+    }
+    pub fn recover_v2_with_phrase_and_store(
+        &self,
+        recovery_phrase: &str,
+        new_master_password: &str,
+    ) -> Result<(), String> {
+        let _gate = self.recovery_gate.lock().map_err(|_| "安全状态不可用".to_string())?;
+        if self.security_model != SecurityModel::StableDekV2
+            || *self.startup_mode.lock().map_err(|_| "安全状态不可用".to_string())?
+                != StartupMode::ExistingV2
+        {
+            return Err("当前密码库不支持恢复短语".to_string());
+        }
+        let db = self.db.lock().map_err(|_| "安全状态不可用".to_string())?;
+        let mut key_slot = self.key.lock().map_err(|_| "安全状态不可用".to_string())?;
+        if key_slot.is_some() {
+            return Err("当前状态不允许恢复主密码".to_string());
+        }
+        let dek = migration::recover_v2_with_phrase(
+            &db,
+            recovery_phrase,
+            new_master_password,
+        )
+        .map_err(|error| {
+            if error == "新主密码长度至少 6 位" || error == "恢复短语无效" {
+                error
+            } else {
+                "无法设置新主密码，请重试".to_string()
+            }
+        })?;
+        // 只有 master metadata 事务 commit 成功后，才把同一个 Stable DEK 安装进运行态。
+        *key_slot = Some(ActiveKey::StableDek(dek));
+        Ok(())
+    }
     pub fn prepare_v2_initialization(&self, password: &str) -> Result<Vec<String>, String> {
         let mut startup_mode = self.startup_mode.lock().map_err(|_| "安全状态不可用".to_string())?;
         if *startup_mode != StartupMode::FreshV2 || self.security_model != SecurityModel::StableDekV2 {
@@ -182,6 +233,7 @@ pub fn run() {
                 security_model,
                 startup_mode: Mutex::new(startup_mode),
                 pending_v2: Mutex::new(None),
+                recovery_gate: Mutex::new(()),
                 key: Mutex::new(None),
             });
 
@@ -409,6 +461,8 @@ pub fn run() {
             get_security_status,
             initialize_v2_security,
             finalize_v2_security,
+            verify_v2_recovery_phrase,
+            recover_v2_with_phrase,
             setup_master_password,
             unlock_app,
             lock_app,

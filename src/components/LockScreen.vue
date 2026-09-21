@@ -1,7 +1,14 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from "vue";
 import { useAppStore } from "../stores/app";
-import { unlockApp, lockApp, hideWindow } from "../api";
+import {
+  unlockApp,
+  lockApp,
+  hideWindow,
+  getSecurityStatus,
+  verifyV2RecoveryPhrase,
+  recoverV2WithPhrase,
+} from "../api";
 import { listen } from "@tauri-apps/api/event";
 import { useWindowDrag } from "../composables/useWindowDrag";
 // 品牌 Logo
@@ -15,6 +22,12 @@ const isUnlocked = ref(false);
 const attempts = ref(0);
 // 修复 P1-#16：恢复短语放到组件本地 ref，不再进全局 store
 const recoveryPhrase = ref<string[]>([]);
+type LockMode = "master" | "recovery-phrase" | "new-master";
+const mode = ref<LockMode>("master");
+const recoveryInput = ref("");
+const newMasterPassword = ref("");
+const confirmMasterPassword = ref("");
+const v2RecoveryAvailable = ref(false);
 
 // 拖动支持：登录页也要能拖动窗口
 const { onDragHandleMouseDown } = useWindowDrag();
@@ -28,13 +41,93 @@ onMounted(async () => {
     appStore.lock();
     password.value = "";
     isUnlocked.value = false;
-    recoveryPhrase.value = []; // 锁定时立即清空
+    clearRecoverySecrets();
   });
+  try {
+    const status = await getSecurityStatus();
+    v2RecoveryAvailable.value = status.security_model === "stable_dek_v2";
+  } catch {
+    // fail closed：IPC 异常时不开放 Recovery 入口。
+    v2RecoveryAvailable.value = false;
+  }
 });
 
 onUnmounted(() => {
   unlisten?.();
+  password.value = "";
+  clearRecoverySecrets();
 });
+
+function clearRecoverySecrets() {
+  recoveryPhrase.value = [];
+  recoveryInput.value = "";
+  newMasterPassword.value = "";
+  confirmMasterPassword.value = "";
+  mode.value = "master";
+}
+
+function normalizedRecoveryPhrase() {
+  return recoveryInput.value.trim().toLowerCase().split(/\s+/).filter(Boolean).join(" ");
+}
+
+function beginRecovery() {
+  error.value = "";
+  if (!v2RecoveryAvailable.value) {
+    error.value = "旧版密码库暂不支持恢复短语";
+    return;
+  }
+  password.value = "";
+  mode.value = "recovery-phrase";
+}
+
+function cancelRecovery() {
+  clearRecoverySecrets();
+  error.value = "";
+  isLoading.value = false;
+}
+
+async function handleVerifyRecovery() {
+  const phrase = normalizedRecoveryPhrase();
+  if (phrase.split(" ").length !== 12) {
+    error.value = "请输入 12 个恢复词";
+    return;
+  }
+  isLoading.value = true;
+  error.value = "";
+  try {
+    await verifyV2RecoveryPhrase(phrase);
+    recoveryInput.value = phrase;
+    mode.value = "new-master";
+  } catch {
+    error.value = "恢复短语无效";
+  } finally {
+    isLoading.value = false;
+  }
+}
+
+async function handleRecoveryComplete() {
+  if (newMasterPassword.value.length < 6) {
+    error.value = "新主密码长度至少 6 位";
+    return;
+  }
+  if (newMasterPassword.value !== confirmMasterPassword.value) {
+    error.value = "两次输入的主密码不一致";
+    return;
+  }
+  isLoading.value = true;
+  error.value = "";
+  try {
+    await recoverV2WithPhrase(normalizedRecoveryPhrase(), newMasterPassword.value);
+    isUnlocked.value = true;
+    clearRecoverySecrets();
+    password.value = "";
+    attempts.value = 0;
+    setTimeout(() => appStore.unlock(), 200);
+  } catch (e) {
+    error.value = String(e);
+    isLoading.value = false;
+  }
+}
 
 async function handleUnlock() {
   if (!password.value) {
@@ -62,6 +155,9 @@ async function handleUnlock() {
 
 // 退出登录界面：直接隐藏抽屉柜
 async function handleClose() {
+  password.value = "";
+  error.value = "";
+  clearRecoverySecrets();
   await hideWindow();
 }
 </script>
@@ -101,10 +197,14 @@ async function handleClose() {
         </Transition>
       </div>
 
-      <h2 class="lock-title">请输入主密码以解锁</h2>
-      <p class="lock-subtitle">Drawer · 您的私密桌面收纳箱</p>
+      <h2 class="lock-title">
+        {{ mode === "master" ? "请输入主密码以解锁" : mode === "recovery-phrase" ? "输入恢复短语" : "设置新主密码" }}
+      </h2>
+      <p class="lock-subtitle">
+        {{ mode === "master" ? "Drawer · 您的私密桌面收纳箱" : mode === "recovery-phrase" ? "请输入保存的 12 个恢复词" : "恢复后将自动进入应用" }}
+      </p>
 
-      <div class="lock-input-wrap">
+      <div v-if="mode === 'master'" class="lock-input-wrap">
         <input
           v-model="password"
           type="password"
@@ -116,6 +216,39 @@ async function handleClose() {
         <div v-if="isLoading" class="lock-spinner"></div>
       </div>
 
+      <div v-else-if="mode === 'recovery-phrase'" class="lock-input-wrap">
+        <textarea
+          v-model="recoveryInput"
+          class="recovery-input"
+          rows="4"
+          autocomplete="off"
+          autocapitalize="none"
+          spellcheck="false"
+          placeholder="输入 12 个恢复词，以空格分隔"
+          :disabled="isLoading"
+        ></textarea>
+      </div>
+
+      <div v-else class="new-master-fields">
+        <input
+          v-model="newMasterPassword"
+          type="password"
+          class="lock-input"
+          autocomplete="new-password"
+          placeholder="新主密码（至少 6 位）"
+          :disabled="isLoading"
+        />
+        <input
+          v-model="confirmMasterPassword"
+          type="password"
+          class="lock-input"
+          autocomplete="new-password"
+          placeholder="再次输入新主密码"
+          :disabled="isLoading"
+          @keyup.enter="handleRecoveryComplete"
+        />
+      </div>
+
       <Transition name="error-slide">
         <p v-if="error" class="lock-error">
           <span>⚠️</span>
@@ -124,6 +257,7 @@ async function handleClose() {
       </Transition>
 
       <button
+        v-if="mode === 'master'"
         class="lock-btn"
         :disabled="isLoading || isUnlocked"
         @click="handleUnlock"
@@ -133,10 +267,40 @@ async function handleClose() {
         <span v-else>解锁</span>
       </button>
 
-      <div class="lock-links">
-        <span class="lock-link">忘记密码？</span>
-        <span class="lock-divider">·</span>
-        <span class="lock-link">使用恢复短语</span>
+      <button
+        v-else-if="mode === 'recovery-phrase'"
+        class="lock-btn"
+        :disabled="isLoading"
+        @click="handleVerifyRecovery"
+      >
+        <span v-if="isLoading" class="btn-spinner"></span>
+        <span v-else>验证恢复短语</span>
+      </button>
+
+      <button
+        v-else
+        class="lock-btn"
+        :disabled="isLoading || isUnlocked"
+        @click="handleRecoveryComplete"
+      >
+        <span v-if="isLoading" class="btn-spinner"></span>
+        <span v-else-if="isUnlocked" class="btn-success">✓ 已恢复</span>
+        <span v-else>设置新主密码并进入</span>
+      </button>
+
+      <div v-if="mode === 'master'" class="lock-links">
+        <button
+          v-if="v2RecoveryAvailable"
+          type="button"
+          class="lock-link link-button"
+          @click="beginRecovery"
+        >忘记主密码？</button>
+        <span v-else class="legacy-recovery-note">旧版密码库暂不支持恢复</span>
+      </div>
+      <div v-else class="lock-links">
+        <button type="button" class="lock-link link-button" :disabled="isLoading" @click="cancelRecovery">
+          返回主密码解锁
+        </button>
       </div>
     </div>
     </div>
@@ -395,6 +559,38 @@ async function handleClose() {
 
 .lock-input:disabled { opacity: 0.5; cursor: not-allowed; }
 
+.recovery-input {
+  width: 100%;
+  resize: none;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.7;
+  outline: none;
+  transition: all 0.2s;
+}
+
+.recovery-input:focus {
+  border-color: var(--accent);
+  background: rgba(0, 0, 0, 0.4);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.recovery-input:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.new-master-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.new-master-fields .lock-input {
+  letter-spacing: 1px;
+}
+
 .lock-spinner {
   position: absolute;
   right: 14px;
@@ -492,5 +688,13 @@ async function handleClose() {
 }
 
 .lock-link:hover { color: var(--accent-bright); }
+.link-button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+}
+.link-button:disabled { opacity: 0.5; cursor: default; }
+.legacy-recovery-note { color: var(--text-faint); }
 .lock-divider { color: var(--text-faint); }
 </style>

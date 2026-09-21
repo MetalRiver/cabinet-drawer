@@ -335,8 +335,15 @@ pub fn entropy_to_mnemonic(entropy: &[u8]) -> Result<String, String> {
 /// 12 词 → 归一化 → 词表+checksum 校验 → entropy(16B)；失败统一 InvalidFormat
 pub fn mnemonic_to_entropy(phrase: &str) -> Result<Zeroizing<Vec<u8>>, SecretError> {
     // 归一化：折叠空白 + 小写（BIP39 词表全小写）；词数/词表/checksum 全部校验
-    let normalized = phrase.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
-    let m = Mnemonic::from_phrase(normalized, Language::English).map_err(|_| SecretError::InvalidFormat)?;
+    let normalized = Zeroizing::new(
+        phrase
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase(),
+    );
+    let m = Mnemonic::from_phrase(normalized.as_str(), Language::English)
+        .map_err(|_| SecretError::InvalidFormat)?;
     Ok(Zeroizing::new(m.entropy().to_vec()))
 }
 

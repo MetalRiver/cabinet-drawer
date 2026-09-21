@@ -10,6 +10,23 @@ export const initializeV2Security = (masterPassword: string) =>
 
 export const finalizeV2Security = () => invoke<void>("finalize_v2_security");
 
+export const verifyV2RecoveryPhrase = (recoveryPhrase: string) =>
+  invoke<void>("verify_v2_recovery_phrase", { recoveryPhrase });
+
+export const recoverV2WithPhrase = (
+  recoveryPhrase: string,
+  newMasterPassword: string
+) => invoke<void>("recover_v2_with_phrase", { recoveryPhrase, newMasterPassword });
+
+export interface SecurityStatus {
+  security_model: "legacy_security_model" | "stable_dek_v2";
+  migration_required: boolean;
+  write_allowed: boolean;
+}
+
+export const getSecurityStatus = () =>
+  invoke<SecurityStatus>("get_security_status");
+
 export const setupMasterPassword = (masterPassword: string, recoveryPhrase: string[]) =>
   invoke<void>("setup_master_password", { masterPassword, recoveryPhrase });
 

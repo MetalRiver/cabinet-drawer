@@ -55,6 +55,32 @@ pub fn finalize_v2_security(state: State<AppState>) -> Result<(), String> {
 }
 
 // ============================================================
+// 🔒 v2 Recovery：验证短语 → 原子重包同一个 Stable DEK
+// ============================================================
+#[tauri::command]
+pub fn verify_v2_recovery_phrase(
+    state: State<AppState>,
+    recovery_phrase: String,
+) -> Result<(), String> {
+    let recovery_phrase = Zeroizing::new(recovery_phrase);
+    state.verify_v2_recovery_phrase(recovery_phrase.as_str())
+}
+
+#[tauri::command]
+pub fn recover_v2_with_phrase(
+    state: State<AppState>,
+    recovery_phrase: String,
+    new_master_password: String,
+) -> Result<(), String> {
+    let recovery_phrase = Zeroizing::new(recovery_phrase);
+    let new_master_password = Zeroizing::new(new_master_password);
+    state.recover_v2_with_phrase_and_store(
+        recovery_phrase.as_str(),
+        new_master_password.as_str(),
+    )
+}
+
+// ============================================================
 // 🔒 设置主密码（首次启动向导）
 // ============================================================
 #[tauri::command]
