@@ -1,12 +1,20 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
-import { isFirstRun as apiIsFirstRun, trashCount as apiTrashCount } from "../api";
+import {
+  isFirstRun as apiIsFirstRun,
+  getSecurityStatus,
+  trashCount as apiTrashCount,
+} from "../api";
 
 export const useAppStore = defineStore("app", () => {
   const isLocked = ref(true);
   // fail closed：只有后端明确确认 FreshV2 才进入初始化向导。
   // IPC 失败或 legacy/v2 已存在时都不得默认创建新密码库。
   const isFirstRun = ref(false);
+  // 0.3.0 安全升级：legacy-only 启动态必须走两阶段迁移流程，
+  // 不允许普通解锁进入 legacy 工作模式。fail closed：仅当后端明确
+  // 返回 legacy_security_model + migration_required 时才置 true。
+  const migrationRequired = ref(false);
   const currentView = ref("passwords");
   const searchQuery = ref("");
   const showSummaryModal = ref(false);
@@ -25,6 +33,20 @@ export const useAppStore = defineStore("app", () => {
       isFirstRun.value = false;
       console.error("检查首次启动失败", e);
     }
+    try {
+      const status = await getSecurityStatus();
+      migrationRequired.value =
+        status.security_model === "legacy_security_model" && status.migration_required;
+    } catch (e) {
+      // fail closed：查询失败不开启迁移流程（此时普通解锁也被后端硬闸拒绝）
+      migrationRequired.value = false;
+      console.error("检查安全状态失败", e);
+    }
+  }
+
+  // 两阶段迁移 confirm 成功后由 MigrationFlow 调用
+  function completeMigration() {
+    migrationRequired.value = false;
   }
 
   async function refreshTrashCount() {
@@ -57,6 +79,7 @@ export const useAppStore = defineStore("app", () => {
   return {
     isLocked,
     isFirstRun,
+    migrationRequired,
     currentView,
     searchQuery,
     showSummaryModal,
@@ -67,6 +90,7 @@ export const useAppStore = defineStore("app", () => {
     lock,
     unlock,
     setFirstRun,
+    completeMigration,
     showClipToast,
     refreshTrashCount,
   };

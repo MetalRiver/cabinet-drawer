@@ -11,6 +11,7 @@
 use crate::crypto;
 use crate::db::Db;
 use rusqlite::params;
+use rusqlite::{Connection, OpenFlags};
 use std::path::{Path, PathBuf};
 use zeroize::Zeroizing;
 
@@ -468,9 +469,110 @@ pub struct MigrationOutput {
     pub passwords_migrated: usize,
 }
 
+/// 两阶段 legacy 升级的 Prepare 产物：完整校验、尚未正式生效的 pending v2 tmp。
+/// 恢复短语只经此返回一次给 UI；正式 v2 与 legacy 均未被触碰。
+pub struct PreparedLegacyMigration {
+    pub tmp_path: PathBuf,
+    pub v2_path: PathBuf,
+    pub legacy_path: PathBuf,
+    pub dek: Zeroizing<Vec<u8>>,
+    pub mnemonic: Vec<String>,
+    pub passwords_migrated: usize,
+    /// legacy 源库 canonical 指纹；confirm 前必须复验一致才允许激活。
+    pub source_fingerprint: [u8; 32],
+}
+
 /// 迁移入口（生产）
 pub fn migrate_legacy_to_v2(app_dir: &Path, master_password: &str) -> Result<MigrationOutput, MigrationError> {
     migrate_legacy_to_v2_inject(app_dir, master_password, None)
+}
+
+/// legacy 源库 canonical 指纹：schema + 全部用户表全行，同一只读事务内的 consistent snapshot。
+/// 不依赖 mtime / 文件字节（WAL checkpoint 等无关重排不影响结果）。
+pub fn legacy_db_fingerprint(path: &Path) -> Result<[u8; 32], String> {
+    use rusqlite::types::ValueRef;
+    use sha2::{Digest, Sha256};
+    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|_| "无法只读打开 legacy 库".to_string())?;
+    conn.pragma_update(None, "query_only", true)
+        .map_err(|_| "无法启用只读保护".to_string())?;
+    let mut digest = Sha256::new();
+    let hash_value = |digest: &mut Sha256, value: ValueRef<'_>| {
+        match value {
+            ValueRef::Null => digest.update([0]),
+            ValueRef::Integer(value) => {
+                digest.update([1]);
+                digest.update(value.to_le_bytes());
+            }
+            ValueRef::Real(value) => {
+                digest.update([2]);
+                digest.update(value.to_bits().to_le_bytes());
+            }
+            ValueRef::Text(value) => {
+                digest.update([3]);
+                digest.update((value.len() as u64).to_le_bytes());
+                digest.update(value);
+            }
+            ValueRef::Blob(value) => {
+                digest.update([4]);
+                digest.update((value.len() as u64).to_le_bytes());
+                digest.update(value);
+            }
+        };
+    };
+    // 单只读事务 = consistent snapshot；prepare/confirm 两次调用读到同一逻辑状态才可能同指纹。
+    conn.execute_batch("BEGIN")
+        .map_err(|_| "无法建立一致读事务".to_string())?;
+    let fingerprint = (|| -> Result<[u8; 32], String> {
+        {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT type,name,tbl_name,sql FROM sqlite_master
+                     WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name",
+                )
+                .map_err(|_| "无法读取 legacy schema".to_string())?;
+            let mut rows = stmt.query([]).map_err(|_| "无法读取 legacy schema".to_string())?;
+            while let Some(row) = rows.next().map_err(|_| "无法读取 legacy schema".to_string())? {
+                digest.update([0xfa]);
+                for column in 0..4 {
+                    let value = row.get_ref(column).map_err(|_| "无法读取 legacy schema".to_string())?;
+                    hash_value(&mut digest, value);
+                }
+            }
+        }
+        let mut names = conn
+            .prepare(
+                "SELECT name FROM sqlite_master
+                 WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+            )
+            .map_err(|_| "无法读取 legacy 表清单".to_string())?;
+        let names = names
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|_| "无法读取 legacy 表清单".to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| "无法读取 legacy 表清单".to_string())?;
+        for name in names {
+            let quoted = format!("\"{}\"", name.replace('"', "\"\""));
+            let mut stmt = conn
+                .prepare(&format!("SELECT * FROM {quoted} ORDER BY rowid"))
+                .map_err(|_| "无法读取 legacy 数据行".to_string())?;
+            let columns = stmt.column_count();
+            let mut rows = stmt.query([]).map_err(|_| "无法读取 legacy 数据行".to_string())?;
+            while let Some(row) = rows.next().map_err(|_| "无法读取 legacy 数据行".to_string())? {
+                digest.update([0xfe]);
+                for column in 0..columns {
+                    let value = row
+                        .get_ref(column)
+                        .map_err(|_| "无法读取 legacy 数据行".to_string())?;
+                    hash_value(&mut digest, value);
+                }
+            }
+        }
+        Ok(digest.finalize().into())
+    })();
+    conn.execute_batch("COMMIT")
+        .map_err(|_| "无法结束一致读事务".to_string())?;
+    fingerprint
 }
 
 /// 迁移引擎（T1-T8；fail_at 仅供测试注入失败点）
@@ -482,13 +584,68 @@ pub fn migrate_legacy_to_v2_inject(
     let fail = |fp: MigrationFailPoint| fail_at == Some(fp);
 
     let legacy_path = app_dir.join(LEGACY_DB_FILENAME);
-    let tmp_path = app_dir.join(V2_TMP_FILENAME);
     let v2_path = app_dir.join(V2_DB_FILENAME);
 
     // 注入点 1：创建 tmp 前失败
     if fail(MigrationFailPoint::BeforeTmpCreate) {
         return Err("injected:BeforeTmpCreate".into());
     }
+    if !legacy_path.exists() {
+        return Err("legacy 库不存在".into());
+    }
+    if v2_path.exists() {
+        return Err("v2 库已存在，拒绝覆盖".into());
+    }
+    if app_dir.join(V2_TMP_FILENAME).exists() {
+        return Err("检测到未完成的 v2 迁移临时库".into());
+    }
+
+    let built = build_migrated_v2_tmp(app_dir, master_password, fail_at)?;
+
+    // 注入点 6：rename 前失败
+    if fail(MigrationFailPoint::BeforeRename) {
+        return Err("injected:BeforeRename".into());
+    }
+
+    // T9 atomic rename → v2 正式活动库
+    std::fs::rename(&built.tmp_path, &v2_path).map_err(|e| format!("rename 失败: {}", e))?;
+
+    // T10 legacy 隔离归档
+    archive_legacy_source(app_dir)?;
+
+    Ok(MigrationOutput {
+        v2_path,
+        dek: built.dek,
+        mnemonic: built.mnemonic,
+        passwords_migrated: built.passwords_migrated,
+    })
+}
+
+/// legacy 源库隔离归档（迁移成功后调用；归档失败属于可见错误，调用方决定语义）。
+pub fn archive_legacy_source(app_dir: &Path) -> Result<(), MigrationError> {
+    let legacy_path = app_dir.join(LEGACY_DB_FILENAME);
+    let legacy_backup = app_dir.join(format!("{}{}", LEGACY_DB_FILENAME, LEGACY_BACKUP_SUFFIX));
+    if legacy_path.exists() {
+        std::fs::rename(&legacy_path, &legacy_backup)
+            .map_err(|e| format!("legacy 归档失败: {}", e))?;
+    }
+    Ok(())
+}
+
+/// Prepare 阶段核心（T2-T8）：验证旧主密码 → 严格只读 legacy → 构建 pending v2 tmp。
+/// 绝不创建正式 v2、绝不改写 legacy、绝不归档 legacy。
+/// 失败时可能留下未完成 tmp，由调用方负责清理。
+pub fn build_migrated_v2_tmp(
+    app_dir: &Path,
+    master_password: &str,
+    fail_at: Option<MigrationFailPoint>,
+) -> Result<PreparedLegacyMigration, MigrationError> {
+    let fail = |fp: MigrationFailPoint| fail_at == Some(fp);
+
+    let legacy_path = app_dir.join(LEGACY_DB_FILENAME);
+    let tmp_path = app_dir.join(V2_TMP_FILENAME);
+    let v2_path = app_dir.join(V2_DB_FILENAME);
+
     if !legacy_path.exists() {
         return Err("legacy 库不存在".into());
     }
@@ -779,30 +936,74 @@ pub fn migrate_legacy_to_v2_inject(
         crypto::decrypt_password_dw2(&dw2, &dek, &uuid).map_err(|_| "v2 抽样解密失败".to_string())?;
     }
 
-    // 关闭连接（rename 前必须全部释放句柄）
+    // 关闭连接（指纹计算与调用方激活前，必须全部释放句柄）
     drop(v2);
     drop(legacy);
 
-    // 注入点 6：rename 前失败
-    if fail(MigrationFailPoint::BeforeRename) {
-        return Err("injected:BeforeRename".into());
-    }
+    // Prepare 完成前建立 legacy 源库一致快照指纹；confirm 激活前必须复验一致。
+    let source_fingerprint = legacy_db_fingerprint(&legacy_path)?;
 
-    // T9 atomic rename → v2 正式活动库
-    std::fs::rename(&tmp_path, &v2_path).map_err(|e| format!("rename 失败: {}", e))?;
-
-    // T10 legacy 隔离归档
-    let legacy_backup = app_dir.join(format!("{}{}", LEGACY_DB_FILENAME, LEGACY_BACKUP_SUFFIX));
-    if legacy_path.exists() {
-        std::fs::rename(&legacy_path, &legacy_backup).map_err(|e| format!("legacy 归档失败: {}", e))?;
-    }
-
-    Ok(MigrationOutput {
+    Ok(PreparedLegacyMigration {
+        tmp_path,
         v2_path,
+        legacy_path,
         dek,
         mnemonic: phrase.split_whitespace().map(String::from).collect(),
         passwords_migrated: migrated,
+        source_fingerprint,
     })
+}
+
+/// Confirm 阶段的持久化提交点：把已校验的 pending v2 tmp 原子发布为正式 v2。
+/// 此函数返回后，升级即已持久化完成——即使进程立刻崩溃，下次启动也能通过
+/// 正常 Master unlock 进入 v2（不依赖任何丢失的内存 pending 状态）。
+/// legacy 隔离归档由调用方在替换 AppState 连接后单独执行（Windows 下旧连接
+/// 未释放时 rename 会失败）。
+pub fn activate_migrated_v2(app_dir: &Path) -> Result<Db, String> {
+    let tmp_path = app_dir.join(V2_TMP_FILENAME);
+    let v2_path = app_dir.join(V2_DB_FILENAME);
+    if v2_path.exists() {
+        return Err("v2 库已存在，拒绝覆盖".to_string());
+    }
+    if !tmp_path.exists() {
+        return Err("升级临时库不存在".to_string());
+    }
+    let verified = open_existing_v2_db(&tmp_path)?;
+    drop(verified);
+    // Windows 同目录 rename：目标存在时失败，不覆盖现有正式库。
+    std::fs::rename(&tmp_path, &v2_path).map_err(|_| "无法完成安全升级".to_string())?;
+    open_existing_v2_db(&v2_path)
+}
+
+/// 仅清理「legacy 存在、无正式 v2、无备份」的中断升级 orphan tmp。
+/// 任何活动升级持有的 setup lock 带独占句柄时删除会失败 → fail closed。
+/// 目标：orphan tmp 永远不会让用户失去再次发起升级的能力。
+pub fn discard_abandoned_migration_tmp(app_dir: &Path) -> Result<bool, String> {
+    let v2_path = app_dir.join(V2_DB_FILENAME);
+    let legacy_path = app_dir.join(LEGACY_DB_FILENAME);
+    let backup_path = app_dir.join(format!("{}{}", LEGACY_DB_FILENAME, LEGACY_BACKUP_SUFFIX));
+    let tmp_path = app_dir.join(V2_TMP_FILENAME);
+    if !tmp_path.exists() || v2_path.exists() || !legacy_path.exists() || backup_path.exists() {
+        return Ok(false);
+    }
+    let setup_lock_path = app_dir.join(V2_SETUP_LOCK_FILENAME);
+    if setup_lock_path.exists() {
+        std::fs::remove_file(&setup_lock_path)
+            .map_err(|_| "检测到仍在进行的安全升级".to_string())?;
+    }
+    let mut removed = false;
+    for path in [
+        tmp_path,
+        app_dir.join(format!("{}-wal", V2_TMP_FILENAME)),
+        app_dir.join(format!("{}-shm", V2_TMP_FILENAME)),
+        app_dir.join(format!("{}-journal", V2_TMP_FILENAME)),
+    ] {
+        if path.exists() {
+            std::fs::remove_file(&path).map_err(|_| "无法清理未完成的安全升级".to_string())?;
+            removed = true;
+        }
+    }
+    Ok(removed)
 }
 
 /// v2 解锁核心（service 层；2B 才接入 UI/命令层）
@@ -1452,10 +1653,10 @@ mod migration_tests {
         let state = crate::AppState {
             db: std::sync::Mutex::new(open_existing_v2_db(&output.v2_path).unwrap()),
             db_path: output.v2_path.clone(),
-            security_model: crate::SecurityModel::StableDekV2,
             startup_mode: std::sync::Mutex::new(crate::StartupMode::ExistingV2),
             pending_v2: std::sync::Mutex::new(None),
             pending_recovery_rotation: std::sync::Mutex::new(None),
+            pending_legacy_migration: std::sync::Mutex::new(None),
             master_wrap_gate: std::sync::Mutex::new(()),
             key: std::sync::Mutex::new(None),
         };
@@ -1475,10 +1676,10 @@ mod migration_tests {
         crate::AppState {
             db: std::sync::Mutex::new(open_v2_db_in_memory().unwrap()),
             db_path: dir.join(V2_DB_FILENAME),
-            security_model: crate::SecurityModel::StableDekV2,
             startup_mode: std::sync::Mutex::new(crate::StartupMode::FreshV2),
             pending_v2: std::sync::Mutex::new(None),
             pending_recovery_rotation: std::sync::Mutex::new(None),
+            pending_legacy_migration: std::sync::Mutex::new(None),
             master_wrap_gate: std::sync::Mutex::new(()),
             key: std::sync::Mutex::new(None),
         }
@@ -1739,10 +1940,10 @@ mod migration_tests {
         let legacy_state = crate::AppState {
             db: std::sync::Mutex::new(Db::open(&legacy_path).unwrap()),
             db_path: legacy_path,
-            security_model: crate::SecurityModel::Legacy,
             startup_mode: std::sync::Mutex::new(crate::StartupMode::Legacy),
             pending_v2: std::sync::Mutex::new(None),
             pending_recovery_rotation: std::sync::Mutex::new(None),
+            pending_legacy_migration: std::sync::Mutex::new(None),
             master_wrap_gate: std::sync::Mutex::new(()),
             key: std::sync::Mutex::new(None),
         };
@@ -2150,10 +2351,10 @@ mod migration_tests {
         let legacy_state = crate::AppState {
             db: std::sync::Mutex::new(Db::open(&legacy_path).unwrap()),
             db_path: legacy_path,
-            security_model: crate::SecurityModel::Legacy,
             startup_mode: std::sync::Mutex::new(crate::StartupMode::Legacy),
             pending_v2: std::sync::Mutex::new(None),
             pending_recovery_rotation: std::sync::Mutex::new(None),
+            pending_legacy_migration: std::sync::Mutex::new(None),
             master_wrap_gate: std::sync::Mutex::new(()),
             key: std::sync::Mutex::new(None),
         };
@@ -2462,10 +2663,10 @@ mod migration_tests {
         let legacy_state = crate::AppState {
             db: std::sync::Mutex::new(Db::open(&legacy_path).unwrap()),
             db_path: legacy_path,
-            security_model: crate::SecurityModel::Legacy,
             startup_mode: std::sync::Mutex::new(crate::StartupMode::Legacy),
             pending_v2: std::sync::Mutex::new(None),
             pending_recovery_rotation: std::sync::Mutex::new(None),
+            pending_legacy_migration: std::sync::Mutex::new(None),
             master_wrap_gate: std::sync::Mutex::new(()),
             key: std::sync::Mutex::new(None),
         };

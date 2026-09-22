@@ -5,17 +5,67 @@ use tauri::State;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 
 use crate::crypto;
-use crate::{AppState, RecoveryRotationPreparation, SecurityModel, StartupMode};
+use crate::{
+    AppState, LegacyMigrationPreparation, LegacyMigrationStatus, RecoveryRotationPreparation,
+    SecurityModel, StartupMode,
+};
 use zeroize::Zeroizing;
 
 #[derive(serde::Serialize)]
 pub struct SecurityStatus { security_model: &'static str, migration_required: bool, write_allowed: bool }
 #[tauri::command]
 pub fn get_security_status(state: State<AppState>) -> SecurityStatus {
-    match state.security_model {
+    match state.security_model() {
         SecurityModel::Legacy => SecurityStatus { security_model: "legacy_security_model", migration_required: true, write_allowed: true },
         SecurityModel::StableDekV2 => SecurityStatus { security_model: "stable_dek_v2", migration_required: false, write_allowed: true },
     }
+}
+
+// ============================================================
+// 🔒 两阶段 legacy 安全升级（0.3.0 起唯一 legacy 出口）
+// legacy-only 启动态下禁止普通 unlock；必须走 prepare → 保存短语 →
+// 三词确认 → confirm 完成升级。
+// ============================================================
+
+/// legacy-only 启动态硬闸：任何绕过升级流程直接使用/改写 legacy 库的
+/// production IPC 一律 fail closed。
+pub(crate) fn ensure_not_legacy_startup(state: &AppState) -> Result<(), String> {
+    if *state.startup_mode.lock().map_err(|_| "安全状态不可用".to_string())? == StartupMode::Legacy {
+        return Err("数据库需要先完成安全升级后再使用".to_string());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_legacy_migration_status(state: State<AppState>) -> LegacyMigrationStatus {
+    state.legacy_migration_status()
+}
+
+#[tauri::command]
+pub fn prepare_legacy_migration(
+    state: State<AppState>,
+    master_password: String,
+) -> Result<LegacyMigrationPreparation, String> {
+    let master_password = Zeroizing::new(master_password);
+    state.prepare_legacy_migration(master_password.as_str())
+}
+
+#[tauri::command]
+pub fn confirm_legacy_migration(
+    state: State<AppState>,
+    migration_token: String,
+    confirmation_words: Vec<String>,
+) -> Result<(), String> {
+    let confirmation_words = Zeroizing::new(confirmation_words);
+    state.confirm_legacy_migration(&migration_token, confirmation_words.as_slice())
+}
+
+#[tauri::command]
+pub fn cancel_legacy_migration(
+    state: State<AppState>,
+    migration_token: String,
+) -> Result<(), String> {
+    state.cancel_legacy_migration(&migration_token)
 }
 
 // ============================================================
@@ -132,6 +182,7 @@ pub fn setup_master_password(
     recovery_phrase: Vec<String>,
 ) -> Result<(), String> {
     state.require_legacy_model()?;
+    ensure_not_legacy_startup(&state)?;
     if master_password.len() < 6 {
         return Err("主密码长度至少 6 位".to_string());
     }
@@ -154,43 +205,16 @@ pub fn setup_master_password(
 }
 
 // ============================================================
-// 🔒 解锁 App（返回恢复短语数组）
+// 🔒 解锁 App（v2 Stable DEK）
 // ============================================================
+// 硬安全边界（0.3.0）：legacy 安全模型下普通 unlock 一律 fail closed，
+// 绝不允许 ActiveKey::Legacy → 进入正常工作模式。
+// legacy 用户唯一出路 = prepare_legacy_migration → 保存恢复短语 →
+// 三词确认 → confirm_legacy_migration。
+// 生产语义唯一实现 = AppState::unlock_app_core（可测）。
 #[tauri::command]
 pub fn unlock_app(state: State<AppState>, master_password: String) -> Result<Vec<String>, String> {
-    if state.security_model == SecurityModel::StableDekV2 { state.unlock_v2_and_store(&master_password)?; return Ok(Vec::new()); }
-    let db = state.db.lock().unwrap();
-
-    let hash = db.get_setting("master_password_hash")
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "未设置主密码".to_string())?;
-    let salt_b64 = db.get_setting("master_password_salt")
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "未设置主密码".to_string())?;
-    let salt = BASE64.decode(&salt_b64).map_err(|e| e.to_string())?;
-
-    if crypto::hash_password(&master_password, &salt) != hash {
-        return Err("主密码错误".to_string());
-    }
-
-    let key = Zeroizing::new(crypto::derive_key(&master_password, &salt));
-    drop(db);
-
-    // 解密恢复短语返回给前端展示
-    let db = state.db.lock().unwrap();
-    let recovery_enc = db.get_setting("recovery_phrase_encrypted")
-        .map_err(|e| e.to_string())?
-        .unwrap_or_default();
-    let recovery_json = if !recovery_enc.is_empty() {
-        crypto::decrypt(&recovery_enc, &key).unwrap_or_else(|_| "[]".to_string())
-    } else {
-        "[]".to_string()
-    };
-    let recovery: Vec<String> = serde_json::from_str(&recovery_json).unwrap_or_default();
-    drop(db);
-
-    state.set_legacy_key(key);
-    Ok(recovery)
+    state.unlock_app_core(&master_password)
 }
 
 // ============================================================
@@ -210,6 +234,7 @@ pub fn change_master_password(
     new_password: String,
 ) -> Result<ReencryptStats, String> {
     state.require_legacy_model()?;
+    ensure_not_legacy_startup(&state)?;
     if new_password.len() < 6 {
         return Err("新主密码长度至少 6 位".to_string());
     }
@@ -319,7 +344,9 @@ pub fn lock_app(state: State<AppState>) {
 // ============================================================
 #[tauri::command]
 pub fn has_second_password(state: State<AppState>) -> bool {
-    if state.security_model != SecurityModel::Legacy { return false; }
+    if state.security_model() != SecurityModel::Legacy { return false; }
+    let legacy_startup = matches!(state.startup_mode.lock().as_deref(), Ok(StartupMode::Legacy));
+    if legacy_startup { return false; }
     let db = match state.db.lock() {
         Ok(g) => g,
         Err(_) => return false,
@@ -337,6 +364,7 @@ pub fn change_second_password(
     new_second_password_opt: Option<String>,
 ) -> Result<(), String> {
     state.require_legacy_model()?;
+    ensure_not_legacy_startup(&state)?;
     let db = state.db.lock().map_err(|e| e.to_string())?;
     let has_2nd = matches!(db.get_setting("pw2nd_hash"), Ok(Some(v)) if !v.is_empty());
 
@@ -406,7 +434,9 @@ pub fn change_second_password(
 // ============================================================
 #[tauri::command]
 pub fn verify_password_for_pw_view(state: State<AppState>, input_password: String) -> bool {
-    if state.security_model != SecurityModel::Legacy { return false; }
+    if state.security_model() != SecurityModel::Legacy { return false; }
+    let legacy_startup = matches!(state.startup_mode.lock().as_deref(), Ok(StartupMode::Legacy));
+    if legacy_startup { return false; }
     let db = match state.db.lock() {
         Ok(g) => g,
         Err(_) => return false,
@@ -458,6 +488,7 @@ pub fn rescue_passwords_with_master(
     old_master_password: String,
 ) -> Result<RescueStats, String> {
     state.require_legacy_model()?;
+    ensure_not_legacy_startup(&state)?;
     if old_master_password.len() < 6 {
         return Err("主密码长度至少 6 位".to_string());
     }

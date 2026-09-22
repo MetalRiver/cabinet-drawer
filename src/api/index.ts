@@ -49,6 +49,35 @@ export interface SecurityStatus {
 export const getSecurityStatus = () =>
   invoke<SecurityStatus>("get_security_status");
 
+// ============================================================
+// 🔒 两阶段 legacy 安全升级（0.3.0 起唯一 legacy 出口）
+// legacy-only 启动态下锁屏被 MigrationFlow 取代，不允许普通 unlock。
+// ============================================================
+export interface LegacyMigrationPreparation {
+  migration_token: string;
+  recovery_words: string[];
+  confirmation_indexes: number[];
+}
+
+export interface LegacyMigrationStatus {
+  active: boolean;
+  migration_token: string | null;
+}
+
+export const getLegacyMigrationStatus = () =>
+  invoke<LegacyMigrationStatus>("get_legacy_migration_status");
+
+export const prepareLegacyMigration = (masterPassword: string) =>
+  invoke<LegacyMigrationPreparation>("prepare_legacy_migration", { masterPassword });
+
+export const confirmLegacyMigration = (
+  migrationToken: string,
+  confirmationWords: string[]
+) => invoke<void>("confirm_legacy_migration", { migrationToken, confirmationWords });
+
+export const cancelLegacyMigration = (migrationToken: string) =>
+  invoke<void>("cancel_legacy_migration", { migrationToken });
+
 export const setupMasterPassword = (masterPassword: string, recoveryPhrase: string[]) =>
   invoke<void>("setup_master_password", { masterPassword, recoveryPhrase });
 

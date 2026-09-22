@@ -123,7 +123,7 @@ pub fn export_encrypted_backup(
         .save_file()
         .ok_or_else(|| "用户取消".to_string())?;
 
-    if state.security_model == SecurityModel::StableDekV2 {
+    if state.security_model() == SecurityModel::StableDekV2 {
         let stats = backup_v2::export_v2_to_path(&state, master_password.as_str(), &save_path)?;
         return Ok(ExportResult {
             path: save_path.to_string_lossy().to_string(),
@@ -232,7 +232,7 @@ pub fn import_encrypted_backup(
     policy: db::ImportConflictPolicy,
 ) -> Result<db::ImportStats, String> {
     let master_password = Zeroizing::new(master_password);
-    if state.security_model == SecurityModel::StableDekV2 {
+    if state.security_model() == SecurityModel::StableDekV2 {
         let restored = backup_v2::restore_v2_from_path(
             &state,
             Path::new(&file_path),

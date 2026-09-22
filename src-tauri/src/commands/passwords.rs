@@ -18,7 +18,7 @@ pub fn list_passwords(state: State<AppState>) -> Result<Vec<db::PasswordMeta>, S
 }
 
 fn list_passwords_inner(state: &AppState) -> Result<Vec<db::PasswordMeta>, String> {
-    match state.security_model {
+    match state.security_model() {
         SecurityModel::Legacy => {
             let _key = state.legacy_key()?;
             let db = state.db.lock().unwrap();
@@ -57,7 +57,7 @@ fn create_password_inner(
     notes: String,
 ) -> Result<i64, String> {
     let password = Zeroizing::new(password);
-    match state.security_model {
+    match state.security_model() {
         SecurityModel::Legacy => {
             let key = state.legacy_key()?;
             let encrypted = crypto::encrypt(&password, &key).map_err(|e| e.to_string())?;
@@ -94,7 +94,7 @@ pub fn get_password_decrypted(state: State<AppState>, id: i64) -> Result<String,
 }
 
 fn get_password_decrypted_inner(state: &AppState, id: i64) -> Result<String, String> {
-    match state.security_model {
+    match state.security_model() {
         SecurityModel::Legacy => {
             let key = state.legacy_key()?;
             let db = state.db.lock().unwrap();
@@ -133,7 +133,7 @@ pub fn bump_password_use_count(state: State<AppState>, id: i64) -> Result<i64, S
 }
 
 fn bump_password_use_count_inner(state: &AppState, id: i64) -> Result<i64, String> {
-    match state.security_model {
+    match state.security_model() {
         SecurityModel::Legacy => {
             let db = state.db.lock().unwrap();
             db.bump_password_use_count(id).map_err(|e| e.to_string())
@@ -177,7 +177,7 @@ fn update_password_inner(
     url: String,
     notes: String,
 ) -> Result<(), String> {
-    match state.security_model {
+    match state.security_model() {
         SecurityModel::Legacy => {
             let encrypted: Option<String> = match password {
                 Some(pw) => {
@@ -243,7 +243,7 @@ pub fn delete_password(state: State<AppState>, id: i64) -> Result<(), String> {
 }
 
 fn delete_password_inner(state: &AppState, id: i64) -> Result<(), String> {
-    match state.security_model {
+    match state.security_model() {
         SecurityModel::Legacy => {
             let db = state.db.lock().unwrap();
             db.soft_delete("passwords", id).map_err(|e| e.to_string())?;
@@ -314,10 +314,10 @@ mod phase2a2_tests {
         let state = AppState {
             db: Mutex::new(db),
             db_path: path,
-            security_model: SecurityModel::StableDekV2,
             startup_mode: Mutex::new(crate::StartupMode::ExistingV2),
             pending_v2: Mutex::new(None),
             pending_recovery_rotation: Mutex::new(None),
+            pending_legacy_migration: std::sync::Mutex::new(None),
             master_wrap_gate: Mutex::new(()),
             key: Mutex::new(None),
         };
@@ -334,10 +334,10 @@ mod phase2a2_tests {
         let state = AppState {
             db: Mutex::new(db),
             db_path: path,
-            security_model: SecurityModel::Legacy,
             startup_mode: Mutex::new(crate::StartupMode::Legacy),
             pending_v2: Mutex::new(None),
             pending_recovery_rotation: Mutex::new(None),
+            pending_legacy_migration: std::sync::Mutex::new(None),
             master_wrap_gate: Mutex::new(()),
             key: Mutex::new(None),
         };

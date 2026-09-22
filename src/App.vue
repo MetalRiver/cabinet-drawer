@@ -6,6 +6,7 @@ import { applyWidgetConfig, setWindowSize, getAppStatus } from "./api";
 import { listen } from "@tauri-apps/api/event";
 import LockScreen from "./components/LockScreen.vue";
 import SetupWizard from "./components/SetupWizard.vue";
+import MigrationFlow from "./components/MigrationFlow.vue";
 import MainLayout from "./components/MainLayout.vue";
 import ClipToast from "./components/ClipToast.vue";
 
@@ -142,6 +143,8 @@ onUnmounted(() => {
     <div v-if="ready" class="app-root">
       <Transition name="scene" mode="out-in">
         <SetupWizard v-if="appStore.isFirstRun" key="wizard" />
+        <!-- 0.3.0 安全升级：legacy-only 启动态必须走两阶段迁移，不允许普通解锁 -->
+        <MigrationFlow v-else-if="appStore.migrationRequired && appStore.isLocked" key="migration" />
         <LockScreen v-else-if="appStore.isLocked" key="lock" />
         <MainLayout v-else key="main" />
       </Transition>

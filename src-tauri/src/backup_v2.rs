@@ -109,7 +109,7 @@ impl Drop for TempDbGuard {
 }
 
 fn ensure_existing_v2(state: &AppState) -> Result<(), String> {
-    if state.security_model != SecurityModel::StableDekV2
+    if state.security_model() != SecurityModel::StableDekV2
         || *state
             .startup_mode
             .lock()
@@ -587,10 +587,10 @@ mod tests {
         let state = AppState {
             db: Mutex::new(migration::open_existing_v2_db(&db_path).unwrap()),
             db_path,
-            security_model: SecurityModel::StableDekV2,
             startup_mode: Mutex::new(StartupMode::ExistingV2),
             pending_v2: Mutex::new(None),
             pending_recovery_rotation: Mutex::new(None),
+            pending_legacy_migration: std::sync::Mutex::new(None),
             master_wrap_gate: Mutex::new(()),
             key: Mutex::new(Some(ActiveKey::StableDek(Zeroizing::new(expected_dek.clone())))),
         };

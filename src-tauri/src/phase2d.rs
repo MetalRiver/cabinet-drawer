@@ -281,12 +281,27 @@ fn existing_state(path: &Path, dek: &[u8]) -> Result<AppState, String> {
     Ok(AppState {
         db: Mutex::new(migration::open_existing_v2_db(path)?),
         db_path: path.to_path_buf(),
-        security_model: SecurityModel::StableDekV2,
         startup_mode: Mutex::new(StartupMode::ExistingV2),
         pending_v2: Mutex::new(None),
         pending_recovery_rotation: Mutex::new(None),
+        pending_legacy_migration: std::sync::Mutex::new(None),
         master_wrap_gate: Mutex::new(()),
         key: Mutex::new(Some(ActiveKey::StableDek(Zeroizing::new(dek.to_vec())))),
+    })
+}
+
+/// 与 production Legacy 启动一致的 AppState（db = legacy RW 连接）。
+/// 驱动 production prepare → confirm 升级路径时使用。
+fn legacy_production_state(path: &Path) -> Result<AppState, String> {
+    Ok(AppState {
+        db: Mutex::new(Db::open(path).map_err(|_| "无法打开 legacy 输入".to_string())?),
+        db_path: path.to_path_buf(),
+        startup_mode: Mutex::new(StartupMode::Legacy),
+        pending_v2: Mutex::new(None),
+        pending_recovery_rotation: Mutex::new(None),
+        pending_legacy_migration: std::sync::Mutex::new(None),
+        master_wrap_gate: Mutex::new(()),
+        key: Mutex::new(None),
     })
 }
 
@@ -359,37 +374,120 @@ fn run_rehearsal_with_password(workspace: PathBuf, master_password: &str) -> Res
     let migration_input = migration_dir.join(migration::LEGACY_DB_FILENAME);
     online_snapshot(&snapshot, &migration_input)?;
     let migration_input_hash = file_sha256(&migration_input)?;
-
-    let mut output = migration::migrate_legacy_to_v2(&migration_dir, master_password)
-        .map_err(|_| "production migration 失败".to_string())?;
-    let recovery_phrase = Zeroizing::new(output.mnemonic.join(" "));
-    output.mnemonic.zeroize();
-    require(
-        output.passwords_migrated == *baseline_counts.get("passwords").unwrap_or(&-1) as usize,
-        "密码迁移数量不一致",
-    )?;
+    let v2_path = migration_dir.join(migration::V2_DB_FILENAME);
     let archived = migration_dir.join(format!(
         "{}{}",
         migration::LEGACY_DB_FILENAME,
         migration::LEGACY_BACKUP_SUFFIX
     ));
+
+    // ============================================================
+    // production prepare → confirm 路径（0.3.0 正式产品语义）：
+    // (a) abort-before-confirm；(b) 错误确认词 fail closed；(c) 正常 confirm
+    // ============================================================
+    let state = legacy_production_state(&migration_input)?;
+    {
+        // (a) prepare 后取消：无任何磁盘痕迹，legacy 原样
+        let prepared = state.prepare_legacy_migration(master_password)?;
+        state.cancel_legacy_migration(&prepared.migration_token)?;
+        require(
+            !migration_dir.join(migration::V2_TMP_FILENAME).exists(),
+            "取消后 tmp 未清理",
+        )?;
+        require(
+            !migration_dir.join(migration::V2_SETUP_LOCK_FILENAME).exists(),
+            "取消后 setup lock 未清理",
+        )?;
+        require(!v2_path.exists(), "取消后不得存在正式 v2")?;
+        require(
+            file_sha256(&migration_input)? == migration_input_hash,
+            "取消改写了 legacy 输入",
+        )?;
+    }
+    let prepared = state.prepare_legacy_migration(master_password)?;
+    let recovery_phrase = Zeroizing::new(prepared.recovery_words.join(" "));
+    {
+        // (b) 错误确认词：拒绝后 pending 保留、可重试
+        let wrong: Vec<String> = prepared
+            .confirmation_indexes
+            .iter()
+            .map(|_| "wrong-rehearsal-word".to_string())
+            .collect();
+        require(
+            state
+                .confirm_legacy_migration(&prepared.migration_token, &wrong)
+                .is_err(),
+            "错误确认词必须被拒绝",
+        )?;
+        require(!v2_path.exists(), "错误确认词不得激活 v2")?;
+    }
+    {
+        // (c) 正确确认词：production confirm 激活
+        let answers: Vec<String> = prepared
+            .confirmation_indexes
+            .iter()
+            .map(|index| prepared.recovery_words[*index].clone())
+            .collect();
+        state.confirm_legacy_migration(&prepared.migration_token, &answers)?;
+    }
+    require(
+        state.security_model() == crate::SecurityModel::StableDekV2,
+        "confirm 后安全模型未切换",
+    )?;
+    require(state.is_unlocked(), "confirm 后 AppState 未安装 Stable DEK")?;
+    let active_dek = state.stable_dek()?;
+
     require(archived.is_file(), "legacy 隔离归档不存在")?;
     require(
         file_sha256(&archived)? == migration_input_hash,
         "legacy 迁移输入被改写",
     )?;
     require(
-        output.v2_path == migration_dir.join(migration::V2_DB_FILENAME),
-        "v2 输出路径异常",
-    )?;
-    require(
         !migration_dir.join(migration::V2_TMP_FILENAME).exists(),
         "迁移 tmp 未消失",
     )?;
+    require(
+        !migration_dir.join(migration::V2_SETUP_LOCK_FILENAME).exists(),
+        "setup lock 未清理",
+    )?;
+
+    // (d) source changed fail closed（独立目录，不污染主迁移）
+    {
+        let sc_dir = workspace.join("source-change-run");
+        std::fs::create_dir(&sc_dir).map_err(|_| "source-change-run 已存在".to_string())?;
+        let sc_input = sc_dir.join(migration::LEGACY_DB_FILENAME);
+        online_snapshot(&snapshot, &sc_input)?;
+        let sc_state = legacy_production_state(&sc_input)?;
+        let sc_prepared = sc_state.prepare_legacy_migration(master_password)?;
+        let sc_answers: Vec<String> = sc_prepared
+            .confirmation_indexes
+            .iter()
+            .map(|index| sc_prepared.recovery_words[*index].clone())
+            .collect();
+        // 模拟用户在保存恢复短语期间数据发生变化
+        let writer = Connection::open(&sc_input).map_err(|_| "无法打开变化注入连接".to_string())?;
+        writer
+            .execute(
+                "INSERT INTO passwords (title, username, password, url, notes, created_at, updated_at)
+                 VALUES ('rehearsal-late-entry', 'u', 'x', '', '', 1, 1)",
+                [],
+            )
+            .map_err(|_| "无法注入源库变化".to_string())?;
+        drop(writer);
+        require(
+            sc_state
+                .confirm_legacy_migration(&sc_prepared.migration_token, &sc_answers)
+                .is_err(),
+            "source changed 必须 fail closed",
+        )?;
+        require(!sc_dir.join(migration::V2_DB_FILENAME).exists(), "stale v2 被激活")?;
+        require(!sc_dir.join(migration::V2_TMP_FILENAME).exists(), "stale tmp 未清理")?;
+        require(!sc_state.legacy_migration_status().active, "pending 未清理")?;
+    }
 
     let legacy =
         Db::open_read_only(&archived).map_err(|_| "无法只读打开 legacy 归档".to_string())?;
-    let v2 = migration::open_existing_v2_db(&output.v2_path)?;
+    let v2 = migration::open_existing_v2_db(&v2_path)?;
     {
         let legacy_conn = legacy
             .conn
@@ -398,20 +496,20 @@ fn run_rehearsal_with_password(workspace: PathBuf, master_password: &str) -> Res
         let v2_conn = v2.conn.lock().map_err(|_| "v2 数据库不可用".to_string())?;
         compare_business_data(&legacy_conn, &v2_conn)?;
     }
-    let checked = verify_passwords(&legacy, &v2, master_password, output.dek.as_slice())?;
+    let checked = verify_passwords(&legacy, &v2, master_password, active_dek.as_slice())?;
     require(
-        checked == output.passwords_migrated,
-        "密码等价校验数量不一致",
+        checked == *baseline_counts.get("passwords").unwrap_or(&-1) as usize,
+        "密码等价校验数量与基线不一致",
     )?;
 
     let master_dek = migration::unlock_v2_core(&v2, master_password)?;
     require(
-        master_dek.as_slice() == output.dek.as_slice(),
+        master_dek.as_slice() == active_dek.as_slice(),
         "Master unlock DEK 不一致",
     )?;
     let recovery_dek = migration::recover_v2_core(&v2, recovery_phrase.as_str())?;
     require(
-        recovery_dek.as_slice() == output.dek.as_slice(),
+        recovery_dek.as_slice() == active_dek.as_slice(),
         "Recovery unlock DEK 不一致",
     )?;
     {
@@ -436,12 +534,13 @@ fn run_rehearsal_with_password(workspace: PathBuf, master_password: &str) -> Res
         )?;
     }
 
-    let source_v2_hash_before_backup = file_sha256(&output.v2_path)?;
-    let source_state = existing_state(&output.v2_path, output.dek.as_slice())?;
+    let source_v2_hash_before_backup = file_sha256(&v2_path)?;
+    // production post-confirm 状态本身就是导出源（不再另建旁路 AppState）
+    let source_state = &state;
     let backup_path = workspace.join("migration-rehearsal.drawerbox");
     let backup_stats = backup_v2::export_v2_to_path(&source_state, master_password, &backup_path)?;
     require(
-        file_sha256(&output.v2_path)? == source_v2_hash_before_backup,
+        file_sha256(&v2_path)? == source_v2_hash_before_backup,
         "导出改写了 v2 源库",
     )?;
     require(backup_stats.passwords == checked, "备份密码计数不一致")?;
@@ -460,7 +559,7 @@ fn run_rehearsal_with_password(workspace: PathBuf, master_password: &str) -> Res
     let restored = backup_v2::restore_v2_from_path(&restore_state, &backup_path, master_password)?;
     require(restored.passwords == checked, "恢复后密码计数不一致")?;
     require(
-        restore_state.stable_dek()?.as_slice() == output.dek.as_slice(),
+        restore_state.stable_dek()?.as_slice() == active_dek.as_slice(),
         "恢复后 AppState DEK 不一致",
     )?;
     {
@@ -470,12 +569,12 @@ fn run_rehearsal_with_password(workspace: PathBuf, master_password: &str) -> Res
             .map_err(|_| "恢复数据库不可用".to_string())?;
         require(
             migration::unlock_v2_core(&restored_db, master_password)?.as_slice()
-                == output.dek.as_slice(),
+                == active_dek.as_slice(),
             "恢复后 Master unlock 失败",
         )?;
         require(
             migration::recover_v2_core(&restored_db, recovery_phrase.as_str())?.as_slice()
-                == output.dek.as_slice(),
+                == active_dek.as_slice(),
             "恢复后 Recovery unlock 失败",
         )?;
         let source_db = source_state
@@ -530,7 +629,7 @@ fn run_rehearsal_with_password(workspace: PathBuf, master_password: &str) -> Res
     )?;
     let arbitration = migration::resolve_startup_db(&migration_dir, false);
     require(
-        matches!(arbitration.selection, migration::DbSelection::V2(ref path) if path == &output.v2_path),
+        matches!(arbitration.selection, migration::DbSelection::V2(ref path) if path == &v2_path),
         "迁移后启动仲裁未选择 v2",
     )?;
     require(
@@ -538,9 +637,13 @@ fn run_rehearsal_with_password(workspace: PathBuf, master_password: &str) -> Res
         "0.2 固定 legacy 路径仍存在",
     )?;
 
-    let final_v2 = readonly_connection(&output.v2_path)?;
+    let final_v2 = readonly_connection(&v2_path)?;
     let final_counts = table_counts(&final_v2)?;
     println!("PHASE2D_RESULT=PASS");
+    println!("PRODUCTION_PREPARE_CONFIRM=PASS");
+    println!("ABORT_BEFORE_CONFIRM=PASS");
+    println!("WRONG_WORDS_FAIL_CLOSED=PASS");
+    println!("SOURCE_CHANGED_FAIL_CLOSED=PASS");
     println!("WORKSPACE={}", workspace.display());
     println!("SNAPSHOT_SHA256={snapshot_hash}");
     println!("SCHEMA_SHA256={schema_hash}");
