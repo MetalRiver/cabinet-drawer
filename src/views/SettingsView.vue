@@ -436,6 +436,15 @@ async function onExportBackup() {
   try {
     const result: ExportResult = await exportEncryptedBackup(pw);
     let msg = `✓ 已导出备份：\n${result.path}\n\n`;
+    if (result.security_model === "stable-dek-v2") {
+      msg += `安全格式：v${result.backup_version} Stable DEK 完整快照\n`;
+      msg += `完整业务记录：${result.business_rows} 条`;
+      if (result.trash_passwords > 0) msg += `（含回收站密码 ${result.trash_passwords} 条）`;
+      msg += "\n密码密文与 UUID 已原样保存，未产生明文密码。";
+      exportResult.value = msg;
+      exportPw.value = "";
+      return;
+    }
     msg += `📊 密码导出状态：\n`;
     msg += `  · 明文解密成功（换电脑可恢复）：${result.passwords_decrypted_ok} 条\n`;
     if (result.trash_passwords > 0) {
@@ -468,6 +477,16 @@ async function onPickImportFile() {
   } catch (e) { importResult.value = `✗ 选择文件失败：${e}`; }
 }
 function fmtStats(s: ImportStats): string {
+  if (s.full_restore && s.security_model === "stable-dek-v2") {
+    return [
+      `安全格式：v${s.backup_version} Stable DEK 完整恢复`,
+      `软件：${s.apps_inserted} ｜密码：${s.passwords_inserted}`,
+      `代码段：${s.snippets_inserted} ｜便签：${s.temps_inserted}`,
+      `分类：${s.categories_inserted} ｜设置项：${s.settings}`,
+      `数据库快照：${(s.total_bytes / 1024).toFixed(1)} KB`,
+      "原主密码与 Recovery Phrase 均保持有效。",
+    ].join("\n");
+  }
   const lines: string[] = [];
   lines.push(`软件：新增 ${s.apps_inserted} ｜跳过 ${s.apps_skipped} ｜覆盖 ${s.apps_overwritten}`);
   lines.push(`密码：新增 ${s.passwords_inserted} ｜跳过 ${s.passwords_skipped} ｜覆盖 ${s.passwords_overwritten}`);
@@ -482,7 +501,10 @@ async function onImportBackup() {
   if (importBusy.value) return;
   if (!importFile.value.trim()) { importResult.value = "✗ 请先选择一个 .drawerbox 备份文件"; return; }
   if (!importPw.value) { importResult.value = "✗ 请输入备份时使用的主密码"; return; }
-  importBusy.value = true; importResult.value = "正在校验密码 + 解密 + 写入…（请勿关闭窗口）";
+  importBusy.value = true;
+  importResult.value = isV2Security.value
+    ? "正在校验主密码、完整性与密码密文，然后原子恢复…（请勿关闭窗口）"
+    : "正在校验密码 + 解密 + 写入…（请勿关闭窗口）";
   try {
     const stats = await importEncryptedBackup(importFile.value.trim(), importPw.value, importPolicy.value);
     // 导入成功：刷新所有 store 里的列表 → UI 立即同步到「对应区域」
@@ -506,6 +528,12 @@ async function onImportBackup() {
     importResult.value = `✗ 导入失败：${msg}`;
   } finally { importBusy.value = false; }
 }
+
+function clearBackupSensitiveInputs() {
+  exportPw.value = "";
+  importPw.value = "";
+}
+onUnmounted(clearBackupSensitiveInputs);
 
 // ========== B3：危险操作 - 工厂还原 ==========
 // B3 防误触：① 勾选确认 → ② 必须输入「确认重置」四个字 → 按钮才可点
@@ -1028,14 +1056,14 @@ onMounted(() => {
           <span class="section-badge section-badge-green">跨设备离线</span>
         </div>
         <p class="section-hint section-hint-green">
-          导出为 <code>.drawerbox</code> 加密单文件（主密码保护 + AES-256-GCM + zstd 压缩），纯离线、不需要云。换电脑时把该文件拷过去 → 导入即可还原到对应区域。
+          导出为 <code>.drawerbox</code> 加密单文件（主密码保护 + AES-256-GCM + zstd 压缩），纯离线、不需要云。v2 会完整保留安全元数据与原始密码密文，换电脑后仍可使用原主密码和 Recovery Phrase。
         </p>
 
         <!-- ① 导出：主密码输入 + 导出按钮 -->
         <div class="sub-block">
           <h4 class="sub-title">📤 导出备份（把当前所有数据打包加密）</h4>
           <div class="form-group">
-            <label class="form-label">主密码（至少 6 位，用于加密备份文件；<b>一定要记住！</b>）</label>
+            <label class="form-label">当前主密码（至少 6 位；恢复时必须再次输入）</label>
             <input
               v-model="exportPw"
               type="password"
@@ -1087,7 +1115,7 @@ onMounted(() => {
             />
           </div>
 
-          <div class="form-group">
+          <div v-if="!isV2Security" class="form-group">
             <label class="form-label">③ 遇到重名时（按名称/路径判断）</label>
             <div class="radio-row">
               <label class="radio-item tap" data-interactive>
@@ -1107,7 +1135,7 @@ onMounted(() => {
 
           <div class="action-row">
             <button class="btn-primary" @click="onImportBackup" :disabled="importBusy" data-interactive>
-              {{ importBusy ? "解密 + 写入中…" : "🧩 开始导入并同步到各区域" }}
+              {{ importBusy ? "校验 + 恢复中…" : (isV2Security ? "🧩 验证并完整恢复" : "🧩 开始导入并同步到各区域") }}
             </button>
           </div>
           <p v-if="importResult" class="hint-inline" :class="{ 'hint-ok': importResult.startsWith('✓'), 'hint-err': importResult.startsWith('✗') }" style="white-space: pre-line;">

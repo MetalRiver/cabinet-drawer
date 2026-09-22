@@ -1228,6 +1228,9 @@ impl Default for ImportConflictPolicy {
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ImportStats {
+    pub backup_version: u32,
+    pub security_model: String,
+    pub full_restore: bool,
     pub settings: usize,
     pub categories_inserted: usize,
     pub categories_conflict: usize,
@@ -1247,6 +1250,8 @@ pub struct ImportStats {
     pub temps_skipped: usize,
     pub temps_overwritten: usize,
     pub temps_merged: usize,
+    pub pinned_inserted: usize,
+    pub total_bytes: usize,
     pub errors: Vec<String>,
 }
 

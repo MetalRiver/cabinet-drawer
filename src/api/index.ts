@@ -505,9 +505,12 @@ export const getDataDir = () => invoke<string>("get_data_dir");
 /** B1-2：加密导出一份 .drawerbox 备份文件（返回路径+密码解密状态统计）*/
 export interface ExportResult {
   path: string;
+  backup_version: number;
+  security_model: "legacy" | "stable-dek-v2";
   passwords_decrypted_ok: number;
   passwords_decrypted_failed: number;
   trash_passwords: number;
+  business_rows: number;
 }
 export const exportEncryptedBackup = (masterPassword: string) =>
   invoke<ExportResult>("export_encrypted_backup", { masterPassword });
@@ -515,6 +518,9 @@ export const exportEncryptedBackup = (masterPassword: string) =>
 /** B1-3：按冲突策略导入 .drawerbox 备份（返回各表新增/覆盖数统计）*/
 export type ConflictPolicy = "skip" | "overwrite" | "merge";
 export interface ImportStats {
+  backup_version: number;
+  security_model: "legacy" | "stable-dek-v2";
+  full_restore: boolean;
   settings: number;
   categories_inserted: number;
   categories_conflict: number;

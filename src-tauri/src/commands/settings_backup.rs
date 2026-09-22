@@ -8,9 +8,10 @@ use std::path::{Path, PathBuf};
 use tauri::{AppHandle, State};
 
 use crate::backup;
+use crate::backup_v2;
 use crate::crypto;
 use crate::db::{self, Db};
-use crate::AppState;
+use crate::{AppState, SecurityModel};
 use zeroize::Zeroizing;
 
 // ============================================================
@@ -89,9 +90,12 @@ pub fn factory_reset(state: State<AppState>, app: AppHandle) -> Result<(), Strin
 #[derive(serde::Serialize)]
 pub struct ExportResult {
     pub path: String,
+    pub backup_version: u32,
+    pub security_model: String,
     pub passwords_decrypted_ok: usize,
     pub passwords_decrypted_failed: usize,
     pub trash_passwords: usize,
+    pub business_rows: usize,
 }
 
 #[tauri::command]
@@ -99,9 +103,7 @@ pub fn export_encrypted_backup(
     state: State<AppState>,
     master_password: String,
 ) -> Result<ExportResult, String> {
-    state.require_legacy_model()?;
-    // 0. 验证主密码（导出必须知道密码才能加密）
-    let _key = verify_master_password_inner(&state, &master_password)?;
+    let master_password = Zeroizing::new(master_password);
 
     // 1. 弹窗选保存路径
     let now = chrono::Local::now();
@@ -120,6 +122,27 @@ pub fn export_encrypted_backup(
         )
         .save_file()
         .ok_or_else(|| "用户取消".to_string())?;
+
+    if state.security_model == SecurityModel::StableDekV2 {
+        let stats = backup_v2::export_v2_to_path(&state, master_password.as_str(), &save_path)?;
+        return Ok(ExportResult {
+            path: save_path.to_string_lossy().to_string(),
+            backup_version: 2,
+            security_model: "stable-dek-v2".to_string(),
+            passwords_decrypted_ok: 0,
+            passwords_decrypted_failed: 0,
+            trash_passwords: stats.trash_passwords,
+            business_rows: stats.categories
+                + stats.apps
+                + stats.passwords
+                + stats.snippets
+                + stats.temps,
+        });
+    }
+
+    state.require_legacy_model()?;
+    // legacy 导出保留 0.2.0 行为；v2 永远不会进入明文导出路径。
+    let _key = verify_master_password_inner(&state, master_password.as_str())?;
 
     // 2. 导出数据
     let mut data = {
@@ -172,7 +195,7 @@ pub fn export_encrypted_backup(
         let data_json = serde_json::to_vec(&data).map_err(|e| format!("序列化失败: {}", e))?;
 
         // 3. 加密
-        let ciphertext = backup::encrypt_backup(&data_json, &master_password)?;
+        let ciphertext = backup::encrypt_backup(&data_json, master_password.as_str())?;
 
         // 4. 写文件
         if let Some(parent) = save_path.parent() {
@@ -183,9 +206,16 @@ pub fn export_encrypted_backup(
         eprintln!("[export_encrypted_backup] 已写入: {}", result_path);
         Ok(ExportResult {
             path: result_path,
+            backup_version: 1,
+            security_model: "legacy".to_string(),
             passwords_decrypted_ok: result_ok,
             passwords_decrypted_failed: result_failed,
             trash_passwords: result_trash,
+            business_rows: data.categories.len()
+                + data.apps.len()
+                + data.passwords.len()
+                + data.snippets.len()
+                + data.temps.len(),
         })
     }
 }
@@ -200,7 +230,27 @@ pub fn import_encrypted_backup(
     master_password: String,
     policy: db::ImportConflictPolicy,
 ) -> Result<db::ImportStats, String> {
-    // v2 备份格式尚未设计完成：必须在读取/解密任何备份内容前关闭。
+    let master_password = Zeroizing::new(master_password);
+    if state.security_model == SecurityModel::StableDekV2 {
+        let restored = backup_v2::restore_v2_from_path(
+            &state,
+            Path::new(&file_path),
+            master_password.as_str(),
+        )?;
+        return Ok(db::ImportStats {
+            backup_version: 2,
+            security_model: "stable-dek-v2".to_string(),
+            full_restore: true,
+            settings: restored.settings,
+            categories_inserted: restored.categories,
+            apps_inserted: restored.apps,
+            passwords_inserted: restored.passwords,
+            snippets_inserted: restored.snippets,
+            temps_inserted: restored.temps,
+            total_bytes: restored.database_bytes,
+            ..Default::default()
+        });
+    }
     state.require_legacy_model()?;
     let p = Path::new(&file_path);
     let exists = p.exists();
@@ -257,7 +307,7 @@ pub fn import_encrypted_backup(
     );
 
     // 3. 解密
-    let json_bytes = backup::decrypt_backup(&bytes, &master_password)?;
+    let json_bytes = backup::decrypt_backup(&bytes, master_password.as_str())?;
     eprintln!(
         "[import_encrypted_backup] 解密成功！JSON 共 {} 字节",
         json_bytes.len()
@@ -310,7 +360,7 @@ pub fn import_encrypted_backup(
                 match B64.decode(old_salt_b64) {
                     Ok(old_salt) if old_salt.len() >= 8 => {
                         // 备份密码 = 导出时用户设的主密码（常规操作习惯）
-                        Some(Zeroizing::new(crypto::derive_key(&master_password, &old_salt)))
+                        Some(Zeroizing::new(crypto::derive_key(master_password.as_str(), &old_salt)))
                     }
                     _ => None,
                 }
@@ -369,10 +419,13 @@ pub fn import_encrypted_backup(
     }
 
     // 5. 导入（事务内，失败自动回滚）
-    let stats = {
+    let mut stats = {
         let db = state.db.lock().unwrap();
         db.import_all_data(&data, policy.clone()).map_err(|e| e.to_string())?
     };
+    stats.backup_version = 1;
+    stats.security_model = "legacy".to_string();
+    stats.full_restore = false;
 
     // 注意：ImportStats 的真实字段名（100% 按 db.rs 1057-1072 行）
     eprintln!(

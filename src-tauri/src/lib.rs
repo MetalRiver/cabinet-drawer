@@ -15,6 +15,7 @@ mod db;
 pub mod migration;
 mod crypto;
 mod backup;
+mod backup_v2;
 #[cfg(windows)]
 mod win_dock;
 #[cfg(windows)]
@@ -91,6 +92,42 @@ impl AppState {
     }
     pub fn set_legacy_key(&self, key: Zeroizing<Vec<u8>>) { *self.key.lock().unwrap() = Some(ActiveKey::Legacy(key)); }
     pub fn set_stable_dek(&self, dek: Zeroizing<Vec<u8>>) { *self.key.lock().unwrap() = Some(ActiveKey::StableDek(dek)); }
+    pub(crate) fn lock_master_wrap_gate(&self) -> Result<std::sync::MutexGuard<'_, ()>, String> {
+        self.master_wrap_gate
+            .lock()
+            .map_err(|_| "安全状态不可用".to_string())
+    }
+    pub(crate) fn activate_validated_v2_restore(
+        &self,
+        source: &Db,
+        dek: Zeroizing<Vec<u8>>,
+    ) -> Result<(), String> {
+        // 所有运行态锁先取得，再启动 SQLite 原子 backup transaction；因此不存在
+        // “正式 DB 已切换但 AppState 因锁中毒无法安装 DEK”的失败窗口。
+        let db = self.db.lock().map_err(|_| "安全状态不可用".to_string())?;
+        let mut key = self.key.lock().map_err(|_| "安全状态不可用".to_string())?;
+        let mut pending = self
+            .pending_recovery_rotation
+            .lock()
+            .map_err(|_| "安全状态不可用".to_string())?;
+        let source_conn = source
+            .conn
+            .lock()
+            .map_err(|_| "恢复临时数据库不可用".to_string())?;
+        let mut destination_conn = db
+            .conn
+            .lock()
+            .map_err(|_| "正式数据库不可用".to_string())?;
+        let backup = rusqlite::backup::Backup::new(&source_conn, &mut destination_conn)
+            .map_err(|_| "无法切换恢复数据库".to_string())?;
+        backup
+            .run_to_completion(32, std::time::Duration::from_millis(5), None)
+            .map_err(|_| "无法切换恢复数据库".to_string())?;
+        drop(backup);
+        *key = Some(ActiveKey::StableDek(dek));
+        *pending = None;
+        Ok(())
+    }
     pub fn legacy_key(&self) -> Result<Zeroizing<Vec<u8>>, String> { match &*self.key.lock().unwrap() { Some(ActiveKey::Legacy(key)) => Ok(Zeroizing::new(key.to_vec())), _ => Err("应用已锁定或当前数据库需要 v2 密码记录实现".into()) } }
     pub fn stable_dek(&self) -> Result<Zeroizing<Vec<u8>>, String> { match &*self.key.lock().unwrap() { Some(ActiveKey::StableDek(dek)) => Ok(Zeroizing::new(dek.to_vec())), _ => Err("应用尚未以 v2 Stable DEK 解锁".into()) } }
     pub fn require_legacy_model(&self) -> Result<(), String> { if self.security_model == SecurityModel::Legacy { Ok(()) } else { Err("该操作尚未接入 v2 安全格式".into()) } }
