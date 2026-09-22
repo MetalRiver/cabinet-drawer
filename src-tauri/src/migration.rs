@@ -86,6 +86,13 @@ fn init_v2_schema(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
             expires_at INTEGER NOT NULL,
             deleted_at INTEGER
         );
+        CREATE TABLE IF NOT EXISTS pinned_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            item_type TEXT NOT NULL,
+            item_id INTEGER NOT NULL,
+            sort_order INTEGER DEFAULT 0,
+            UNIQUE(item_type, item_id)
+        );
         "#,
     )?;
     Ok(())
@@ -447,6 +454,7 @@ pub enum MigrationFailPoint {
     DuringBuild,
     AfterPartialRows,
     BeforeSettingsWrite,
+    DuringSettingsWrite,
     OnIntegrityFail,
     BeforeRename,
 }
@@ -484,12 +492,16 @@ pub fn migrate_legacy_to_v2_inject(
     if !legacy_path.exists() {
         return Err("legacy 库不存在".into());
     }
+    if v2_path.exists() {
+        return Err("v2 库已存在，拒绝覆盖".into());
+    }
     if tmp_path.exists() {
-        let _ = std::fs::remove_file(&tmp_path); // 上次迁移残留清理
+        return Err("检测到未完成的 v2 迁移临时库".into());
     }
 
     // T2 legacy 打开（只读用途）+ 旧 verifier 校验（迁移必须用正确旧主密码）
-    let legacy = Db::open(&legacy_path).map_err(|e| format!("legacy 库打开失败: {}", e))?;
+    let legacy = Db::open_read_only(&legacy_path)
+        .map_err(|e| format!("legacy 库打开失败: {}", e))?;
     let salt_b64 = legacy
         .get_setting("master_password_salt")
         .map_err(|e| e.to_string())?
@@ -537,15 +549,17 @@ pub fn migrate_legacy_to_v2_inject(
         let mut vconn = v2.conn.lock().map_err(|e| e.to_string())?;
         let tx = vconn.transaction().map_err(|e| e.to_string())?;
         for (id, title, username, enc, url, notes, created, updated, usec, lused, deleted) in rows {
-            let plain = crypto::decrypt(&enc, &legacy_key)
-                .map_err(|_| format!("legacy 行 id={} 解密失败，迁移中止", id))?;
+            let plain = Zeroizing::new(
+                crypto::decrypt(&enc, &legacy_key)
+                    .map_err(|_| format!("legacy 行 id={} 解密失败，迁移中止", id))?,
+            );
             let uuid = uuid::Uuid::new_v4().to_string();
             let dw2 = crypto::encrypt_password_dw2(&plain, &dek, &uuid).map_err(|e| e)?;
             tx.execute(
-                "INSERT INTO passwords (record_uuid, title, username, password, url, notes,
+                "INSERT INTO passwords (id, record_uuid, title, username, password, url, notes,
                                         created_at, updated_at, use_count, last_used_at, deleted_at)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
-                params![uuid, title, username, dw2, url, notes, created, updated, usec, lused, deleted],
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+                params![id, uuid, title, username, dw2, url, notes, created, updated, usec, lused, deleted],
             )
             .map_err(|e| e.to_string())?;
             migrated += 1;
@@ -646,6 +660,24 @@ pub fn migrate_legacy_to_v2_inject(
             )
             .map_err(|e| e.to_string())?;
         }
+        // pinned_items 的 item_id 依赖各业务表原始 id，因此 password id 也必须保留。
+        let pinned: Vec<(i64, String, i64, i64)> = {
+            let mut st = lconn.prepare(
+                "SELECT id, item_type, item_id, sort_order FROM pinned_items ORDER BY id",
+            )?;
+            let rows = st
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            rows
+        };
+        for (id, item_type, item_id, sort_order) in pinned {
+            tx.execute(
+                "INSERT INTO pinned_items (id, item_type, item_id, sort_order)
+                 VALUES (?1,?2,?3,?4)",
+                params![id, item_type, item_id, sort_order],
+            )
+            .map_err(|e| e.to_string())?;
+        }
         // 普通 settings 拷贝（排除 legacy 安全三键与 security_version 本身）
         let legacy_settings: Vec<(String, String)> = {
             let mut st = lconn.prepare("SELECT key, value FROM settings")?;
@@ -682,40 +714,40 @@ pub fn migrate_legacy_to_v2_inject(
 
     // T7 安全 settings 写入
     {
-        let vconn = v2.conn.lock().map_err(|e| e.to_string())?;
-        vconn
-            .execute(
+        let mut vconn = v2.conn.lock().map_err(|e| e.to_string())?;
+        let tx = vconn.transaction().map_err(|e| e.to_string())?;
+        tx.execute(
                 "INSERT OR REPLACE INTO settings (key, value) VALUES ('kdf_params_m', ?1)",
                 params![serde_json::to_string(&params_m).map_err(|e| e.to_string())?],
             )
             .map_err(|e| e.to_string())?;
-        vconn
-            .execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('wrapped_dek_m', ?1)", params![wrapped_m])
+        tx.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('wrapped_dek_m', ?1)", params![wrapped_m])
             .map_err(|e| e.to_string())?;
-        vconn
-            .execute(
+        if fail(MigrationFailPoint::DuringSettingsWrite) {
+            return Err("injected:DuringSettingsWrite".into());
+        }
+        tx.execute(
                 "INSERT OR REPLACE INTO settings (key, value) VALUES ('kdf_params_r', ?1)",
                 params![serde_json::to_string(&crypto::KdfParams {
-                    algo: "argon2id".into(),
+                    algo: "hkdf-sha256".into(),
                     version: 1,
-                    m_cost: 19456,
-                    t_cost: 2,
-                    p_cost: 1,
+                    m_cost: 0,
+                    t_cost: 0,
+                    p_cost: 0,
                     salt: crypto::b64_encode(&salt_r),
                 })
                 .map_err(|e| e.to_string())?],
             )
             .map_err(|e| e.to_string())?;
-        vconn
-            .execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('wrapped_dek_r', ?1)", params![wrapped_r])
+        tx.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('wrapped_dek_r', ?1)", params![wrapped_r])
             .map_err(|e| e.to_string())?;
         // security_version 必须最后写（迁移状态机的提交标记）
-        vconn
-            .execute(
+        tx.execute(
                 "INSERT OR REPLACE INTO settings (key, value) VALUES ('security_version', ?1)",
                 params![SECURITY_VERSION_V2],
             )
             .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
     }
 
     // 注入点 5：完整性校验失败
@@ -1134,6 +1166,32 @@ mod migration_tests {
             db.create_password(&title, "fixture-user", &enc, "https://fixture.test", "n").unwrap();
             titles.push(title);
         }
+        // 制造真实常见的自增 id 缺口，确保迁移不会重排 password id。
+        db.conn
+            .lock()
+            .unwrap()
+            .execute("DELETE FROM passwords WHERE id=2", [])
+            .unwrap();
+        titles.retain(|title| title != "Legacy-PW-1");
+        let replacement_title = "Legacy-PW-3".to_string();
+        let replacement = crypto::encrypt("legacy-secret-3", &key).unwrap();
+        db.create_password(
+            &replacement_title,
+            "fixture-user",
+            &replacement,
+            "https://fixture.test",
+            "n",
+        )
+        .unwrap();
+        titles.push(replacement_title);
+        db.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO pinned_items (item_type,item_id,sort_order) VALUES ('password',1,7)",
+                [],
+            )
+            .unwrap();
         db.create_app_category("fixture-cat", "📁").unwrap();
         db.create_app("Fixture App", "C:\\fixture\\app.exe", "", "", None, "app", "utility").unwrap();
         db.create_snippet("Fixture Snippet", "echo fixture", "bash", "fixture").unwrap();
@@ -1180,6 +1238,14 @@ mod migration_tests {
         assert_eq!(rows.0, 3);
         assert_eq!(rows.1, 3, "record_uuid 全部唯一");
         assert_eq!(rows.2, 3, "全部 DW2: 前缀");
+        let ids: Vec<i64> = conn
+            .prepare("SELECT id FROM passwords ORDER BY id")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(ids, vec![1, 3, 4], "password id 缺口必须原样保留");
         // security_version 与 legacy verifier 排除
         let sv: String = conn.query_row("SELECT value FROM settings WHERE key='security_version'", [], |r| r.get(0)).unwrap();
         assert_eq!(sv, "1");
@@ -1192,7 +1258,13 @@ mod migration_tests {
             .unwrap();
         assert_eq!(legacy_keys, 0, "legacy 安全三键不得进入 v2 库");
         // 非密码业务数据完整
-        for (t, n) in [("apps", 1), ("app_categories", 4), ("snippets", 1), ("temp_contents", 1)] {
+        for (t, n) in [
+            ("apps", 1),
+            ("app_categories", 4),
+            ("snippets", 1),
+            ("temp_contents", 1),
+            ("pinned_items", 1),
+        ] {
             let c: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM {}", t), [], |r| r.get(0)).unwrap();
             assert_eq!(c, n, "{} 行数不符", t);
         }
@@ -1227,6 +1299,11 @@ mod migration_tests {
         assert_eq!(checked, 3);
         drop(stmt);
         drop(conn);
+        assert_eq!(
+            *recover_v2_core(&v2, &out.mnemonic.join(" ")).unwrap(),
+            *out.dek,
+            "迁移产物必须通过正式 Recovery 解锁路径",
+        );
         drop(v2);
         cleanup_dir(&dir);
     }
@@ -1239,6 +1316,7 @@ mod migration_tests {
             MigrationFailPoint::DuringBuild,
             MigrationFailPoint::AfterPartialRows,
             MigrationFailPoint::BeforeSettingsWrite,
+            MigrationFailPoint::DuringSettingsWrite,
             MigrationFailPoint::OnIntegrityFail,
             MigrationFailPoint::BeforeRename,
         ];

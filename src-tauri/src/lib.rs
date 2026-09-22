@@ -13,6 +13,8 @@ use std::os::windows::process::CommandExt;
 
 mod db;
 pub mod migration;
+#[cfg(test)]
+mod phase2d;
 mod crypto;
 mod backup;
 mod backup_v2;

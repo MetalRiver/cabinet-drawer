@@ -136,7 +136,8 @@ pub fn export_encrypted_backup(
                 + stats.apps
                 + stats.passwords
                 + stats.snippets
-                + stats.temps,
+                + stats.temps
+                + stats.pinned,
         });
     }
 
@@ -247,6 +248,7 @@ pub fn import_encrypted_backup(
             passwords_inserted: restored.passwords,
             snippets_inserted: restored.snippets,
             temps_inserted: restored.temps,
+            pinned_inserted: restored.pinned,
             total_bytes: restored.database_bytes,
             ..Default::default()
         });

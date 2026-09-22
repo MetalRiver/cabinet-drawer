@@ -19,16 +19,17 @@ use zeroize::Zeroizing;
 const BACKUP_VERSION: u32 = 2;
 const SECURITY_MODEL: &str = "stable-dek-v2";
 const MAX_BACKUP_BYTES: u64 = 2 * 1024 * 1024 * 1024;
-const REQUIRED_TABLES: [&str; 6] = [
+const REQUIRED_TABLES: [&str; 7] = [
     "settings",
     "passwords",
     "app_categories",
     "apps",
     "snippets",
     "temp_contents",
+    "pinned_items",
 ];
 
-const EXPECTED_COLUMNS: [(&str, &[&str]); 6] = [
+const EXPECTED_COLUMNS: [(&str, &[&str]); 7] = [
     ("settings", &["key", "value"]),
     (
         "passwords",
@@ -53,6 +54,7 @@ const EXPECTED_COLUMNS: [(&str, &[&str]); 6] = [
         ],
     ),
     ("temp_contents", &["id", "text", "created_at", "expires_at", "deleted_at"]),
+    ("pinned_items", &["id", "item_type", "item_id", "sort_order"]),
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -74,6 +76,7 @@ pub struct V2BackupStats {
     pub passwords: usize,
     pub snippets: usize,
     pub temps: usize,
+    pub pinned: usize,
     pub trash_passwords: usize,
     pub database_bytes: usize,
 }
@@ -376,6 +379,7 @@ fn stats_from_counts(
         passwords: get("passwords"),
         snippets: get("snippets"),
         temps: get("temp_contents"),
+        pinned: get("pinned_items"),
         trash_passwords,
         database_bytes,
     }
@@ -626,6 +630,11 @@ mod tests {
         }
         let conn = db.conn.lock().unwrap();
         conn.execute(
+            "INSERT INTO pinned_items (item_type,item_id,sort_order) VALUES ('password',1,3)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
             "INSERT INTO app_categories (name,icon,sort_order) VALUES ('Phase2C','x',99)",
             [],
         )
@@ -768,6 +777,7 @@ mod tests {
         let (dest_dir, dest, _, _) = create_state("b3_dest", DEST_MASTER);
         let stats = restore_v2_from_path(&dest, &backup_path, MASTER).unwrap();
         assert_eq!(stats.passwords, 2);
+        assert_eq!(stats.pinned, 1);
         assert_eq!(table_counts(&dest.db.lock().unwrap()).unwrap(), source_counts);
         let db = dest.db.lock().unwrap();
         assert_eq!(migration::unlock_v2_core(&db, MASTER).unwrap().to_vec(), expected);

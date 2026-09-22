@@ -21,6 +21,16 @@ impl Db {
         Ok(db)
     }
 
+    /// 打开既有数据库的只读视图，不执行建表、补列或任何兼容迁移。
+    /// legacy → v2 迁移必须使用该入口，保证源库不会被读取流程改写。
+    pub fn open_read_only(path: &Path) -> Result<Self> {
+        let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        conn.pragma_update(None, "query_only", true)?;
+        Ok(Db {
+            conn: Mutex::new(conn),
+        })
+    }
+
     fn init_tables(&self) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute_batch(
