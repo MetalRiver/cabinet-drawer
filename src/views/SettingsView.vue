@@ -21,6 +21,9 @@ import {
   changeMasterPassword,
   changeV2MasterPassword,
   getSecurityStatus,
+  prepareV2RecoveryRotation,
+  confirmV2RecoveryRotation,
+  cancelV2RecoveryRotation,
   rescuePasswordsWithMaster,
   hasSecondPassword as apiHasSecondPassword,
   changeSecondPassword,
@@ -156,6 +159,100 @@ async function onChangePassword() {
     pwChangeResult.value = "✗ 失败：" + String(e);
   } finally { pwChanging.value = false; }
 }
+
+// ========== v2 Recovery Phrase 两阶段轮换 ==========
+const recoveryRotationStep = ref<"idle" | "words" | "confirm">("idle");
+const recoveryRotationWords = ref<string[]>([]);
+const recoveryRotationToken = ref("");
+const recoveryRotationIndexes = ref<number[]>([]);
+const recoveryRotationInputs = ref<string[]>(["", "", ""]);
+const recoveryRotationSaved = ref(false);
+const recoveryRotationBusy = ref(false);
+const recoveryRotationHint = ref("");
+const recoveryRotationMatches = computed(() =>
+  recoveryRotationIndexes.value.length === 3 &&
+  recoveryRotationIndexes.value.every(
+    (wordIndex, inputIndex) =>
+      recoveryRotationInputs.value[inputIndex].trim().toLowerCase() ===
+      recoveryRotationWords.value[wordIndex]
+  )
+);
+function clearRecoveryRotationLocal() {
+  recoveryRotationStep.value = "idle";
+  recoveryRotationWords.value = [];
+  recoveryRotationToken.value = "";
+  recoveryRotationIndexes.value = [];
+  recoveryRotationInputs.value = ["", "", ""];
+  recoveryRotationSaved.value = false;
+}
+async function startRecoveryRotation() {
+  if (recoveryRotationBusy.value || !isV2Security.value) return;
+  recoveryRotationBusy.value = true;
+  recoveryRotationHint.value = "";
+  try {
+    const prepared = await prepareV2RecoveryRotation();
+    recoveryRotationToken.value = prepared.rotation_token;
+    recoveryRotationWords.value = prepared.recovery_words;
+    recoveryRotationIndexes.value = prepared.confirmation_indexes;
+    recoveryRotationInputs.value = ["", "", ""];
+    recoveryRotationSaved.value = false;
+    recoveryRotationStep.value = "words";
+  } catch (e) {
+    recoveryRotationHint.value = "✗ " + String(e);
+  } finally {
+    recoveryRotationBusy.value = false;
+  }
+}
+function beginRecoveryConfirmation() {
+  if (!recoveryRotationSaved.value) {
+    recoveryRotationHint.value = "请先确认已经安全保存新的恢复短语";
+    return;
+  }
+  recoveryRotationInputs.value = ["", "", ""];
+  recoveryRotationHint.value = "";
+  recoveryRotationStep.value = "confirm";
+}
+async function finishRecoveryRotation() {
+  if (recoveryRotationBusy.value || !recoveryRotationMatches.value) return;
+  recoveryRotationBusy.value = true;
+  recoveryRotationHint.value = "";
+  try {
+    await confirmV2RecoveryRotation(
+      recoveryRotationToken.value,
+      recoveryRotationInputs.value.map((word) => word.trim().toLowerCase())
+    );
+    clearRecoveryRotationLocal();
+    recoveryRotationHint.value = "✓ 新恢复短语已生效，旧恢复短语已失效";
+    appStore.showClipToast("success", "恢复短语已更换");
+  } catch (e) {
+    recoveryRotationHint.value = "✗ " + String(e);
+  } finally {
+    recoveryRotationBusy.value = false;
+  }
+}
+async function cancelRecoveryRotation() {
+  if (recoveryRotationBusy.value) return;
+  const token = recoveryRotationToken.value;
+  if (!token) {
+    clearRecoveryRotationLocal();
+    return;
+  }
+  recoveryRotationBusy.value = true;
+  try {
+    await cancelV2RecoveryRotation(token);
+    clearRecoveryRotationLocal();
+    recoveryRotationHint.value = "";
+  } catch (e) {
+    recoveryRotationHint.value = "✗ " + String(e);
+  } finally {
+    recoveryRotationBusy.value = false;
+  }
+}
+onUnmounted(() => {
+  const token = recoveryRotationToken.value;
+  clearRecoveryRotationLocal();
+  if (token) void cancelV2RecoveryRotation(token).catch(() => {});
+});
 
 // ========== 方案① s1d：🔐 独立二次验证密码（新增 section） ==========
 // 状态：true=已启用独立密码（用户已设置）；false=跟随主密码（默认）
@@ -649,6 +746,68 @@ onMounted(() => {
         </div>
         <p v-if="pwChangeResult" class="hint-inline" :class="{ 'hint-ok': pwChangeResult.startsWith('✓'), 'hint-err': pwChangeResult.startsWith('✗') }">
           {{ pwChangeResult }}
+        </p>
+      </div>
+
+      <div v-if="isV2Security" class="settings-section card-soft card-security">
+        <div class="section-head">
+          <h3 class="section-title">🛟 更换恢复短语</h3>
+          <span class="section-badge section-badge-green">v2</span>
+        </div>
+        <p class="section-hint section-hint-green">
+          生成并确认新的 12 个恢复词后，旧恢复短语会立即失效。确认完成前，旧恢复短语仍然有效。
+        </p>
+
+        <div v-if="recoveryRotationStep === 'idle'" class="action-row">
+          <button class="btn-primary btn-green" :disabled="recoveryRotationBusy" @click="startRecoveryRotation" data-interactive>
+            {{ recoveryRotationBusy ? "生成中…" : "更换恢复短语" }}
+          </button>
+        </div>
+
+        <template v-else-if="recoveryRotationStep === 'words'">
+          <div class="recovery-rotate-grid">
+            <div v-for="(word, index) in recoveryRotationWords" :key="index" class="recovery-rotate-word">
+              <span>{{ index + 1 }}</span><b>{{ word }}</b>
+            </div>
+          </div>
+          <label class="recovery-rotate-check">
+            <input v-model="recoveryRotationSaved" type="checkbox" data-interactive />
+            <span>我已将新的恢复短语保存到安全位置</span>
+          </label>
+          <div class="action-row">
+            <button class="btn-primary btn-green" :disabled="!recoveryRotationSaved || recoveryRotationBusy" @click="beginRecoveryConfirmation" data-interactive>
+              验证已保存
+            </button>
+            <button class="btn-secondary" :disabled="recoveryRotationBusy" @click="cancelRecoveryRotation" data-interactive>取消</button>
+          </div>
+        </template>
+
+        <template v-else>
+          <p class="section-hint">请按编号输入刚才保存的新恢复词：</p>
+          <div class="form-grid">
+            <div v-for="(wordIndex, inputIndex) in recoveryRotationIndexes" :key="wordIndex" class="form-group">
+              <label class="form-label">第 {{ wordIndex + 1 }} 个词</label>
+              <input
+                v-model="recoveryRotationInputs[inputIndex]"
+                type="text"
+                class="form-input"
+                autocomplete="off"
+                :spellcheck="false"
+                placeholder="输入恢复词"
+                data-interactive
+              />
+            </div>
+          </div>
+          <div class="action-row">
+            <button class="btn-primary btn-green" :disabled="!recoveryRotationMatches || recoveryRotationBusy" @click="finishRecoveryRotation" data-interactive>
+              {{ recoveryRotationBusy ? "确认中…" : "确认并立即更换" }}
+            </button>
+            <button class="btn-secondary" :disabled="recoveryRotationBusy" @click="cancelRecoveryRotation" data-interactive>取消</button>
+          </div>
+        </template>
+
+        <p v-if="recoveryRotationHint" class="hint-inline" :class="{ 'hint-ok': recoveryRotationHint.startsWith('✓'), 'hint-err': recoveryRotationHint.startsWith('✗') }">
+          {{ recoveryRotationHint }}
         </p>
       </div>
 
@@ -1606,5 +1765,37 @@ onMounted(() => {
   border-color: rgba(16, 185, 129, 0.55) !important;
   box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.12) !important;
   background: rgba(16, 185, 129, 0.05) !important;
+}
+
+.recovery-rotate-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+  margin: 12px 0;
+}
+.recovery-rotate-word {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+  font-size: 11px;
+}
+.recovery-rotate-word span { color: var(--text-faint); }
+.recovery-rotate-word b {
+  overflow: hidden;
+  color: var(--text-primary);
+  text-overflow: ellipsis;
+}
+.recovery-rotate-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0;
+  color: var(--text-muted);
+  font-size: 11px;
 }
 </style>

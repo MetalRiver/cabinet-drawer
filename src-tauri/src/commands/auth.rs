@@ -5,7 +5,7 @@ use tauri::State;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 
 use crate::crypto;
-use crate::{AppState, SecurityModel, StartupMode};
+use crate::{AppState, RecoveryRotationPreparation, SecurityModel, StartupMode};
 use zeroize::Zeroizing;
 
 #[derive(serde::Serialize)]
@@ -92,6 +92,34 @@ pub fn change_v2_master_password(
     let current_password = Zeroizing::new(current_password);
     let new_password = Zeroizing::new(new_password);
     state.change_v2_master_password(current_password.as_str(), new_password.as_str())
+}
+
+// ============================================================
+// 🔒 v2 Recovery Phrase 两阶段轮换
+// ============================================================
+#[tauri::command]
+pub fn prepare_v2_recovery_rotation(
+    state: State<AppState>,
+) -> Result<RecoveryRotationPreparation, String> {
+    state.prepare_v2_recovery_rotation()
+}
+
+#[tauri::command]
+pub fn confirm_v2_recovery_rotation(
+    state: State<AppState>,
+    rotation_token: String,
+    confirmation_words: Vec<String>,
+) -> Result<(), String> {
+    let confirmation_words = Zeroizing::new(confirmation_words);
+    state.confirm_v2_recovery_rotation(&rotation_token, confirmation_words.as_slice())
+}
+
+#[tauri::command]
+pub fn cancel_v2_recovery_rotation(
+    state: State<AppState>,
+    rotation_token: String,
+) -> Result<(), String> {
+    state.cancel_v2_recovery_rotation(&rotation_token)
 }
 
 // ============================================================

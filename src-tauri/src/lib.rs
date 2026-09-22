@@ -29,6 +29,8 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use zeroize::Zeroizing;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use rand::Rng;
+use sha2::{Digest, Sha256};
 
 use db::Db;
 
@@ -50,12 +52,30 @@ struct PendingV2Initialization {
     setup_lock_path: PathBuf,
 }
 
+struct PendingRecoveryRotation {
+    token: String,
+    params_r_json: String,
+    wrapped_dek_r: String,
+    confirmation_indexes: Vec<usize>,
+    confirmation_hashes: Vec<[u8; 32]>,
+    confirmation_key: Zeroizing<Vec<u8>>,
+    dek_fingerprint: [u8; 32],
+}
+
+#[derive(serde::Serialize)]
+pub struct RecoveryRotationPreparation {
+    rotation_token: String,
+    recovery_words: Vec<String>,
+    confirmation_indexes: Vec<usize>,
+}
+
 pub struct AppState {
     pub db: Mutex<Db>,
     pub db_path: PathBuf,
     pub security_model: SecurityModel,
     pub startup_mode: Mutex<StartupMode>,
     pending_v2: Mutex<Option<PendingV2Initialization>>,
+    pending_recovery_rotation: Mutex<Option<PendingRecoveryRotation>>,
     /// 串行化所有会改写 v2 master wrap 的操作（Recovery / 普通改主密码）。
     /// 安全边界不能只依赖前端按钮 disabled。
     master_wrap_gate: Mutex<()>,
@@ -65,7 +85,10 @@ pub struct AppState {
 
 impl AppState {
     pub fn is_unlocked(&self) -> bool { self.key.lock().unwrap().is_some() }
-    pub fn clear_key(&self) { *self.key.lock().unwrap() = None; }
+    pub fn clear_key(&self) {
+        *self.key.lock().unwrap() = None;
+        *self.pending_recovery_rotation.lock().unwrap() = None;
+    }
     pub fn set_legacy_key(&self, key: Zeroizing<Vec<u8>>) { *self.key.lock().unwrap() = Some(ActiveKey::Legacy(key)); }
     pub fn set_stable_dek(&self, dek: Zeroizing<Vec<u8>>) { *self.key.lock().unwrap() = Some(ActiveKey::StableDek(dek)); }
     pub fn legacy_key(&self) -> Result<Zeroizing<Vec<u8>>, String> { match &*self.key.lock().unwrap() { Some(ActiveKey::Legacy(key)) => Ok(Zeroizing::new(key.to_vec())), _ => Err("应用已锁定或当前数据库需要 v2 密码记录实现".into()) } }
@@ -145,6 +168,149 @@ impl AppState {
             "新主密码长度至少 6 位" | "新主密码必须与当前主密码不同" | "当前主密码错误" => error,
             _ => "无法修改主密码，请重试".to_string(),
         })
+    }
+    fn recovery_confirmation_hash(key: &[u8], index: usize, word: &str) -> [u8; 32] {
+        let mut hasher = Sha256::new();
+        hasher.update(key);
+        hasher.update(index.to_le_bytes());
+        hasher.update(word.trim().to_lowercase().as_bytes());
+        hasher.finalize().into()
+    }
+    pub fn prepare_v2_recovery_rotation(&self) -> Result<RecoveryRotationPreparation, String> {
+        self.prepare_v2_recovery_rotation_inject(None)
+    }
+    pub fn prepare_v2_recovery_rotation_inject(
+        &self,
+        fail_at: Option<migration::RecoveryRotationFailPoint>,
+    ) -> Result<RecoveryRotationPreparation, String> {
+        let _gate = self.master_wrap_gate.lock().map_err(|_| "安全状态不可用".to_string())?;
+        if self.security_model != SecurityModel::StableDekV2
+            || *self.startup_mode.lock().map_err(|_| "安全状态不可用".to_string())?
+                != StartupMode::ExistingV2
+        {
+            return Err("当前密码库不支持更换恢复短语".to_string());
+        }
+        let dek = self.stable_dek()?;
+        let mut pending = self
+            .pending_recovery_rotation
+            .lock()
+            .map_err(|_| "安全状态不可用".to_string())?;
+        if pending.is_some() {
+            return Err("已有待确认的恢复短语".to_string());
+        }
+        let prepared = migration::prepare_recovery_rotation_inject(dek.as_slice(), fail_at)
+            .map_err(|_| "无法生成新的恢复短语，请重试".to_string())?;
+        let words: Vec<String> = prepared
+            .mnemonic
+            .split_whitespace()
+            .map(String::from)
+            .collect();
+        if words.len() != 12 {
+            return Err("无法生成新的恢复短语，请重试".to_string());
+        }
+        let mut indexes = Vec::with_capacity(3);
+        let mut rng = rand::thread_rng();
+        while indexes.len() < 3 {
+            let index = rng.gen_range(0..12);
+            if !indexes.contains(&index) {
+                indexes.push(index);
+            }
+        }
+        indexes.sort_unstable();
+        let confirmation_key = Zeroizing::new(crypto::generate_salt());
+        let confirmation_hashes = indexes
+            .iter()
+            .map(|index| Self::recovery_confirmation_hash(&confirmation_key, *index, &words[*index]))
+            .collect();
+        let token = uuid::Uuid::new_v4().to_string();
+        let dek_fingerprint = Sha256::digest(dek.as_slice()).into();
+        *pending = Some(PendingRecoveryRotation {
+            token: token.clone(),
+            params_r_json: prepared.params_r_json,
+            wrapped_dek_r: prepared.wrapped_dek_r,
+            confirmation_indexes: indexes.clone(),
+            confirmation_hashes,
+            confirmation_key,
+            dek_fingerprint,
+        });
+        Ok(RecoveryRotationPreparation {
+            rotation_token: token,
+            recovery_words: words,
+            confirmation_indexes: indexes,
+        })
+    }
+    pub fn confirm_v2_recovery_rotation(
+        &self,
+        rotation_token: &str,
+        confirmation_words: &[String],
+    ) -> Result<(), String> {
+        self.confirm_v2_recovery_rotation_inject(rotation_token, confirmation_words, None)
+    }
+    pub fn confirm_v2_recovery_rotation_inject(
+        &self,
+        rotation_token: &str,
+        confirmation_words: &[String],
+        fail_at: Option<migration::RecoveryRotationFailPoint>,
+    ) -> Result<(), String> {
+        let _gate = self.master_wrap_gate.lock().map_err(|_| "安全状态不可用".to_string())?;
+        if self.security_model != SecurityModel::StableDekV2
+            || *self.startup_mode.lock().map_err(|_| "安全状态不可用".to_string())?
+                != StartupMode::ExistingV2
+        {
+            return Err("当前密码库不支持更换恢复短语".to_string());
+        }
+        let dek = self.stable_dek()?;
+        let mut pending = self
+            .pending_recovery_rotation
+            .lock()
+            .map_err(|_| "安全状态不可用".to_string())?;
+        let prepared = pending
+            .as_ref()
+            .ok_or_else(|| "恢复短语轮换状态无效".to_string())?;
+        if prepared.token != rotation_token
+            || confirmation_words.len() != prepared.confirmation_indexes.len()
+            || Sha256::digest(dek.as_slice()).as_slice() != prepared.dek_fingerprint
+        {
+            return Err("恢复短语轮换状态无效".to_string());
+        }
+        let matches = confirmation_words.iter().enumerate().all(|(input_index, word)| {
+            Self::recovery_confirmation_hash(
+                &prepared.confirmation_key,
+                prepared.confirmation_indexes[input_index],
+                word,
+            ) == prepared.confirmation_hashes[input_index]
+        });
+        if !matches {
+            return Err("恢复词确认不匹配".to_string());
+        }
+        let db = self.db.lock().map_err(|_| "安全状态不可用".to_string())?;
+        migration::commit_recovery_rotation_inject(
+            &db,
+            &prepared.params_r_json,
+            &prepared.wrapped_dek_r,
+            fail_at,
+        )
+        .map_err(|_| "无法更换恢复短语，请重试".to_string())?;
+        drop(db);
+        pending.take();
+        Ok(())
+    }
+    pub fn cancel_v2_recovery_rotation(&self, rotation_token: &str) -> Result<(), String> {
+        let _gate = self.master_wrap_gate.lock().map_err(|_| "安全状态不可用".to_string())?;
+        if self.security_model != SecurityModel::StableDekV2 {
+            return Err("当前密码库不支持更换恢复短语".to_string());
+        }
+        let mut pending = self
+            .pending_recovery_rotation
+            .lock()
+            .map_err(|_| "安全状态不可用".to_string())?;
+        match pending.as_ref() {
+            Some(prepared) if prepared.token == rotation_token => {
+                pending.take();
+                Ok(())
+            }
+            _ => Err("恢复短语轮换状态无效".to_string()),
+        }
     }
     pub fn prepare_v2_initialization(&self, password: &str) -> Result<Vec<String>, String> {
         let mut startup_mode = self.startup_mode.lock().map_err(|_| "安全状态不可用".to_string())?;
@@ -259,6 +425,7 @@ pub fn run() {
                 security_model,
                 startup_mode: Mutex::new(startup_mode),
                 pending_v2: Mutex::new(None),
+                pending_recovery_rotation: Mutex::new(None),
                 master_wrap_gate: Mutex::new(()),
                 key: Mutex::new(None),
             });
@@ -490,6 +657,9 @@ pub fn run() {
             verify_v2_recovery_phrase,
             recover_v2_with_phrase,
             change_v2_master_password,
+            prepare_v2_recovery_rotation,
+            confirm_v2_recovery_rotation,
+            cancel_v2_recovery_rotation,
             setup_master_password,
             unlock_app,
             lock_app,

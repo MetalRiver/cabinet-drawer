@@ -845,6 +845,120 @@ pub fn recover_v2_core(v2: &Db, recovery_phrase: &str) -> Result<Zeroizing<Vec<u
     crypto::unwrap_dek_recovery(&wrapped, &entropy, &salt).map_err(|_| invalid())
 }
 
+/// Recovery rotation 的内存准备结果。mnemonic 仅用于一次性返回 UI，不写数据库。
+pub struct PreparedRecoveryRotation {
+    pub params_r_json: String,
+    pub wrapped_dek_r: String,
+    pub mnemonic: Zeroizing<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecoveryRotationFailPoint {
+    AfterNewSalt,
+    AfterRecoveryKek,
+    AfterWrappedDek,
+    DuringMetadataWrite,
+    BeforeCommit,
+}
+
+pub fn prepare_recovery_rotation(
+    dek: &[u8],
+) -> Result<PreparedRecoveryRotation, String> {
+    prepare_recovery_rotation_inject(dek, None)
+}
+
+pub fn prepare_recovery_rotation_inject(
+    dek: &[u8],
+    fail_at: Option<RecoveryRotationFailPoint>,
+) -> Result<PreparedRecoveryRotation, String> {
+    let fail = |point| fail_at == Some(point);
+    let entropy = crypto::generate_recovery_entropy();
+    let mnemonic = Zeroizing::new(
+        crypto::entropy_to_mnemonic(&entropy)
+            .map_err(|_| "无法生成新的恢复短语".to_string())?,
+    );
+    let salt_r = Zeroizing::new(crypto::generate_salt());
+    if fail(RecoveryRotationFailPoint::AfterNewSalt) {
+        return Err("injected:AfterNewSalt".to_string());
+    }
+    let params_r = crypto::KdfParams {
+        algo: "hkdf-sha256".into(),
+        version: 1,
+        m_cost: 0,
+        t_cost: 0,
+        p_cost: 0,
+        salt: crypto::b64_encode(&salt_r),
+    };
+    let kek_r = crypto::derive_recovery_kek(&entropy, &salt_r);
+    if fail(RecoveryRotationFailPoint::AfterRecoveryKek) {
+        return Err("injected:AfterRecoveryKek".to_string());
+    }
+    let wrapped_dek_r = crypto::wrap_dek(dek, &kek_r, crypto::AAD_WRAP_RECOVERY)
+        .map_err(|_| "无法建立新的恢复保护".to_string())?;
+    if fail(RecoveryRotationFailPoint::AfterWrappedDek) {
+        return Err("injected:AfterWrappedDek".to_string());
+    }
+    let params_r_json = serde_json::to_string(&params_r)
+        .map_err(|_| "无法建立新的恢复保护".to_string())?;
+    Ok(PreparedRecoveryRotation {
+        params_r_json,
+        wrapped_dek_r,
+        mnemonic,
+    })
+}
+
+/// 原子提交新的 Recovery metadata。调用方必须先完成 pending token 与三词确认校验。
+pub fn commit_recovery_rotation(
+    v2: &Db,
+    params_r_json: &str,
+    wrapped_dek_r: &str,
+) -> Result<(), String> {
+    commit_recovery_rotation_inject(v2, params_r_json, wrapped_dek_r, None)
+}
+
+pub fn commit_recovery_rotation_inject(
+    v2: &Db,
+    params_r_json: &str,
+    wrapped_dek_r: &str,
+    fail_at: Option<RecoveryRotationFailPoint>,
+) -> Result<(), String> {
+    let fail = |point| fail_at == Some(point);
+    let mut conn = v2
+        .conn
+        .lock()
+        .map_err(|_| "安全数据库不可用".to_string())?;
+    let tx = conn
+        .transaction()
+        .map_err(|_| "无法更新恢复保护".to_string())?;
+    let params_updated = tx
+        .execute(
+            "UPDATE settings SET value = ?1 WHERE key = 'kdf_params_r'",
+            params![params_r_json],
+        )
+        .map_err(|_| "无法更新恢复保护".to_string())?;
+    if params_updated != 1 {
+        return Err("无法更新恢复保护".to_string());
+    }
+    if fail(RecoveryRotationFailPoint::DuringMetadataWrite) {
+        return Err("injected:DuringMetadataWrite".to_string());
+    }
+    let wrap_updated = tx
+        .execute(
+            "UPDATE settings SET value = ?1 WHERE key = 'wrapped_dek_r'",
+            params![wrapped_dek_r],
+        )
+        .map_err(|_| "无法更新恢复保护".to_string())?;
+    if wrap_updated != 1 {
+        return Err("无法更新恢复保护".to_string());
+    }
+    if fail(RecoveryRotationFailPoint::BeforeCommit) {
+        return Err("injected:BeforeCommit".to_string());
+    }
+    tx.commit()
+        .map_err(|_| "无法更新恢复保护".to_string())?;
+    Ok(())
+}
+
 /// 主密码重包故障注入点。生产入口始终传 None。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MasterRewrapFailPoint {
@@ -1263,6 +1377,7 @@ mod migration_tests {
             security_model: crate::SecurityModel::StableDekV2,
             startup_mode: std::sync::Mutex::new(crate::StartupMode::ExistingV2),
             pending_v2: std::sync::Mutex::new(None),
+            pending_recovery_rotation: std::sync::Mutex::new(None),
             master_wrap_gate: std::sync::Mutex::new(()),
             key: std::sync::Mutex::new(None),
         };
@@ -1285,6 +1400,7 @@ mod migration_tests {
             security_model: crate::SecurityModel::StableDekV2,
             startup_mode: std::sync::Mutex::new(crate::StartupMode::FreshV2),
             pending_v2: std::sync::Mutex::new(None),
+            pending_recovery_rotation: std::sync::Mutex::new(None),
             master_wrap_gate: std::sync::Mutex::new(()),
             key: std::sync::Mutex::new(None),
         }
@@ -1548,6 +1664,7 @@ mod migration_tests {
             security_model: crate::SecurityModel::Legacy,
             startup_mode: std::sync::Mutex::new(crate::StartupMode::Legacy),
             pending_v2: std::sync::Mutex::new(None),
+            pending_recovery_rotation: std::sync::Mutex::new(None),
             master_wrap_gate: std::sync::Mutex::new(()),
             key: std::sync::Mutex::new(None),
         };
@@ -1958,6 +2075,7 @@ mod migration_tests {
             security_model: crate::SecurityModel::Legacy,
             startup_mode: std::sync::Mutex::new(crate::StartupMode::Legacy),
             pending_v2: std::sync::Mutex::new(None),
+            pending_recovery_rotation: std::sync::Mutex::new(None),
             master_wrap_gate: std::sync::Mutex::new(()),
             key: std::sync::Mutex::new(None),
         };
@@ -2016,6 +2134,398 @@ mod migration_tests {
         assert_eq!(db.get_setting("kdf_params_r").unwrap(), recovery_before.0);
         assert_eq!(db.get_setting("wrapped_dek_r").unwrap(), recovery_before.1);
         drop(db);
+        drop(state);
+        cleanup_dir(&dir);
+    }
+
+    // ===== Phase 2B.3b：Recovery Phrase 两阶段轮换 =====
+    fn rotation_answers(prepared: &crate::RecoveryRotationPreparation) -> Vec<String> {
+        prepared
+            .confirmation_indexes
+            .iter()
+            .map(|index| prepared.recovery_words[*index].clone())
+            .collect()
+    }
+
+    fn rotation_phrase(prepared: &crate::RecoveryRotationPreparation) -> String {
+        prepared.recovery_words.join(" ")
+    }
+
+    #[test]
+    fn rr1_confirmed_rotation_invalidates_old_phrase_and_preserves_stable_dek() {
+        let (dir, state, old_words, expected) = completed_v2_state("rr1");
+        state.unlock_v2_and_store(MASTER).unwrap();
+        let prepared = state.prepare_v2_recovery_rotation().unwrap();
+        let new_phrase = rotation_phrase(&prepared);
+        let answers = rotation_answers(&prepared);
+        state
+            .confirm_v2_recovery_rotation(&prepared.rotation_token, &answers)
+            .unwrap();
+
+        assert_eq!(state.stable_dek().unwrap().to_vec(), expected);
+        let db = state.db.lock().unwrap();
+        assert!(recover_v2_core(&db, &old_words.join(" ")).is_err());
+        assert_eq!(recover_v2_core(&db, &new_phrase).unwrap().to_vec(), expected);
+        drop(db);
+        drop(state);
+        cleanup_dir(&dir);
+    }
+
+    #[test]
+    fn rr2_unconfirmed_rotation_is_discarded_without_db_changes() {
+        let (dir, state, old_words, expected) = completed_v2_state("rr2");
+        state.unlock_v2_and_store(MASTER).unwrap();
+        let v2_path = dir.join(V2_DB_FILENAME);
+        let hash_before = file_hash(&v2_path);
+        let before = security_metadata_snapshot(&state.db.lock().unwrap());
+        let prepared = state.prepare_v2_recovery_rotation().unwrap();
+        let new_phrase = rotation_phrase(&prepared);
+
+        state.clear_key();
+        assert!(state
+            .confirm_v2_recovery_rotation(
+                &prepared.rotation_token,
+                &rotation_answers(&prepared),
+            )
+            .is_err());
+        state.unlock_v2_and_store(MASTER).unwrap();
+        assert_eq!(file_hash(&v2_path), hash_before, "pending 阶段不得写正式 DB");
+        let db = state.db.lock().unwrap();
+        assert_eq!(security_metadata_snapshot(&db), before);
+        assert_eq!(recover_v2_core(&db, &old_words.join(" ")).unwrap().to_vec(), expected);
+        assert!(recover_v2_core(&db, &new_phrase).is_err());
+        drop(db);
+        drop(state);
+        cleanup_dir(&dir);
+    }
+
+    #[test]
+    fn rr3_wrong_confirmation_keeps_old_recovery_and_pending_rotation() {
+        let (dir, state, old_words, expected) = completed_v2_state("rr3");
+        state.unlock_v2_and_store(MASTER).unwrap();
+        let before = security_metadata_snapshot(&state.db.lock().unwrap());
+        let prepared = state.prepare_v2_recovery_rotation().unwrap();
+        let wrong = vec!["wrong".to_string(); 3];
+        assert_eq!(
+            state
+                .confirm_v2_recovery_rotation(&prepared.rotation_token, &wrong)
+                .unwrap_err(),
+            "恢复词确认不匹配"
+        );
+        {
+            let db = state.db.lock().unwrap();
+            assert_eq!(security_metadata_snapshot(&db), before);
+            assert_eq!(recover_v2_core(&db, &old_words.join(" ")).unwrap().to_vec(), expected);
+        }
+        state
+            .confirm_v2_recovery_rotation(
+                &prepared.rotation_token,
+                &rotation_answers(&prepared),
+            )
+            .unwrap();
+        drop(state);
+        cleanup_dir(&dir);
+    }
+
+    #[test]
+    fn rr4_master_metadata_and_master_unlock_are_unchanged() {
+        let (dir, state, _, expected) = completed_v2_state("rr4");
+        state.unlock_v2_and_store(MASTER).unwrap();
+        let before = security_metadata_snapshot(&state.db.lock().unwrap());
+        let prepared = state.prepare_v2_recovery_rotation().unwrap();
+        state
+            .confirm_v2_recovery_rotation(
+                &prepared.rotation_token,
+                &rotation_answers(&prepared),
+            )
+            .unwrap();
+        let db = state.db.lock().unwrap();
+        let after = security_metadata_snapshot(&db);
+        assert_eq!(after.0, before.0, "master KDF metadata 不得变化");
+        assert_eq!(after.1, before.1, "master wrap 不得变化");
+        assert_eq!(after.4, before.4, "security_version 不得变化");
+        assert_eq!(unlock_v2_core(&db, MASTER).unwrap().to_vec(), expected);
+        drop(db);
+        drop(state);
+        cleanup_dir(&dir);
+    }
+
+    #[test]
+    fn rr5_password_ciphertext_and_record_uuid_are_unchanged() {
+        let (dir, state, _, expected) = completed_v2_state("rr5");
+        state.unlock_v2_and_store(MASTER).unwrap();
+        let uuids = [
+            "4cb62838-60c0-434b-8c84-95375c15a729",
+            "ecaf35d0-5e34-433f-8bdb-2b83cd085c58",
+            "604a77f3-74bb-4b75-bb78-931726664ad8",
+        ];
+        let mut ids = Vec::new();
+        for (index, record_uuid) in uuids.iter().enumerate() {
+            let ciphertext = crypto::encrypt_password_dw2(
+                &format!("rr5-secret-{index}"),
+                &expected,
+                record_uuid,
+            )
+            .unwrap();
+            ids.push(
+                state
+                    .db
+                    .lock()
+                    .unwrap()
+                    .create_password_v2(record_uuid, "fixture", "user", &ciphertext, "", "")
+                    .unwrap(),
+            );
+        }
+        let before: Vec<_> = ids
+            .iter()
+            .map(|id| state.db.lock().unwrap().get_password_v2_snapshot(*id).unwrap().unwrap())
+            .collect();
+        let prepared = state.prepare_v2_recovery_rotation().unwrap();
+        state
+            .confirm_v2_recovery_rotation(
+                &prepared.rotation_token,
+                &rotation_answers(&prepared),
+            )
+            .unwrap();
+        let after: Vec<_> = ids
+            .iter()
+            .map(|id| state.db.lock().unwrap().get_password_v2_snapshot(*id).unwrap().unwrap())
+            .collect();
+        for (before, after) in before.iter().zip(after.iter()) {
+            assert_eq!(after.record_uuid, before.record_uuid);
+            assert_eq!(after.encrypted_password, before.encrypted_password);
+        }
+        drop(state);
+        cleanup_dir(&dir);
+    }
+
+    #[test]
+    fn rr6_all_preparation_and_transaction_failures_keep_old_recovery_valid() {
+        let prepare_failures = [
+            RecoveryRotationFailPoint::AfterNewSalt,
+            RecoveryRotationFailPoint::AfterRecoveryKek,
+            RecoveryRotationFailPoint::AfterWrappedDek,
+        ];
+        for (index, fail_point) in prepare_failures.into_iter().enumerate() {
+            let (dir, state, old_words, expected) = completed_v2_state(&format!("rr6_p_{index}"));
+            state.unlock_v2_and_store(MASTER).unwrap();
+            let before = security_metadata_snapshot(&state.db.lock().unwrap());
+            assert!(state.prepare_v2_recovery_rotation_inject(Some(fail_point)).is_err());
+            let db = state.db.lock().unwrap();
+            assert_eq!(security_metadata_snapshot(&db), before);
+            assert_eq!(recover_v2_core(&db, &old_words.join(" ")).unwrap().to_vec(), expected);
+            drop(db);
+            drop(state);
+            cleanup_dir(&dir);
+        }
+
+        let transaction_failures = [
+            RecoveryRotationFailPoint::DuringMetadataWrite,
+            RecoveryRotationFailPoint::BeforeCommit,
+        ];
+        for (index, fail_point) in transaction_failures.into_iter().enumerate() {
+            let (dir, state, old_words, expected) = completed_v2_state(&format!("rr6_t_{index}"));
+            state.unlock_v2_and_store(MASTER).unwrap();
+            let before = security_metadata_snapshot(&state.db.lock().unwrap());
+            let prepared = state.prepare_v2_recovery_rotation().unwrap();
+            let new_phrase = rotation_phrase(&prepared);
+            assert!(state
+                .confirm_v2_recovery_rotation_inject(
+                    &prepared.rotation_token,
+                    &rotation_answers(&prepared),
+                    Some(fail_point),
+                )
+                .is_err());
+            let db = state.db.lock().unwrap();
+            assert_eq!(security_metadata_snapshot(&db), before);
+            assert_eq!(recover_v2_core(&db, &old_words.join(" ")).unwrap().to_vec(), expected);
+            assert!(recover_v2_core(&db, &new_phrase).is_err());
+            drop(db);
+            state.cancel_v2_recovery_rotation(&prepared.rotation_token).unwrap();
+            drop(state);
+            cleanup_dir(&dir);
+        }
+    }
+
+    #[test]
+    fn rr7_concurrent_prepare_allows_one_pending_rotation_and_legacy_is_rejected() {
+        use std::sync::{Arc, Barrier};
+
+        let (dir, state, _, _) = completed_v2_state("rr7");
+        state.unlock_v2_and_store(MASTER).unwrap();
+        let state = Arc::new(state);
+        let barrier = Arc::new(Barrier::new(2));
+        let mut handles = Vec::new();
+        for _ in 0..2 {
+            let state = Arc::clone(&state);
+            let barrier = Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                state.prepare_v2_recovery_rotation()
+            }));
+        }
+        let results: Vec<_> = handles.into_iter().map(|handle| handle.join().unwrap()).collect();
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(results.iter().filter(|result| result.is_err()).count(), 1);
+        let prepared = results.into_iter().find_map(Result::ok).unwrap();
+        state.cancel_v2_recovery_rotation(&prepared.rotation_token).unwrap();
+        assert!(state
+            .confirm_v2_recovery_rotation(
+                &prepared.rotation_token,
+                &rotation_answers(&prepared),
+            )
+            .is_err());
+        drop(state);
+        cleanup_dir(&dir);
+
+        let legacy_dir = temp_app_dir("rr7_legacy");
+        build_legacy_fixture(&legacy_dir, MASTER);
+        let legacy_path = legacy_dir.join(LEGACY_DB_FILENAME);
+        let legacy_state = crate::AppState {
+            db: std::sync::Mutex::new(Db::open(&legacy_path).unwrap()),
+            db_path: legacy_path,
+            security_model: crate::SecurityModel::Legacy,
+            startup_mode: std::sync::Mutex::new(crate::StartupMode::Legacy),
+            pending_v2: std::sync::Mutex::new(None),
+            pending_recovery_rotation: std::sync::Mutex::new(None),
+            master_wrap_gate: std::sync::Mutex::new(()),
+            key: std::sync::Mutex::new(None),
+        };
+        assert!(legacy_state.prepare_v2_recovery_rotation().is_err());
+        assert!(!legacy_dir.join(V2_DB_FILENAME).exists());
+        drop(legacy_state);
+        cleanup_dir(&legacy_dir);
+    }
+
+    #[test]
+    fn rr8_duplicate_confirm_commits_exactly_once() {
+        let (dir, state, old_words, expected) = completed_v2_state("rr8");
+        state.unlock_v2_and_store(MASTER).unwrap();
+        let prepared = state.prepare_v2_recovery_rotation().unwrap();
+        let new_phrase = rotation_phrase(&prepared);
+        let answers = rotation_answers(&prepared);
+        state
+            .confirm_v2_recovery_rotation(&prepared.rotation_token, &answers)
+            .unwrap();
+        assert!(state
+            .confirm_v2_recovery_rotation(&prepared.rotation_token, &answers)
+            .is_err());
+        let db = state.db.lock().unwrap();
+        assert!(recover_v2_core(&db, &old_words.join(" ")).is_err());
+        assert_eq!(recover_v2_core(&db, &new_phrase).unwrap().to_vec(), expected);
+        drop(db);
+        drop(state);
+        cleanup_dir(&dir);
+    }
+
+    #[test]
+    fn rr9_rotation_confirm_and_master_change_are_concurrent_safe() {
+        use std::sync::{Arc, Barrier};
+
+        let (dir, state, old_words, expected) = completed_v2_state("rr9");
+        state.unlock_v2_and_store(MASTER).unwrap();
+        let prepared = state.prepare_v2_recovery_rotation().unwrap();
+        let new_phrase = rotation_phrase(&prepared);
+        let token = prepared.rotation_token.clone();
+        let answers = rotation_answers(&prepared);
+        let state = Arc::new(state);
+        let barrier = Arc::new(Barrier::new(2));
+
+        let rotate_handle = {
+            let state = Arc::clone(&state);
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                state.confirm_v2_recovery_rotation(&token, &answers)
+            })
+        };
+        let master_handle = {
+            let state = Arc::clone(&state);
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                state.change_v2_master_password(MASTER, "RR9-New-Master!")
+            })
+        };
+
+        assert!(rotate_handle.join().unwrap().is_ok());
+        assert!(master_handle.join().unwrap().is_ok());
+        assert_eq!(state.stable_dek().unwrap().to_vec(), expected);
+        let db = state.db.lock().unwrap();
+        assert!(unlock_v2_core(&db, MASTER).is_err());
+        assert_eq!(
+            unlock_v2_core(&db, "RR9-New-Master!").unwrap().to_vec(),
+            expected
+        );
+        assert!(recover_v2_core(&db, &old_words.join(" ")).is_err());
+        assert_eq!(recover_v2_core(&db, &new_phrase).unwrap().to_vec(), expected);
+        drop(db);
+        drop(state);
+        cleanup_dir(&dir);
+    }
+
+    #[test]
+    fn rr10_consecutive_rotations_invalidate_each_previous_phrase() {
+        let (dir, state, words_a, expected) = completed_v2_state("rr10");
+        state.unlock_v2_and_store(MASTER).unwrap();
+
+        let prepared_b = state.prepare_v2_recovery_rotation().unwrap();
+        let phrase_b = rotation_phrase(&prepared_b);
+        let answers_b = rotation_answers(&prepared_b);
+        state
+            .confirm_v2_recovery_rotation(&prepared_b.rotation_token, &answers_b)
+            .unwrap();
+
+        let prepared_c = state.prepare_v2_recovery_rotation().unwrap();
+        let phrase_c = rotation_phrase(&prepared_c);
+        let answers_c = rotation_answers(&prepared_c);
+        assert!(state
+            .confirm_v2_recovery_rotation(&prepared_b.rotation_token, &answers_b)
+            .is_err());
+        state
+            .confirm_v2_recovery_rotation(&prepared_c.rotation_token, &answers_c)
+            .unwrap();
+
+        assert_eq!(state.stable_dek().unwrap().to_vec(), expected);
+        let db = state.db.lock().unwrap();
+        assert!(recover_v2_core(&db, &words_a.join(" ")).is_err());
+        assert!(recover_v2_core(&db, &phrase_b).is_err());
+        assert_eq!(recover_v2_core(&db, &phrase_c).unwrap().to_vec(), expected);
+        drop(db);
+        drop(state);
+        cleanup_dir(&dir);
+    }
+
+    #[test]
+    fn rr11_lock_clears_pending_and_allows_a_fresh_rotation_after_unlock() {
+        let (dir, state, old_words, expected) = completed_v2_state("rr11");
+        state.unlock_v2_and_store(MASTER).unwrap();
+        let before = security_metadata_snapshot(&state.db.lock().unwrap());
+        let abandoned = state.prepare_v2_recovery_rotation().unwrap();
+        let abandoned_phrase = rotation_phrase(&abandoned);
+        let abandoned_answers = rotation_answers(&abandoned);
+
+        state.clear_key();
+        assert!(state
+            .confirm_v2_recovery_rotation(
+                &abandoned.rotation_token,
+                &abandoned_answers,
+            )
+            .is_err());
+        state.unlock_v2_and_store(MASTER).unwrap();
+        {
+            let db = state.db.lock().unwrap();
+            assert_eq!(security_metadata_snapshot(&db), before);
+            assert_eq!(recover_v2_core(&db, &old_words.join(" ")).unwrap().to_vec(), expected);
+            assert!(recover_v2_core(&db, &abandoned_phrase).is_err());
+        }
+
+        let replacement = state.prepare_v2_recovery_rotation().unwrap();
+        assert_ne!(replacement.rotation_token, abandoned.rotation_token);
+        assert_ne!(rotation_phrase(&replacement), abandoned_phrase);
+        state
+            .cancel_v2_recovery_rotation(&replacement.rotation_token)
+            .unwrap();
         drop(state);
         cleanup_dir(&dir);
     }

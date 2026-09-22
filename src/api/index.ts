@@ -23,6 +23,23 @@ export const changeV2MasterPassword = (
   newPassword: string
 ) => invoke<void>("change_v2_master_password", { currentPassword, newPassword });
 
+export interface RecoveryRotationPreparation {
+  rotation_token: string;
+  recovery_words: string[];
+  confirmation_indexes: number[];
+}
+
+export const prepareV2RecoveryRotation = () =>
+  invoke<RecoveryRotationPreparation>("prepare_v2_recovery_rotation");
+
+export const confirmV2RecoveryRotation = (
+  rotationToken: string,
+  confirmationWords: string[]
+) => invoke<void>("confirm_v2_recovery_rotation", { rotationToken, confirmationWords });
+
+export const cancelV2RecoveryRotation = (rotationToken: string) =>
+  invoke<void>("cancel_v2_recovery_rotation", { rotationToken });
+
 export interface SecurityStatus {
   security_model: "legacy_security_model" | "stable_dek_v2";
   migration_required: boolean;
