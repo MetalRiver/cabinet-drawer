@@ -751,7 +751,7 @@ onMounted(() => {
         <p class="section-hint section-hint-purple">
           <template v-if="isV2Security">修改后只更新主密码保护，密码数据与 Recovery Phrase 保持不变。</template>
           <template v-else>修改后会立即用新密码重加密所有密码条目和恢复短语（保持解锁状态，无需重新输入）。</template><br>
-          <b>注意：</b> 修改主密码 <b>不会</b> 影响您的「独立二次验证密码」（两套密码独立）。
+          <template v-if="!isV2Security"><b>注意：</b> 修改主密码 <b>不会</b> 影响您的「独立二次验证密码」（两套密码独立）。</template>
         </p>
         <div class="form-grid">
           <div class="form-group">
@@ -839,8 +839,8 @@ onMounted(() => {
         </p>
       </div>
 
-      <!-- 方案① s1d：🔐 密码区二次验证（NEW） -->
-      <div class="settings-section card-soft card-security">
+      <!-- 方案① s1d：🔐 密码区二次验证（NEW）——legacy-only，v2 下无此概念，隐藏 -->
+      <div v-if="!isV2Security" class="settings-section card-soft card-security">
         <div class="section-head">
           <h3 class="section-title">🔐 密码区二次验证</h3>
           <span v-if="pw2ndEnabled" class="section-badge section-badge-green">已启用独立密码</span>
@@ -889,8 +889,8 @@ onMounted(() => {
         </p>
       </div>
 
-      <!-- 🚨 紧急救援：密码解密失败一键救回 -->
-      <div class="settings-section card-soft card-danger">
+      <!-- 🚨 紧急救援：legacy 专用（DW2/Stable DEK 下不存在该失败场景），v2 隐藏 -->
+      <div v-if="!isV2Security" class="settings-section card-soft card-danger">
         <div class="section-head">
           <h3 class="section-title">🚨 紧急救援：密码解密失败？</h3>
           <span class="section-badge section-badge-warn">救命按钮</span>

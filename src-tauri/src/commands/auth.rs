@@ -3,6 +3,7 @@
 
 use tauri::State;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use sha2::{Digest, Sha256};
 
 use crate::crypto;
 use crate::{
@@ -341,9 +342,15 @@ pub fn lock_app(state: State<AppState>) {
 
 // ============================================================
 // 🔒 是否启用了独立的「密码区二次验证密码」
+// v2 语义：StableDekV2 下不存在 legacy「独立二次验证密码」概念，恒 false
+// （前端据此隐藏 legacy 设置区；查看/复制统一用主密码做 v2 验证）。
 // ============================================================
 #[tauri::command]
 pub fn has_second_password(state: State<AppState>) -> bool {
+    has_second_password_core(&state)
+}
+
+pub(crate) fn has_second_password_core(state: &AppState) -> bool {
     if state.security_model() != SecurityModel::Legacy { return false; }
     let legacy_startup = matches!(state.startup_mode.lock().as_deref(), Ok(StartupMode::Legacy));
     if legacy_startup { return false; }
@@ -430,24 +437,45 @@ pub fn change_second_password(
 }
 
 // ============================================================
-// 🔒 密码区二次验证入口（独立密码优先，否则回退主密码）
+// 🔒 密码区二次验证入口（单条目查看/复制密码前的身份验证）
+// Legacy：独立二次密码优先，未启用则回退主密码 verifier（0.2.0 行为不变）。
+// StableDekV2：当前主密码 → Master KEK → unwrap wrapped_dek_m → 与活动
+// Stable DEK 一致性判断。复用 unlock_v2_core（与解锁/改主密码同一验证实现，
+// 不新增密码学代码）；纯验证，不触碰 DB / security metadata / AppState key。
 // ============================================================
 #[tauri::command]
 pub fn verify_password_for_pw_view(state: State<AppState>, input_password: String) -> bool {
-    if state.security_model() != SecurityModel::Legacy { return false; }
-    let legacy_startup = matches!(state.startup_mode.lock().as_deref(), Ok(StartupMode::Legacy));
-    if legacy_startup { return false; }
-    let db = match state.db.lock() {
-        Ok(g) => g,
-        Err(_) => return false,
-    };
+    let input_password = Zeroizing::new(input_password);
+    verify_password_for_pw_view_core(&state, input_password.as_str())
+}
 
+/// 单条目二次验证的 production 语义（verify_password_for_pw_view 与
+/// verify_master_password 的唯一实现，可测）。
+pub(crate) fn verify_password_for_pw_view_core(state: &AppState, input_password: &str) -> bool {
+    match state.security_model() {
+        SecurityModel::StableDekV2 => verify_v2_master_password(state, input_password),
+        SecurityModel::Legacy => {
+            // legacy-only 启动态 fail closed（0.3.0 硬边界：升级前不开放任何 legacy 工作态）
+            let legacy_startup = matches!(state.startup_mode.lock().as_deref(), Ok(StartupMode::Legacy));
+            if legacy_startup { return false; }
+            let db = match state.db.lock() {
+                Ok(g) => g,
+                Err(_) => return false,
+            };
+            verify_legacy_password_for_view(&db, input_password)
+        }
+    }
+}
+
+/// legacy 0.2.0 验证语义原样保留（独立二次密码优先，未启用回退主密码 verifier）。
+/// 0.3.0 中 legacy 工作态已被封死，此路径仅为语义完整性保留。
+pub(crate) fn verify_legacy_password_for_view(db: &crate::db::Db, input_password: &str) -> bool {
     // A) 独立二次验证密码已启用 → 只认它，主密码无效
     if let Ok(Some(h2)) = db.get_setting("pw2nd_hash") {
         if !h2.is_empty() {
             if let Ok(Some(s2_b64)) = db.get_setting("pw2nd_salt") {
                 if let Ok(s2) = BASE64.decode(&s2_b64) {
-                    return crypto::hash_password(&input_password, &s2) == h2;
+                    return crypto::hash_password(input_password, &s2) == h2;
                 }
             }
             return false;
@@ -467,7 +495,34 @@ pub fn verify_password_for_pw_view(state: State<AppState>, input_password: Strin
         Ok(v) => v,
         Err(_) => return false,
     };
-    crypto::hash_password(&input_password, &salt) == hash
+    crypto::hash_password(input_password, &salt) == hash
+}
+
+/// 定长摘要的 constant-time 比较（XOR fold）。
+/// 两侧均为 32 字节 SHA-256 摘要，长度分支不泄露秘密信息。
+fn constant_time_digest_eq(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len()
+        && a.iter()
+            .zip(b.iter())
+            .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+            == 0
+}
+
+/// v2 主密码纯验证：正确 → true，错误/未解锁/状态异常 → false。
+/// 无任何持久化副作用（不写 DB、不 rewrap、不改 AppState key）。
+fn verify_v2_master_password(state: &AppState, input_password: &str) -> bool {
+    let Ok(active_dek) = state.stable_dek() else { return false; };
+    let db = match state.db.lock() {
+        Ok(g) => g,
+        Err(_) => return false,
+    };
+    match crate::migration::unlock_v2_core(&db, input_password) {
+        Ok(candidate_dek) => constant_time_digest_eq(
+            &Sha256::digest(candidate_dek.as_slice()),
+            &Sha256::digest(active_dek.as_slice()),
+        ),
+        Err(_) => false,
+    }
 }
 
 // ============================================================

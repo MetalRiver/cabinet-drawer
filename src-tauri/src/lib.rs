@@ -17,6 +17,8 @@ pub mod migration;
 mod phase2d;
 #[cfg(test)]
 mod legacy_migration_tests;
+#[cfg(test)]
+mod v2_verification_tests;
 mod crypto;
 mod backup;
 mod backup_v2;

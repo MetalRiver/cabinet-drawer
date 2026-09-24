@@ -9,6 +9,7 @@ import {
   passwordStrength as apiStrength,
   verifyPasswordForPwView,
   hasSecondPassword as apiHasSecondPassword,
+  getSecurityStatus,
 } from "../api";
 import type { PasswordMeta } from "../api";
 import { useClipboardCountdown } from "../composables/useClipboardCountdown";
@@ -69,6 +70,17 @@ const verifyModal = reactive({
   pendingAction: null as VerifyAction | null,
   pendingItemId: null as number | null,
 });
+// v2：主密码验证文案（不再引导设置 legacy 独立二次验证密码）
+const verifyHintMaster = computed(() =>
+  isV2Security.value
+    ? "您即将查看明文密码，需要二次确认身份（输入当前主密码）。"
+    : "您即将查看明文密码，需要二次确认身份（输入主密码）。如需更高级安全可前往「设置 → 安全与密码」单独设置独立二次验证密码。"
+);
+const copyHintMaster = computed(() =>
+  isV2Security.value
+    ? "您即将复制密码到剪贴板，需要二次确认身份（输入当前主密码）。"
+    : "您即将复制密码到剪贴板，需要二次确认身份（输入主密码）。如需更高级安全可前往「设置 → 安全与密码」单独设置独立二次验证密码。"
+);
 // P0-#PW#2ND：是否启用独立二次验证密码（决定弹窗文案 / 提示用户用哪套密码）
 const hasIndependentSecondPassword = ref(false);
 async function refreshHasSecondPassword() {
@@ -78,6 +90,13 @@ async function refreshHasSecondPassword() {
     hasIndependentSecondPassword.value = false;
   }
 }
+// v2 安全模型：提示文案不再引导用户去设置 legacy「独立二次验证密码」（v2 无此概念）
+const isV2Security = ref(false);
+onMounted(async () => {
+  try { isV2Security.value = (await getSecurityStatus()).security_model === "stable_dek_v2"; }
+  catch { isV2Security.value = false; }
+});
+
 onMounted(() => {
   void refreshHasSecondPassword();
 });
@@ -857,10 +876,10 @@ function fmtTime(ts: number) {
                 verifyModal.pendingAction === "reveal"
                   ? hasIndependentSecondPassword
                     ? "您即将查看明文密码，需要输入您设置的「二次验证专用密码」（独立于主密码）。"
-                    : "您即将查看明文密码，需要二次确认身份（输入主密码）。如需更高级安全可前往「设置 → 安全与密码」单独设置独立二次验证密码。"
+                    : verifyHintMaster
                   : hasIndependentSecondPassword
                     ? "您即将复制密码到剪贴板，需要输入「二次验证专用密码」（独立于主密码）。"
-                    : "您即将复制密码到剪贴板，需要二次确认身份（输入主密码）。如需更高级安全可前往「设置 → 安全与密码」单独设置独立二次验证密码。"
+                    : copyHintMaster
               }}
             </div>
             <div class="verify-input-row">
