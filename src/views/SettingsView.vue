@@ -1016,8 +1016,8 @@ onMounted(() => {
         </p>
       </div>
 
-      <!-- 迁移：独立卡片（不与导入导出混） -->
-      <div class="settings-section card-soft">
+      <!-- 迁移：独立卡片（不与导入导出混）——legacy-only（migrate_data 未接入 v2），v2 隐藏 -->
+      <div v-if="!isV2Security" class="settings-section card-soft">
         <div class="section-head">
           <h3 class="section-title">🚚 迁移数据到新位置</h3>
           <span class="section-badge section-badge-blue">零风险</span>
