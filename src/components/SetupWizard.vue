@@ -178,7 +178,7 @@ onBeforeUnmount(() => {
         <div v-if="step === 1" key="step1" class="step-content">
           <div class="wizard-icon icon-blue">🔐</div>
           <h1 class="wizard-title">创建主密码</h1>
-          <p class="wizard-subtitle">主密码用于加密所有数据，丢失后无法恢复</p>
+          <p class="wizard-subtitle">主密码用于加密所有数据。万一忘记，可凭下一步生成的恢复短语重置。</p>
 
           <div class="form-group">
             <label>主密码</label>
