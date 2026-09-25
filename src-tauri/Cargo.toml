@@ -1,6 +1,6 @@
 [package]
 name = "drawer-box"
-version = "0.3.0"
+version = "0.3.1"
 description = "抽屉柜 - 桌面面板"
 authors = ["you"]
 edition = "2021"
