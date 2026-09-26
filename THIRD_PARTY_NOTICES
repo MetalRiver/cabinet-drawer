@@ -1,0 +1,63 @@
+Third-Party Notices / 第三方组件声明
+=====================================
+
+本仓库源代码以 GPL-3.0-only 授权（见 LICENSE）。以下为本项目分发包中
+使用到的第三方组件的版权与许可声明，按法律要求保留各组件的原始许可。
+本文件不改变任何第三方组件的授权条款。
+
+--- 前端（Node.js / bundled JS）---
+
+highlight.js
+  Copyright (c) 2006, Ivan Sagalaev
+  License: BSD-3-Clause
+  Source: https://github.com/highlightjs/highlight.js
+
+Vue / Pinia / Vue Router / @tauri-apps/api 及各 Tauri 官方插件
+  License: MIT（或 MIT OR Apache-2.0，详见各包）
+  Source: https://github.com/vuejs/core 等
+
+--- Rust（静态/动态链接，随应用分发的二进制）---
+
+Tauri 框架及官方插件（tauri, tauri-build, tauri-plugin-shell,
+tauri-plugin-global-shortcut, tauri-plugin-clipboard-manager）
+  License: Apache-2.0 OR MIT
+  Source: https://github.com/tauri-apps/tauri
+
+Rust 生态标准双授权组件（MIT OR Apache-2.0，含但不限于）：
+  serde, serde_json, tokio, uuid, base64, chrono, png, image,
+  dirs, rand, aes-gcm, argon2, hkdf, sha2, zeroize
+  License: MIT OR Apache-2.0
+  Source: https://crates.io
+
+rusqlite（含 bundled SQLite）
+  rusqlite: MIT; SQLite: Public Domain（ SQLITE Consortium 声明）
+  Source: https://github.com/rusqlite/rusqlite , https://sqlite.org
+
+tiny-bip39（含 BIP39 英文词表）
+  License: MIT OR Apache-2.0
+  Source: https://crates.io/crates/tiny-bip39
+
+zstd（zstd-sys 绑定，含 BSD 授权的 zstd 本体）
+  zstd: BSD-3-Clause; zstd-sys/zstd crate: MIT
+  Source: https://github.com/facebook/zstd
+
+--- 以下组件以上游声明为准，本仓库不随应用二进制分发其源码 ---
+
+MPL-2.0 组件（经 Tauri 传递依赖引入，文件级弱 copyleft；若修改这些
+  文件需按 MPL-2.0 提供对应文件源码）：
+  cssparser, cssparser-macros, selectors, dtoa-short, option-ext
+  License: MPL-2.0
+  Source: https://github.com/servo/
+
+clipboard-win, error-code
+  License: BSL-1.0 (Boost Software License 1.0)
+
+fuchsia-cprng
+  Copyright 2019 The Fuchsia Authors
+  License: BSD-3-Clause（crate 元数据未标注，以源码内 LICENSE 文件为准）
+
+--- 运行时 ---
+
+Microsoft WebView2 Runtime
+  由安装包内嵌的 WebView2 Bootstrapper 按微软官方分发条款安装，
+  运行时本身 © Microsoft Corporation，依其自身许可条款提供。

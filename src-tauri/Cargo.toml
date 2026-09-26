@@ -2,7 +2,8 @@
 name = "drawer-box"
 version = "0.3.1"
 description = "抽屉柜 - 桌面面板"
-authors = ["you"]
+license = "GPL-3.0-only"
+authors = ["Aa990602 <Aa990602@users.noreply.gitee.com>"]
 edition = "2021"
 
 [lib]

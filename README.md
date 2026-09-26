@@ -34,3 +34,18 @@
 4. 开始使用！所有数据存在你本地电脑，绝对隐私 🔒
 
 > ⚠️ 首次启动时 Windows Defender / 杀毒软件可能误报，点「仍要运行」即可（Tauri 新应用签名问题，保证无毒无后门）
+
+---
+
+### 📄 开源许可（License）
+
+本项目源代码以 **GPL-3.0-only**（GNU General Public License v3.0 仅此版本）授权发布，完整许可证文本见 [LICENSE](LICENSE)。
+
+- Copyright (C) 2026 Aa990602（抽屉柜 Drawer 项目作者）
+- 本程序按"现状"提供，不附带任何担保；分发/修改须遵循 GPL-3.0 条款
+- 第三方组件的版权与许可声明见 [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES)
+
+### 🎨 品牌资产（Brand Assets）
+
+- **GPL-3.0-only 仅授权本仓库的源代码**。"抽屉柜 Drawer" 的名称、Logo 及品牌视觉资产**不因源代码的 GPL 授权而自动获得使用许可**；在品牌项目中使用名称或 Logo 需另行获得项目作者许可。
+- 旧版 Logo（AI 生成、来源不可追溯）已停止作为长期正式品牌资产，当前仅为过渡状态保留；新品牌 Logo（V1.0）确定后将统一替换 `src-tauri/icons/` 与 `src/assets/` 下的全部素材并重新生成图标集，替换前本仓库现有图形资产仅以"过渡资产"对待。

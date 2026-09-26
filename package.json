@@ -1,6 +1,7 @@
 {
   "name": "drawer-box",
   "private": true,
+  "license": "GPL-3.0-only",
   "version": "0.3.1",
   "type": "module",
   "scripts": {
@@ -16,7 +17,6 @@
     "@tauri-apps/plugin-shell": "^2.2.0",
     "highlight.js": "^11.11.0",
     "pinia": "^2.3.0",
-    "sharp": "^0.35.3",
     "vue": "^3.5.13",
     "vue-router": "^4.5.0"
   },
