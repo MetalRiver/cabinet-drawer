@@ -44,7 +44,7 @@
 
 ## 下载安装（Windows 10/11 x64）
 
-1. 前往 [Releases](https://github.com/MetalRiver/cabinet-drawer/releases) 页面，下载 `抽屉柜 Drawer_0.3.2_x64-setup.exe`（约 4.8 MB）
+1. 前往 [Releases](https://github.com/MetalRiver/cabinet-drawer/releases) 页面，下载 `Drawer_0.3.2_x64-setup.exe`（约 4.8 MB，Releases 页面显示名）
 2. 双击运行安装向导，一路下一步即可（自动创建开始菜单 + 桌面图标，仅安装到当前用户目录）
 3. 首次启动会引导你设置「主密码」，并生成 **12 个恢复词**——主密码要记好，恢复词请抄在纸上保存
 4. 开始使用
