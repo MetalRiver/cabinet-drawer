@@ -4,7 +4,7 @@
 
 **一个本地优先的 Windows 桌面「抽屉」：把应用、文件、网址、片段与密码收纳进一个小窗，随手可取。**
 
-![Version](https://img.shields.io/badge/version-v0.3.1-blue)
+![Version](https://img.shields.io/badge/version-v0.3.2-blue)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-lightgrey)
 ![License](https://img.shields.io/badge/license-GPL--3.0--only-green)
 ![Data](https://img.shields.io/badge/data-local--first-orange)
@@ -44,7 +44,7 @@
 
 ## 下载安装（Windows 10/11 x64）
 
-1. 前往 [Releases](https://github.com/MetalRiver/cabinet-drawer/releases) 页面，下载 `抽屉柜 Drawer_0.3.1_x64-setup.exe`（约 4.8 MB）
+1. 前往 [Releases](https://github.com/MetalRiver/cabinet-drawer/releases) 页面，下载 `抽屉柜 Drawer_0.3.2_x64-setup.exe`（约 4.8 MB）
 2. 双击运行安装向导，一路下一步即可（自动创建开始菜单 + 桌面图标，仅安装到当前用户目录）
 3. 首次启动会引导你设置「主密码」，并生成 **12 个恢复词**——主密码要记好，恢复词请抄在纸上保存
 4. 开始使用
@@ -66,7 +66,7 @@
 - 主密码与恢复词同时丢失，数据无法恢复——唯一出路是提前导出的备份
 - 支持导出 `.drawerbox` 认证加密备份：导出时校验密码，避免"备份时存得进、恢复时取不出"；恢复同样需要密码验证
 
-## 已知限制（当前版本 v0.3.1）
+## 已知限制（当前版本 v0.3.2）
 
 - 仅支持 Windows 10/11 x64，无 macOS / Linux 版本
 - 无多设备同步、无云备份、无跨平台、无 AI 功能
