@@ -10,7 +10,7 @@
 ![Data](https://img.shields.io/badge/data-local--first-orange)
 ![Stack](https://img.shields.io/badge/Tauri_2_%C2%B7_Vue_3_%C2%B7_Rust-24C6DB)
 
-无需账号 · 不依赖联网 · 无遥测 · 数据只存你的电脑
+无需账号 · 不依赖云端服务 · 无遥测 · 数据只存你的电脑
 
 <!-- 产品截图：待真实运行截图素材就绪后加入，不使用合成图 -->
 
@@ -57,7 +57,7 @@
 - **加密边界**：仅密码字段在本地数据库中加密存储（AES-256-GCM，主密码经 Argon2id 派生数据密钥）；标题、用户名、网址、备注等其他元数据不是全库加密
 - 查看/复制密码需要重新验证主密码
 - 剪贴板复制密码后自动清空（默认 15 秒，可设置）
-- 应用无遥测、无数据上报；日常使用不需要联网
+- 应用无遥测、无数据上报、不依赖云端服务
 
 ## 忘记密码与备份
 
@@ -117,6 +117,11 @@ cd src-tauri && cargo test    # Rust 单元测试 / 密码契约测试 / 迁移�
 
 ## Community
 
-- Issues：[GitHub](https://github.com/MetalRiver/cabinet-drawer/issues) · [Gitee](https://gitee.com/Aa990602/cabinet-drawer/issues)
-<!-- 微信公众号二维码：待作者提供真实二维码图片（docs/assets/wechat-official-account.png）后在此引用 -->
-<!-- X (Twitter)：待作者确认账号后在此添加链接 -->
+### 途有引力 PathOrbit
+
+![微信公众号：途有引力 PathOrbit（微信搜一搜）](docs/assets/wechat-official-account.png)
+
+X: [@PathOrbit](https://x.com/PathOrbit)
+
+- Bug / Feature：[GitHub Issues](https://github.com/MetalRiver/cabinet-drawer/issues) · [Gitee Issues](https://gitee.com/Aa990602/cabinet-drawer/issues)
+- Security：请勿在公开 Issue 描述细节，见 [SECURITY.md](SECURITY.md)
