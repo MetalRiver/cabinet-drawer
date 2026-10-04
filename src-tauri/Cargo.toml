@@ -19,6 +19,9 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = ["protocol-asset", "tray-icon"] }
+# 单实例：必须作为 Builder 第一个插件注册，第二实例在插件 init 阶段即退出，
+# 不会进入 setup（DB / 托盘 / 快捷键 / AppState 均不重复创建）
+tauri-plugin-single-instance = "2"
 tauri-plugin-shell = "2"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-clipboard-manager = "2"

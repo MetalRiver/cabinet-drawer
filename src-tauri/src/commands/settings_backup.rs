@@ -471,8 +471,13 @@ pub fn get_app_version(app: AppHandle) -> String {
 }
 
 // ============================================================
-// 🧹 5. 数据目录搬迁（target_path 参数！不是 v1→v2 迁移！100% 原版抄）
+// 🧹 5. 数据目录搬迁（已 fail closed，见下）
 // ============================================================
+// 历史实现 = 对运行中的 SQLite 目录（含 WAL/SHM）做裸 fs::copy，且复制后
+// 新路径不会被 resolve_startup_db 采用（启动永远读 app_data_dir），复制完
+// 等于没迁。2026-10 定向体检（Phase 2A）判定为无效且有数据风险的能力，
+// 统一 fail closed：命令保留签名以兼容旧前端，但永远返回明确错误。
+// 真正的数据目录迁移能力需独立设计（事务一致 + 路径持久化 + 回滚），另行立项。
 #[derive(serde::Serialize)]
 pub struct MigrateResult {
     pub files_copied: usize,
@@ -482,52 +487,11 @@ pub struct MigrateResult {
 }
 
 #[tauri::command]
-pub fn migrate_data(state: State<AppState>, target_path: String) -> Result<MigrateResult, String> {
-    state.require_legacy_model()?;
-    use std::fs;
-    let source = state.db_path.parent().ok_or("无法获取源目录")?.to_path_buf();
-    let target = PathBuf::from(&target_path);
-    if !source.exists() {
-        return Err(format!("源目录不存在：{}", source.display()));
-    }
-    if target.exists() {
-        eprintln!("[migrate] 目标目录已存在：{}（会合并覆盖）", target.display());
-    }
-    fs::create_dir_all(&target).map_err(|e| format!("创建目标失败：{}", e))?;
-    let mut files_copied = 0usize;
-    let mut bytes_copied = 0u64;
-    fn copy_dir(
-        src: &PathBuf,
-        dst: &PathBuf,
-        count: &mut usize,
-        bytes: &mut u64,
-    ) -> std::io::Result<()> {
-        if !dst.exists() {
-            fs::create_dir_all(dst)?;
-        }
-        for entry in fs::read_dir(src)? {
-            let entry = entry?;
-            let ft = entry.file_type()?;
-            let src_p = entry.path();
-            let dst_p = dst.join(entry.file_name());
-            if ft.is_dir() {
-                copy_dir(&src_p, &dst_p, count, bytes)?;
-            } else {
-                let n = fs::copy(&src_p, &dst_p)?;
-                *count += 1;
-                *bytes += n;
-            }
-        }
-        Ok(())
-    }
-    copy_dir(&source, &target, &mut files_copied, &mut bytes_copied)
-        .map_err(|e| format!("复制文件失败：{}", e))?;
-    Ok(MigrateResult {
-        files_copied,
-        bytes_copied,
-        source_dir: source.to_string_lossy().to_string(),
-        target_dir: target.to_string_lossy().to_string(),
-    })
+pub fn migrate_data(
+    _state: State<AppState>,
+    _target_path: String,
+) -> Result<MigrateResult, String> {
+    Err("当前版本暂不支持直接迁移数据目录，请使用加密备份/恢复。".to_string())
 }
 
 // ============================================================

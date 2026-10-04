@@ -14,7 +14,6 @@ import {
   restartApp,
   getAppVersion,
   pickPath,
-  migrateData,
   hardPurgeTrash,
   getSetting,
   setSetting,
@@ -383,29 +382,8 @@ async function onRestartApp() {
 }
 
 // ========== 数据迁移 ==========
-const migrateTargetPath = ref<string>("");
-const migrateBusy = ref(false);
-const migrateResult = ref<string>("");
-async function onPickMigratePath() {
-  try {
-    const p = await pickPath({ mode: "folder", title: "选择新数据存储位置" });
-    if (p) migrateTargetPath.value = p;
-  } catch (e) { migrateResult.value = "✗ 选择路径失败：" + e; }
-}
-async function onMigrateData() {
-  if (migrateBusy.value) return;
-  const target = migrateTargetPath.value.trim();
-  if (!target) { migrateResult.value = "请先选择或填写目标路径"; return; }
-  if (!confirm(`确定把所有数据迁移到：\n${target}\n\n迁移完成后会自动重启抽屉柜（旧数据保留）`)) return;
-  migrateBusy.value = true; migrateResult.value = "正在迁移（可能需要几秒到几分钟）…";
-  try {
-    const r = await migrateData(target);
-    migrateResult.value = `✓ 迁移完成：${r.files_copied} 个文件，共 ${(r.bytes_copied / 1024 / 1024).toFixed(1)} MB\n3 秒后自动重启…`;
-    setTimeout(() => { void restartApp(); }, 3000);
-  } catch (e) {
-    migrateResult.value = "✗ 迁移失败：" + e;
-  } finally { migrateBusy.value = false; }
-}
+// 已移除（Phase 2A 2026-10）：migrate_data 后端 fail closed（复制运行中 SQLite
+// 无一致性保证，且新路径不被启动仲裁采用=迁移无效）。数据目录迁移另行独立设计。
 
 // ========== 应用更新 ==========
 const versionInfo = ref<string>("");
@@ -1012,42 +990,14 @@ onMounted(() => {
           </button>
         </div>
         <p class="hint-left">
-          数据库 <code>app.db</code>、回收站、图标缓存一并存在此目录。
+          这里保存抽屉柜的本地数据（数据库、回收站、图标缓存一并存在此目录）。<br />
+          软件安装位置与数据存储位置相互独立：重新安装软件或改变安装位置不会自动移动这些数据。<br />
+          建议定期使用加密备份，并将重要备份保存在非系统盘。
         </p>
       </div>
 
-      <!-- 迁移：独立卡片（不与导入导出混）——legacy-only（migrate_data 未接入 v2），v2 隐藏 -->
-      <div v-if="!isV2Security" class="settings-section card-soft">
-        <div class="section-head">
-          <h3 class="section-title">🚚 迁移数据到新位置</h3>
-          <span class="section-badge section-badge-blue">零风险</span>
-        </div>
-        <p class="section-hint section-hint-blue">
-          迁移会复制 <b>全部文件</b> 到新目录，旧目录的数据<b>不会删除</b>（可随时回退）。迁移完成后 3 秒自动重启抽屉柜。
-        </p>
-        <div class="form-group">
-          <label class="form-label">目标存储路径</label>
-          <div style="display: flex; gap: 6px; align-items: stretch;">
-            <input
-              v-model="migrateTargetPath"
-              class="form-input"
-              placeholder="例如 D:\DrawerBoxData"
-              style="flex: 1;"
-              data-interactive
-            />
-            <button class="btn-mini btn-mini-wide tap" @click="onPickMigratePath" data-interactive>📂 浏览</button>
-          </div>
-          <small class="form-sub">建议选择 SSD 盘下的空文件夹（如 D:\DrawerBox\Data）</small>
-        </div>
-        <div class="action-row">
-          <button class="btn-primary" @click="onMigrateData" :disabled="migrateBusy" data-interactive>
-            {{ migrateBusy ? "迁移中…" : "🚀 开始迁移数据" }}
-          </button>
-        </div>
-        <p v-if="migrateResult" class="hint-inline" :class="{ 'hint-ok': migrateResult.startsWith('✓'), 'hint-err': migrateResult.startsWith('✗') }">
-          {{ migrateResult }}
-        </p>
-      </div>
+      <!-- 迁移卡片已移除（Phase 2A 2026-10）：migrate_data fail closed，
+           换盘/防系统盘重装丢数据请使用下方「导入/导出备份」（.drawerbox 加密单文件）。 -->
 
       <!-- B1：真实导入/导出备份（AES-256-GCM + zstd，文件格式 .drawerbox） -->
       <div class="settings-section card-soft">

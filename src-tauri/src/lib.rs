@@ -760,6 +760,21 @@ impl AppState {
 
 pub fn run() {
     tauri::Builder::default()
+        // 单实例必须是第一个注册的插件：第二实例在插件 init 阶段就把参数转发给
+        // 主实例并退出进程，绝不进入 setup（不重复开 DB / 建托盘 / 注册快捷键）。
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(win) = app.get_webview_window("main") {
+                #[cfg(windows)]
+                {
+                    if win_dock::is_hidden() {
+                        let _ = win_dock::force_reveal(&win);
+                    }
+                }
+                let _ = win.unminimize();
+                let _ = win.show();
+                let _ = win.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_clipboard_manager::init())
@@ -921,7 +936,10 @@ pub fn run() {
                 })
                 .build(app)?;
 
-            // 关闭按钮：隐藏到托盘
+            // 关闭按钮：隐藏到托盘（不退出进程）。
+            // H-09（2026-10 定向体检发现）：原实现只 hide 不 prevent_close，
+            // Tauri 2 下窗口仍被销毁 → 进程直接退出，「隐藏到托盘」从未生效
+            // （v0.3.2 release 实测复现）。
             let window = app.get_webview_window("main").unwrap();
             // ===== 安装 Win32 贴边自动隐藏 =====
             // 修复 P0-#Z：彻底禁用 win_dock.rs
@@ -938,7 +956,8 @@ pub fn run() {
             }
             let window_clone = window.clone();
             window.on_window_event(move |event| {
-                if let WindowEvent::CloseRequested { .. } = event {
+                if let WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
                     let _ = window_clone.hide();
                 }
             });

@@ -410,17 +410,8 @@ export const launchApp = (id: number) => invoke<string>("launch_app", { id });
 export const pickPath = (opts: { mode?: "file" | "folder"; title?: string } = {}) =>
   invoke<string | null>("pick_path", { mode: opts.mode || "folder", title: opts.title });
 
-/** P0-#Y#FIX#MIGRATE：迁移数据到新位置
- * 复制 db + icons 缓存 + trash 表到 target_path
- * 不破坏旧数据，迁移完成后下次启动用新路径（需重启） */
-export interface MigrateResult {
-  files_copied: number;
-  bytes_copied: number;
-  source_dir: string;
-  target_dir: string;
-}
-export const migrateData = (target: string) =>
-  invoke<MigrateResult>("migrate_data", { targetPath: target });
+/* migrate_data 已 fail closed（Phase 2A 2026-10）：后端永远返回错误，
+   前端不再提供调用入口。数据目录迁移能力另行独立设计。 */
 
 /** P0-#Y#FIX#TRASH#HARD：硬清空回收站（立即永久删除所有项） */
 export const hardPurgeTrash = () => invoke<number>("hard_purge_trash");
