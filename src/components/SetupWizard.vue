@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onBeforeUnmount } from "vue";
 import { useAppStore } from "../stores/app";
-import { finalizeV2Security, initializeV2Security, passwordStrength as apiStrength } from "../api";
+import { finalizeV2Security, initializeV2Security, passwordStrength as apiStrength, restartApp } from "../api";
 import { useWindowDrag } from "../composables/useWindowDrag";
 // 品牌 Logo
 import logo from "@/assets/logo.png";
@@ -22,6 +22,7 @@ const recoveryConfirmed = ref(false);
 const confirmationIndexes = ref<number[]>([]);
 const confirmationInputs = ref<string[]>(["", "", ""]);
 const submitting = ref(false);
+const restarting = ref(false);
 const error = ref("");
 
 // 强度检测
@@ -115,9 +116,15 @@ async function finishSetup() {
     confirmationIndexes.value = [];
     appStore.setFirstRun(false);
     appStore.unlock();
+    // Phase 2C-2：正式库已就位（推荐位置或自定义位置）→ 重启一次，
+    // 让应用以 canonical Data Root 走完整标准启动（托盘 / 全局快捷键 / 启动校验）；
+    // 重启后进入锁屏，用刚设置的主密码解锁即可。
+    restarting.value = true;
+    await restartApp();
   } catch (e) {
     // 正式完成失败时保留当前恢复词与确认输入，允许用户重试，不重新生成。
     error.value = String(e);
+    restarting.value = false;
   } finally {
     submitting.value = false;
   }
@@ -134,6 +141,13 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="wizard">
+    <!-- Phase 2C-2：初始化完成 → 重启进入正式应用（此期间不开放任何操作） -->
+    <div v-if="restarting" class="restart-overlay">
+      <div class="restart-box">
+        <div class="restart-spinner"></div>
+        <p class="restart-text">初始化完成，正在启动抽屉柜…</p>
+      </div>
+    </div>
     <!-- 顶部可拖动条 -->
     <div class="wizard-topbar" data-tauri-drag-region @mousedown="onDragHandleMouseDown">
       <div class="wizard-topbar-left" data-tauri-drag-region>
@@ -321,6 +335,29 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+/* Phase 2C-2：初始化完成重启遮罩 */
+.restart-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(10, 14, 22, 0.92);
+  backdrop-filter: blur(6px);
+}
+.restart-box { text-align: center; }
+.restart-spinner {
+  width: 34px;
+  height: 34px;
+  margin: 0 auto 14px;
+  border: 3px solid rgba(59, 110, 245, 0.25);
+  border-top-color: #3b6ef5;
+  border-radius: 50%;
+  animation: restart-spin 0.9s linear infinite;
+}
+@keyframes restart-spin { to { transform: rotate(360deg); } }
+.restart-text { margin: 0; font-size: 13px; color: #cdd6e6; }
 .wizard {
   height: 100%;
   display: flex;

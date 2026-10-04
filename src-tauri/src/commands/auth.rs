@@ -99,10 +99,44 @@ pub fn initialize_v2_security(
 }
 
 #[tauri::command]
-pub fn finalize_v2_security(state: State<AppState>) -> Result<(), String> {
+pub fn finalize_v2_security(
+    app: tauri::AppHandle,
+    state: State<AppState>,
+    init_ctx: State<crate::data_root::InitContext>,
+) -> Result<(), String> {
+    use tauri::Manager;
+    // Phase 2C-2：自定义 Data Root 时，finalize 前先落 recovery_confirmed
+    // （此刻起崩溃都可由启动收尾安全接管；恢复词从未写入任何持久化位置）
+    let ctx = init_ctx.get();
+    let config_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("无法获取配置目录: {}", e))?;
+    if let Some(c) = &ctx {
+        crate::data_root::save_state(
+            &config_root,
+            &crate::data_root::state_pending("init", &c.op_id, "recovery_confirmed", &c.target),
+        )
+        .map_err(|_| "安全数据库初始化失败，请重试".to_string())?;
+    }
     state
         .finalize_v2_initialization()
-        .map_err(|_| "安全数据库初始化失败，请重试".to_string())
+        .map_err(|_| "安全数据库初始化失败，请重试".to_string())?;
+    if let Some(c) = &ctx {
+        // 正式库已 rename 就位 → 先记 activated（崩溃后启动收尾可补写 active_root），
+        // 再提交 canonical Data Root。任一步失败都不影响已就位的正式库。
+        let _ = crate::data_root::save_state(
+            &config_root,
+            &crate::data_root::state_pending("init", &c.op_id, "activated", &c.target),
+        );
+        crate::data_root::save_state(
+            &config_root,
+            &crate::data_root::state_active_external(&c.target),
+        )
+        .map_err(|_| "数据位置提交失败，请重启抽屉柜".to_string())?;
+        init_ctx.set(None);
+    }
+    Ok(())
 }
 
 // ============================================================

@@ -21,7 +21,9 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use crate::migration::{LEGACY_DB_FILENAME, V2_DB_FILENAME, V2_TMP_FILENAME};
+use crate::migration::{
+    LEGACY_DB_FILENAME, V2_DB_FILENAME, V2_SETUP_LOCK_FILENAME, V2_TMP_FILENAME,
+};
 
 /// state 文件固定放在 Config Root，不随 Data Root 移动
 pub const STATE_FILENAME: &str = "data-root-state.json";
@@ -191,7 +193,7 @@ fn parse_guard_file(path: &Path) -> Option<GuardInfo> {
 
 /// 扫描 Config Root，返回**可识别的** Data Root compatibility guard（G1/G2）。
 /// 非 guard 形态的 tmp/stray（无 Magic）不在此列——它们是既有仲裁的输入，行为不变。
-fn recognize_guards(config_root: &Path) -> Vec<GuardInfo> {
+pub fn recognize_guards(config_root: &Path) -> Vec<GuardInfo> {
     let mut guards = Vec::new();
     // G1：固定文件名 drawer-v2.db.tmp + Magic
     let g1_path = config_root.join(V2_TMP_FILENAME);
@@ -454,6 +456,511 @@ pub fn resolve_data_root(config_root: &Path) -> Resolution {
 }
 
 // ============================================================
+// Phase 2C-2：目录文件级工具
+// ============================================================
+
+/// 旧版归档命名（migration 的 rename 目标）：`drawer-v2.db.migrated-<op_id>`
+pub const ARCHIVE_PREFIX: &str = "drawer-v2.db.migrated-";
+pub const MIGRATION_TMP_MARKER: &str = ".migration-tmp";
+
+pub fn has_formal_db(dir: &Path) -> bool {
+    dir.join(V2_DB_FILENAME).exists()
+}
+
+pub fn has_legacy_db(dir: &Path) -> bool {
+    dir.join(LEGACY_DB_FILENAME).exists()
+}
+
+pub fn has_renamed_archive(dir: &Path) -> bool {
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            if entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(ARCHIVE_PREFIX)
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// 含未完成初始化/迁移中间态（attach 前必须拒绝）
+pub fn has_migration_artifacts(dir: &Path) -> Option<String> {
+    let mut names = Vec::new();
+    if dir.join(V2_TMP_FILENAME).exists() {
+        names.push(V2_TMP_FILENAME.to_string());
+    }
+    if dir.join(V2_SETUP_LOCK_FILENAME).exists() {
+        names.push(V2_SETUP_LOCK_FILENAME.to_string());
+    }
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.contains(MIGRATION_TMP_MARKER) {
+                names.push(name);
+            }
+        }
+    }
+    if names.is_empty() {
+        None
+    } else {
+        Some(names.join(", "))
+    }
+}
+
+pub fn dir_is_empty(dir: &Path) -> bool {
+    match fs::read_dir(dir) {
+        Ok(mut entries) => entries.next().is_none(),
+        Err(_) => false,
+    }
+}
+
+/// 可写性真实探测：create_new → write → sync_all → read → delete（全部成功才算可写）
+pub fn writable_probe(dir: &Path) -> Result<(), String> {
+    const PAYLOAD: &[u8] = b"drawerbox-write-probe";
+    let probe = dir.join(format!(".drawerbox-probe-{}", uuid::Uuid::new_v4()));
+    {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&probe)
+            .map_err(|e| format!("无法创建测试文件: {}", e))?;
+        file.write_all(PAYLOAD)
+            .map_err(|e| format!("写入测试文件失败: {}", e))?;
+        file.sync_all()
+            .map_err(|e| format!("sync 测试文件失败: {}", e))?;
+    }
+    let read_back = fs::read(&probe).map_err(|e| format!("读回测试文件失败: {}", e))?;
+    if read_back != PAYLOAD {
+        let _ = fs::remove_file(&probe);
+        return Err("测试文件内容不一致（磁盘异常）".to_string());
+    }
+    fs::remove_file(&probe).map_err(|e| format!("删除测试文件失败: {}", e))?;
+    Ok(())
+}
+
+/// 本地固定磁盘判定（Windows: GetDriveTypeW == DRIVE_FIXED(3)）。
+#[cfg(windows)]
+pub fn drive_is_fixed(path: &Path) -> bool {
+    use windows_sys::Win32::Storage::FileSystem::GetDriveTypeW;
+    /// Win32 DRIVE_FIXED（windows-sys 常量在不同版本所在模块不一致，用字面值+注释）
+    const DRIVE_FIXED_VALUE: u32 = 3;
+    let wide = match drive_root_wide(path) {
+        Some(w) => w,
+        None => return false,
+    };
+    let drive_type = unsafe { GetDriveTypeW(wide.as_ptr()) };
+    drive_type == DRIVE_FIXED_VALUE
+}
+
+#[cfg(not(windows))]
+pub fn drive_is_fixed(_path: &Path) -> bool {
+    true
+}
+
+/// 剩余空间（字节）。Windows 用 GetDiskFreeSpaceExW。
+#[cfg(windows)]
+pub fn free_space_bytes(path: &Path) -> Option<u64> {
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+    let wide = drive_root_wide(path)?;
+    let mut free_to_caller = 0u64;
+    let mut total = 0u64;
+    let mut total_free = 0u64;
+    let ok = unsafe {
+        GetDiskFreeSpaceExW(
+            wide.as_ptr(),
+            &mut free_to_caller,
+            &mut total,
+            &mut total_free,
+        )
+    };
+    if ok == 0 {
+        None
+    } else {
+        Some(free_to_caller)
+    }
+}
+
+#[cfg(not(windows))]
+pub fn free_space_bytes(_path: &Path) -> Option<u64> {
+    None
+}
+
+/// 取盘根宽字符（如 "D:\"）供 Win32 API 使用
+#[cfg(windows)]
+fn drive_root_wide(path: &Path) -> Option<Vec<u16>> {
+    use std::os::windows::ffi::OsStrExt;
+    let mut root = match path.components().next() {
+        Some(std::path::Component::Prefix(p)) => p.as_os_str().to_string_lossy().to_string(),
+        _ => return None,
+    };
+    if !root.ends_with('\\') {
+        root.push('\\');
+    }
+    Some(
+        std::ffi::OsStr::new(&root)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect(),
+    )
+}
+
+fn normalized_lower(path: &Path) -> String {
+    let mut s = path.to_string_lossy().replace('/', "\\").to_lowercase();
+    while s.len() > 3 && s.ends_with('\\') {
+        s.pop();
+    }
+    s
+}
+
+fn is_unc_path(path: &Path) -> bool {
+    path.to_string_lossy().starts_with("\\\\")
+}
+
+fn looks_like_sync_folder(path: &Path) -> bool {
+    normalized_lower(path).split('\\').any(|c| {
+        c == "onedrive" || c.starts_with("onedrive -") || c == "dropbox" || c == "google drive"
+    })
+}
+
+fn looks_like_system_dir(path: &Path) -> bool {
+    let s = normalized_lower(path);
+    s.contains("\\windows\\")
+        || s.ends_with("\\windows")
+        || s.contains("\\program files")
+        || s.contains("\\programdata")
+        || s.contains("\\system32")
+        || s == "c:\\"
+}
+
+/// 新建数据位置的 preflight 失败分类（前端映射文案）
+#[derive(Debug, Clone, PartialEq)]
+pub enum PreflightError {
+    NotAbsolute(String),
+    IsConfigRoot(String),
+    NestedWithConfigRoot(String),
+    SyncFolder(String),
+    NetworkOrRemovable(String),
+    SystemDirectory(String),
+    HasExistingDrawerData(String),
+    NotEmpty(String),
+    CreateFailed(String),
+    NotWritable(String),
+    NoSpace(String),
+}
+
+impl PreflightError {
+    pub fn message(&self) -> String {
+        match self {
+            PreflightError::NotAbsolute(p) => format!("路径必须是绝对路径：{}", p),
+            PreflightError::IsConfigRoot(_) => {
+                "不能选择抽屉柜自己的配置目录作为数据位置。".to_string()
+            }
+            PreflightError::NestedWithConfigRoot(_) => {
+                "该位置与抽屉柜配置目录互相嵌套，请选择其他位置。".to_string()
+            }
+            PreflightError::SyncFolder(_) => {
+                "该位置在云同步目录（OneDrive / Dropbox 等）内，可能损坏数据库，请换一个本地磁盘位置。"
+                    .to_string()
+            }
+            PreflightError::NetworkOrRemovable(_) => {
+                "请选择本地固定磁盘上的目录（暂不支持移动硬盘、U 盘或网络盘）。".to_string()
+            }
+            PreflightError::SystemDirectory(_) => "该位置是系统目录，请选择其他位置。".to_string(),
+            PreflightError::HasExistingDrawerData(_) => {
+                "该位置已包含一套抽屉柜数据。如需继续使用，请改用「使用已有数据目录」。".to_string()
+            }
+            PreflightError::NotEmpty(_) => {
+                "该目录不是空目录。请选择一个空目录，或先新建一个专用子目录（例如 抽屉柜数据）。"
+                    .to_string()
+            }
+            PreflightError::CreateFailed(e) => format!("无法创建目标目录：{}", e),
+            PreflightError::NotWritable(e) => format!("该目录不可写：{}", e),
+            PreflightError::NoSpace(_) => "该磁盘可用空间不足（至少需要 100 MB）。".to_string(),
+        }
+    }
+}
+
+const MIN_FREE_BYTES: u64 = 100 * 1024 * 1024;
+
+/// 自定义 Data Root（新建）preflight。目录缺失时会创建它（创建前已完成危险路径判定）。
+pub fn preflight_new_root(config_root: &Path, target: &Path) -> Result<(), PreflightError> {
+    if !target.is_absolute() {
+        return Err(PreflightError::NotAbsolute(
+            target.to_string_lossy().to_string(),
+        ));
+    }
+    let target_s = normalized_lower(target);
+    let config_s = normalized_lower(config_root);
+    if target_s == config_s {
+        return Err(PreflightError::IsConfigRoot(target_s));
+    }
+    if target_s.starts_with(&format!("{}\\", config_s))
+        || config_s.starts_with(&format!("{}\\", target_s))
+    {
+        return Err(PreflightError::NestedWithConfigRoot(target_s));
+    }
+    if is_unc_path(target) {
+        return Err(PreflightError::NetworkOrRemovable(target_s));
+    }
+    if looks_like_sync_folder(target) {
+        return Err(PreflightError::SyncFolder(target_s));
+    }
+    if looks_like_system_dir(target) {
+        return Err(PreflightError::SystemDirectory(target_s));
+    }
+    if !target.exists() {
+        fs::create_dir_all(target).map_err(|e| PreflightError::CreateFailed(e.to_string()))?;
+    }
+    if !target.is_dir() {
+        return Err(PreflightError::CreateFailed("目标不是目录".to_string()));
+    }
+    if !drive_is_fixed(target) {
+        return Err(PreflightError::NetworkOrRemovable(target_s));
+    }
+    // 已有一套抽屉柜数据 → 禁止 fresh init（转 attach / Blocked）
+    if has_formal_db(target) || has_legacy_db(target) || has_renamed_archive(target) {
+        return Err(PreflightError::HasExistingDrawerData(target_s));
+    }
+    if !dir_is_empty(target) {
+        return Err(PreflightError::NotEmpty(target_s));
+    }
+    writable_probe(target).map_err(PreflightError::NotWritable)?;
+    if let Some(free) = free_space_bytes(target) {
+        if free < MIN_FREE_BYTES {
+            return Err(PreflightError::NoSpace(target_s));
+        }
+    }
+    Ok(())
+}
+
+/// 「使用已有数据目录」验证失败分类
+#[derive(Debug, Clone, PartialEq)]
+pub enum AttachError {
+    NotFound(String),
+    NotAbsolute(String),
+    ConfigRootSame(String),
+    SyncFolder(String),
+    NetworkOrRemovable(String),
+    NotWritable(String),
+    DbMissing(String),
+    LegacyOnly(String),
+    MigrationArtifacts(String),
+    DbBusy(String),
+    DbInvalid(String),
+}
+
+impl AttachError {
+    pub fn message(&self) -> String {
+        match self {
+            AttachError::NotFound(p) => format!("目录不存在：{}", p),
+            AttachError::NotAbsolute(p) => format!("路径必须是绝对路径：{}", p),
+            AttachError::ConfigRootSame(_) => {
+                "该目录就是抽屉柜配置目录，请选择数据所在的其他位置。".to_string()
+            }
+            AttachError::SyncFolder(_) => {
+                "该位置在云同步目录内，出于数据库一致性考虑暂不支持。".to_string()
+            }
+            AttachError::NetworkOrRemovable(_) => {
+                "请选择本地固定磁盘上的目录（暂不支持移动硬盘、U 盘或网络盘）。".to_string()
+            }
+            AttachError::NotWritable(e) => format!("该目录不可写：{}", e),
+            AttachError::DbMissing(_) => "该目录内没有找到抽屉柜数据库。".to_string(),
+            AttachError::LegacyOnly(_) => {
+                "检测到旧版数据格式，当前版本暂不能直接连接该目录。".to_string()
+            }
+            AttachError::MigrationArtifacts(names) => format!(
+                "该目录存在未完成的迁移/初始化痕迹（{}），请先在新版抽屉柜中完成或清理后再连接。",
+                names
+            ),
+            AttachError::DbBusy(_) => "该数据目录正在被其他进程使用。".to_string(),
+            AttachError::DbInvalid(e) => format!("该目录中的数据库无效或已损坏：{}", e),
+        }
+    }
+}
+
+/// Windows 独占句柄探测：数据库文件是否正被其他进程打开。
+#[cfg(windows)]
+fn db_file_locked_by_other(db_path: &Path) -> bool {
+    use std::os::windows::fs::OpenOptionsExt;
+    fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .share_mode(0)
+        .open(db_path)
+        .is_err()
+}
+
+#[cfg(not(windows))]
+fn db_file_locked_by_other(_db_path: &Path) -> bool {
+    false
+}
+
+/// 「使用已有数据目录」完整验证（只读判定 + 无破坏占用探测，绝不修改数据）。
+pub fn validate_existing_root(config_root: &Path, target: &Path) -> Result<(), AttachError> {
+    if !target.is_absolute() {
+        return Err(AttachError::NotAbsolute(
+            target.to_string_lossy().to_string(),
+        ));
+    }
+    let target_s = normalized_lower(target);
+    if target_s == normalized_lower(config_root) {
+        return Err(AttachError::ConfigRootSame(target_s));
+    }
+    if !target.exists() || !target.is_dir() {
+        return Err(AttachError::NotFound(target_s));
+    }
+    if is_unc_path(target) {
+        return Err(AttachError::NetworkOrRemovable(target_s));
+    }
+    if looks_like_sync_folder(target) {
+        return Err(AttachError::SyncFolder(target_s));
+    }
+    if !drive_is_fixed(target) {
+        return Err(AttachError::NetworkOrRemovable(target_s));
+    }
+    if fs::read_dir(target).is_err() {
+        return Err(AttachError::NotFound(target_s));
+    }
+    writable_probe(target).map_err(AttachError::NotWritable)?;
+    if let Some(names) = has_migration_artifacts(target) {
+        return Err(AttachError::MigrationArtifacts(names));
+    }
+    let db_path = target.join(V2_DB_FILENAME);
+    if !db_path.exists() {
+        if has_legacy_db(target) {
+            return Err(AttachError::LegacyOnly(target_s));
+        }
+        return Err(AttachError::DbMissing(target_s));
+    }
+    // 其他进程占用 → 明确拒绝（不强接）
+    if db_file_locked_by_other(&db_path) {
+        return Err(AttachError::DbBusy(target_s));
+    }
+    // 无 CREATE 打开 + security metadata + integrity + schema（复用既有验证器）
+    crate::migration::open_existing_v2_db(&db_path).map_err(AttachError::DbInvalid)?;
+    Ok(())
+}
+
+// ============================================================
+// Phase 2C-2：Guard 写入（生产路径）+ state 构造
+// ============================================================
+
+/// 在 Config Root 写入 G2 compatibility guard 并确保 durable。
+/// 硬顺序（2C-0.2 §B / 2C-2 §八）：guard durable 之后才允许写 state / 向 target 写数据。
+pub fn write_compat_guard_g2(
+    config_root: &Path,
+    op_id: &str,
+    target: &Path,
+) -> Result<PathBuf, String> {
+    let path = config_root.join(format!("{}{}", GUARD_G2_PREFIX, op_id));
+    let text = format!(
+        "{}\nguard_version={}\nguard_type={}\nop_id={}\ntarget={}\n",
+        GUARD_MAGIC,
+        GUARD_VERSION,
+        GUARD_TYPE,
+        op_id,
+        target.to_string_lossy()
+    );
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|e| format!("创建 compatibility guard 失败: {}", e))?;
+    file.write_all(text.as_bytes())
+        .map_err(|e| format!("写 compatibility guard 失败: {}", e))?;
+    file.sync_all()
+        .map_err(|e| format!("sync compatibility guard 失败: {}", e))?;
+    drop(file);
+    match parse_guard_file(&path) {
+        Some(g) if g.op_id == op_id => Ok(path),
+        _ => Err("compatibility guard durable 复核失败".to_string()),
+    }
+}
+
+pub fn state_pending(op_type: &str, op_id: &str, phase: &str, target: &Path) -> DataRootState {
+    DataRootState {
+        version: STATE_VERSION,
+        active_root: None,
+        pending_operation: Some(PendingOperation {
+            op_type: op_type.to_string(),
+            op_id: op_id.to_string(),
+            phase: phase.to_string(),
+            source: None,
+            target: Some(target.to_path_buf()),
+            updated_at: chrono::Local::now().to_rfc3339(),
+        }),
+        updated_at: chrono::Local::now().to_rfc3339(),
+    }
+}
+
+pub fn state_active_external(target: &Path) -> DataRootState {
+    DataRootState {
+        version: STATE_VERSION,
+        active_root: Some(target.to_path_buf()),
+        pending_operation: None,
+        updated_at: chrono::Local::now().to_rfc3339(),
+    }
+}
+
+/// 未完成 external init 的可恢复判定（§九）：
+/// 必须能证明这是"本次 external init 在 state 落盘前中断"，否则不给恢复入口。
+/// 证据 = recognized G2 guard（含 op_id/target）+ Config Root 无正式库/无 legacy/无归档。
+pub struct OrphanInitCandidate {
+    pub op_id: String,
+    pub target: Option<PathBuf>,
+    pub guard_path: PathBuf,
+}
+
+pub fn orphan_init_candidate(config_root: &Path) -> Option<OrphanInitCandidate> {
+    if matches!(load_state(config_root), StateLoad::Loaded(_)) {
+        return None; // 有 state 说明不是"state 前中断"，交给 pending 流程
+    }
+    if has_formal_db(config_root) || has_legacy_db(config_root) || has_renamed_archive(config_root)
+    {
+        return None; // Config Root 有真实数据 → 可能是迁移场景，不得当作 init 恢复
+    }
+    let guards = recognize_guards(config_root);
+    let g2 = guards.iter().find(|g| g.kind == GuardKind::G2Stray)?;
+    Some(OrphanInitCandidate {
+        op_id: g2.op_id.clone(),
+        target: g2.target.clone(),
+        guard_path: g2.path.clone(),
+    })
+}
+
+/// 清理一次未完成 init 留下的抽屉柜自有文件（白名单，绝不 remove_dir_all 用户目录）
+pub fn cleanup_init_artifacts(target: &Path) -> Result<(), String> {
+    for name in [
+        V2_DB_FILENAME.to_string(),
+        format!("{}-wal", V2_DB_FILENAME),
+        format!("{}-shm", V2_DB_FILENAME),
+        V2_TMP_FILENAME.to_string(),
+        format!("{}-wal", V2_TMP_FILENAME),
+        format!("{}-shm", V2_TMP_FILENAME),
+        format!("{}-journal", V2_TMP_FILENAME),
+        V2_SETUP_LOCK_FILENAME.to_string(),
+    ] {
+        let path = target.join(&name);
+        if path.exists() {
+            fs::remove_file(&path).map_err(|e| format!("清理 {} 失败: {}", name, e))?;
+        }
+    }
+    Ok(())
+}
+
+/// 删除 G2 guard（仅用于显式放弃/回滚流程；正常路径绝不自动删）
+pub fn remove_compat_guard(config_root: &Path, op_id: &str) -> Result<(), String> {
+    let path = config_root.join(format!("{}{}", GUARD_G2_PREFIX, op_id));
+    if path.exists() {
+        fs::remove_file(&path).map_err(|e| format!("删除 guard 失败: {}", e))?;
+    }
+    Ok(())
+}
+
+// ============================================================
 // Blocked 模式（2C-1 fail-visible 基础设施）
 // ============================================================
 
@@ -471,6 +978,84 @@ pub fn get_data_root_block(app: tauri::AppHandle) -> Option<serde_json::Value> {
         "reason": state.reason,
         "config_root": state.config_root.to_string_lossy(),
     }))
+}
+
+// ============================================================
+// Phase 2C-2：启动模式（DB 未打开时的前端分支）与初始化上下文
+// ============================================================
+
+/// 首次初始化 / 恢复模式（与 BlockedState 并列，互斥）
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SetupModeInfo {
+    /// 空环境：请用户选择数据保存位置（不自动建库）
+    Choose { config_root: String },
+    /// 未完成的 external 初始化（recovery 未确认或 tmp 半成）→ 继续或放弃
+    ResumeInit {
+        op_id: String,
+        target: String,
+        phase: String,
+    },
+    /// G2 guard 存在但 state 缺失（state 落盘前中断）→ 继续或放弃
+    OrphanInitRecover {
+        op_id: String,
+        target: Option<String>,
+    },
+}
+
+/// setup 期间挂载；进入正常模式后 set(None)
+pub struct SetupState(pub std::sync::Mutex<Option<SetupModeInfo>>);
+
+impl Default for SetupState {
+    fn default() -> Self {
+        SetupState(std::sync::Mutex::new(None))
+    }
+}
+
+impl SetupState {
+    pub fn set(&self, mode: Option<SetupModeInfo>) {
+        if let Ok(mut guard) = self.0.lock() {
+            *guard = mode;
+        }
+    }
+    pub fn peek(&self) -> Option<SetupModeInfo> {
+        self.0.lock().ok().and_then(|g| g.clone())
+    }
+    pub fn take(&self) -> Option<SetupModeInfo> {
+        self.0.lock().ok().and_then(|mut g| g.take())
+    }
+}
+
+/// 自定义 Data Root 初始化上下文（进程内；finalize 时用于写入 active_root）
+#[derive(Debug, Clone)]
+pub struct DataRootInitCtx {
+    pub op_id: String,
+    pub target: PathBuf,
+}
+
+pub struct InitContext(pub std::sync::Mutex<Option<DataRootInitCtx>>);
+
+impl Default for InitContext {
+    fn default() -> Self {
+        InitContext(std::sync::Mutex::new(None))
+    }
+}
+
+impl InitContext {
+    pub fn set(&self, ctx: Option<DataRootInitCtx>) {
+        if let Ok(mut guard) = self.0.lock() {
+            *guard = ctx;
+        }
+    }
+    pub fn get(&self) -> Option<DataRootInitCtx> {
+        self.0.lock().ok().and_then(|g| g.clone())
+    }
+}
+
+#[tauri::command]
+pub fn get_setup_mode(app: tauri::AppHandle) -> Option<SetupModeInfo> {
+    use tauri::Manager;
+    app.try_state::<SetupState>().and_then(|s| s.peek())
 }
 
 // ============================================================
@@ -820,5 +1405,398 @@ mod tests {
             crate::migration::resolve_startup_db(&root2, true).selection,
             crate::migration::DbSelection::Blocked(_)
         ));
+    }
+
+    // ==================== Phase 2C-2 ====================
+
+    /// 造一个真实可用的 v2 库（复用生产 prepare/finalize，不复制密码学实现）
+    fn make_valid_v2_db(dir: &Path) {
+        let prepared =
+            crate::migration::prepare_fresh_v2(dir, "test-master-password").expect("prepare 失败");
+        crate::migration::finalize_prepared_v2(&prepared.tmp_path, &prepared.v2_path)
+            .expect("finalize 失败");
+        drop(prepared.setup_lock);
+        let lock = dir.join(V2_SETUP_LOCK_FILENAME);
+        let _ = fs::remove_file(lock);
+        assert!(dir.join(V2_DB_FILENAME).exists());
+    }
+
+    /// 独立的 target 目录（不得嵌在 config root 里——那会被 preflight 正确拒绝）
+    fn temp_target(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("drawer-target-{}-{}", label, uuid::Uuid::new_v4()))
+    }
+
+    // 21. preflight：新目录（不存在）→ 创建并 Ok
+    #[test]
+    fn t21_preflight_creates_new_dir() {
+        let cr = temp_root("t21c");
+        let target = temp_target("t21");
+        assert_eq!(preflight_new_root(&cr, &target), Ok(()));
+        assert!(target.is_dir());
+        assert!(dir_is_empty(&target));
+    }
+
+    // 22/23. preflight：Config Root 自身 / 互相嵌套 → 拒绝
+    #[test]
+    fn t22_t23_preflight_rejects_config_root_and_nesting() {
+        let cr = temp_root("t22c");
+        assert_eq!(
+            preflight_new_root(&cr, &cr),
+            Err(PreflightError::IsConfigRoot(normalized_lower(&cr)))
+        );
+        let nested = cr.join("inside");
+        assert!(matches!(
+            preflight_new_root(&cr, &nested),
+            Err(PreflightError::NestedWithConfigRoot(_))
+        ));
+        let parent = cr.parent().unwrap().to_path_buf();
+        assert!(matches!(
+            preflight_new_root(&cr, &parent),
+            Err(PreflightError::NestedWithConfigRoot(_))
+        ));
+    }
+
+    // 24. preflight：UNC / 云同步目录 → 拒绝
+    #[test]
+    fn t24_preflight_rejects_network_and_sync_folders() {
+        let cr = temp_root("t24c");
+        assert!(matches!(
+            preflight_new_root(&cr, Path::new("\\\\server\\share\\drawer")),
+            Err(PreflightError::NetworkOrRemovable(_))
+        ));
+        assert!(matches!(
+            preflight_new_root(&cr, Path::new("D:\\Users\\me\\OneDrive\\DrawerData")),
+            Err(PreflightError::SyncFolder(_))
+        ));
+    }
+
+    // 25. preflight：已有抽屉柜数据 → 拒绝（转 attach）
+    #[test]
+    fn t25_preflight_rejects_existing_drawer_data() {
+        let cr = temp_root("t25c");
+        let target = temp_target("t25");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join(V2_DB_FILENAME), b"x").unwrap();
+        assert!(matches!(
+            preflight_new_root(&cr, &target),
+            Err(PreflightError::HasExistingDrawerData(_))
+        ));
+    }
+
+    // 26. preflight：非空普通目录 → 拒绝
+    #[test]
+    fn t26_preflight_rejects_non_empty_dir() {
+        let cr = temp_root("t26c");
+        let target = temp_target("t26");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("我的照片.jpg"), b"x").unwrap();
+        assert!(matches!(
+            preflight_new_root(&cr, &target),
+            Err(PreflightError::NotEmpty(_))
+        ));
+    }
+
+    // 27. preflight：中文 + 空格 + 括号路径 → 通过
+    #[test]
+    fn t27_preflight_accepts_unicode_space_paren() {
+        let cr = temp_root("t27c");
+        let target = temp_target("抽屉柜数据 (测试) 2C2");
+        assert_eq!(preflight_new_root(&cr, &target), Ok(()));
+    }
+
+    // 28. attach：合法 v2 库 → Ok
+    #[test]
+    fn t28_attach_valid_v2_ok() {
+        let cr = temp_root("t28c");
+        let target = cr.join("existing-root");
+        fs::create_dir_all(&target).unwrap();
+        make_valid_v2_db(&target);
+        assert_eq!(validate_existing_root(&cr, &target), Ok(()));
+    }
+
+    // 29/30/31/32/33. attach 各类拒绝
+    #[test]
+    fn t29_t33_attach_rejections() {
+        let cr = temp_root("t29c");
+        // 不存在
+        assert!(matches!(
+            validate_existing_root(&cr, &cr.join("nope")),
+            Err(AttachError::NotFound(_))
+        ));
+        // 空目录 → DbMissing
+        let empty = cr.join("empty");
+        fs::create_dir_all(&empty).unwrap();
+        assert!(matches!(
+            validate_existing_root(&cr, &empty),
+            Err(AttachError::DbMissing(_))
+        ));
+        // legacy-only → LegacyOnly（绝不当作 v2）
+        let legacy = cr.join("legacy-only");
+        fs::create_dir_all(&legacy).unwrap();
+        fs::write(legacy.join(LEGACY_DB_FILENAME), b"x").unwrap();
+        assert!(matches!(
+            validate_existing_root(&cr, &legacy),
+            Err(AttachError::LegacyOnly(_))
+        ));
+        // 损坏 db → DbInvalid
+        let broken = cr.join("broken");
+        fs::create_dir_all(&broken).unwrap();
+        fs::write(broken.join(V2_DB_FILENAME), b"this is not sqlite").unwrap();
+        assert!(matches!(
+            validate_existing_root(&cr, &broken),
+            Err(AttachError::DbInvalid(_))
+        ));
+        // tmp 残留 → MigrationArtifacts
+        let dirty = cr.join("dirty");
+        fs::create_dir_all(&dirty).unwrap();
+        make_valid_v2_db(&dirty);
+        fs::write(dirty.join(V2_TMP_FILENAME), b"leftover").unwrap();
+        assert!(matches!(
+            validate_existing_root(&cr, &dirty),
+            Err(AttachError::MigrationArtifacts(_))
+        ));
+    }
+
+    // 34. orphan init 证明：state 缺失 + G2 guard + 无正式库 → 可恢复；
+    //     有正式库 / 有 state → 不可当作 init 恢复
+    #[test]
+    fn t34_orphan_init_candidate_proof() {
+        // 可恢复
+        let root = temp_root("t34a");
+        let target = root.join("ext-target");
+        write_compat_guard_g2(&root, "op-34", &target).expect("写 guard 失败");
+        let cand = orphan_init_candidate(&root).expect("应识别为可恢复 init");
+        assert_eq!(cand.op_id, "op-34");
+        assert_eq!(cand.target.as_deref(), Some(target.as_path()));
+        // Config Root 出现正式库 → 不是 init 恢复场景
+        let root2 = temp_root("t34b");
+        fs::write(root2.join(V2_DB_FILENAME), b"x").unwrap();
+        write_compat_guard_g2(&root2, "op-34b", &target).unwrap();
+        assert!(orphan_init_candidate(&root2).is_none());
+        // 已有 state → 交给 pending 流程
+        let root3 = temp_root("t34c");
+        write_compat_guard_g2(&root3, "op-34c", &target).unwrap();
+        put_state(
+            &root3,
+            &state_pending("init", "op-34c", "preparing", &target),
+        );
+        assert!(orphan_init_candidate(&root3).is_none());
+    }
+
+    // 35. state 构造往返（pending / active）
+    #[test]
+    fn t35_state_builders_roundtrip() {
+        let root = temp_root("t35");
+        let target = root.join("数据 目录");
+        let pending = state_pending("init", "op-35", "preparing", &target);
+        save_state(&root, &pending).unwrap();
+        match load_state(&root) {
+            StateLoad::Loaded(s) => {
+                let op = s.pending_operation.expect("missing pending");
+                assert_eq!(op.op_type, "init");
+                assert_eq!(op.phase, "preparing");
+                assert_eq!(op.target.as_deref(), Some(target.as_path()));
+                assert!(s.active_root.is_none());
+            }
+            other => panic!("期望 Loaded，实际 {:?}", other),
+        }
+        let active = state_active_external(&target);
+        save_state(&root, &active).unwrap();
+        match load_state(&root) {
+            StateLoad::Loaded(s) => {
+                assert_eq!(s.active_root.as_deref(), Some(target.as_path()));
+                assert!(s.pending_operation.is_none());
+            }
+            other => panic!("期望 Loaded，实际 {:?}", other),
+        }
+    }
+
+    // 36. cleanup_init_artifacts 只删抽屉柜白名单文件，用户文件保留
+    #[test]
+    fn t36_cleanup_is_whitelist_only() {
+        let root = temp_root("t36");
+        let target = root.join("user-dir");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("我的重要文档.txt"), b"keep me").unwrap();
+        fs::write(target.join(V2_TMP_FILENAME), b"tmp").unwrap();
+        fs::write(target.join(V2_SETUP_LOCK_FILENAME), b"lock").unwrap();
+        cleanup_init_artifacts(&target).expect("cleanup 失败");
+        assert!(!target.join(V2_TMP_FILENAME).exists());
+        assert!(!target.join(V2_SETUP_LOCK_FILENAME).exists());
+        assert!(target.join("我的重要文档.txt").exists(), "用户文件不得删除");
+    }
+
+    // 37. guard 写入 durable + 可解析 + 内容非 SQLite
+    #[test]
+    fn t37_guard_write_is_durable_and_parseable() {
+        let root = temp_root("t37");
+        let target = root.join("ext");
+        let path = write_compat_guard_g2(&root, "op-37", &target).expect("写 guard 失败");
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with(GUARD_MAGIC));
+        assert!(text.contains("op_id=op-37"));
+        let guard = parse_guard_file(&path).expect("guard 应可解析");
+        assert_eq!(guard.op_id, "op-37");
+        assert_eq!(guard.target.as_deref(), Some(target.as_path()));
+        // 同一 op_id 重复写不覆盖（create_new）
+        assert!(write_compat_guard_g2(&root, "op-37", &target).is_err());
+    }
+
+    // 38. 自定义位置初始化完整序列（逻辑层端到端）：
+    //     preflight → guard → state(preparing) → prepare → finalize → state(activated) → active
+    //     → resolver=UseExternal → 既有仲裁命中 V2
+    #[test]
+    fn t38_custom_init_full_sequence() {
+        let cr = temp_root("t38c");
+        let target = temp_target("t38");
+        assert_eq!(preflight_new_root(&cr, &target), Ok(()));
+        let op_id = "op-38";
+        write_compat_guard_g2(&cr, op_id, &target).expect("guard 写入失败");
+        save_state(&cr, &state_pending("init", op_id, "preparing", &target)).unwrap();
+        // 目标写入（等价于 prepare）：必须发生在 guard+state 之后
+        let prepared =
+            crate::migration::prepare_fresh_v2(&target, "test-pw-123456").expect("prepare 失败");
+        save_state(
+            &cr,
+            &state_pending("init", op_id, "recovery_presented", &target),
+        )
+        .unwrap();
+        save_state(
+            &cr,
+            &state_pending("init", op_id, "recovery_confirmed", &target),
+        )
+        .unwrap();
+        crate::migration::finalize_prepared_v2(&prepared.tmp_path, &prepared.v2_path)
+            .expect("finalize 失败");
+        drop(prepared.setup_lock);
+        let _ = fs::remove_file(target.join(V2_SETUP_LOCK_FILENAME));
+        save_state(&cr, &state_pending("init", op_id, "activated", &target)).unwrap();
+        save_state(&cr, &state_active_external(&target)).unwrap();
+        assert_eq!(
+            resolve_data_root(&cr),
+            Resolution::UseExternal(target.clone())
+        );
+        assert!(matches!(
+            crate::migration::resolve_startup_db(&target, true).selection,
+            crate::migration::DbSelection::V2(_)
+        ));
+    }
+
+    // 39. 初始化崩溃矩阵的启动决策（try_complete_pending_init）
+    #[test]
+    fn t39_init_crash_matrix_decisions() {
+        // (a) preparing + 目标无数据 → 不自动激活（交恢复页）
+        let cr = temp_root("t39a");
+        let target = temp_target("t39a");
+        fs::create_dir_all(&target).unwrap();
+        let op = state_pending("init", "op-39a", "preparing", &target)
+            .pending_operation
+            .unwrap();
+        assert!(crate::try_complete_pending_init(&cr, &op).is_none());
+        // (b) recovery_confirmed + 半成 tmp（不可开）→ 不自动激活
+        let cr2 = temp_root("t39b");
+        let target2 = temp_target("t39b");
+        fs::create_dir_all(&target2).unwrap();
+        fs::write(target2.join(V2_TMP_FILENAME), b"half-written").unwrap();
+        let op2 = state_pending("init", "op-39b", "recovery_confirmed", &target2)
+            .pending_operation
+            .unwrap();
+        assert!(crate::try_complete_pending_init(&cr2, &op2).is_none());
+        // (c) recovery_confirmed + 可开 tmp → 完成 finalize 并提交 active_root
+        let cr3 = temp_root("t39c");
+        let target3 = temp_target("t39c");
+        fs::create_dir_all(&target3).unwrap();
+        let prepared =
+            crate::migration::prepare_fresh_v2(&target3, "test-pw-123456").expect("prepare 失败");
+        drop(prepared.setup_lock);
+        let _ = fs::remove_file(target3.join(V2_SETUP_LOCK_FILENAME));
+        let op3 = state_pending("init", "op-39c", "recovery_confirmed", &target3)
+            .pending_operation
+            .unwrap();
+        assert_eq!(
+            crate::try_complete_pending_init(&cr3, &op3).as_deref(),
+            Some(target3.as_path())
+        );
+        assert!(target3.join(V2_DB_FILENAME).exists(), "应完成 finalize");
+        match load_state(&cr3) {
+            StateLoad::Loaded(s) => {
+                assert_eq!(s.active_root.as_deref(), Some(target3.as_path()));
+                assert!(s.pending_operation.is_none());
+            }
+            other => panic!("期望 active state，实际 {:?}", other),
+        }
+        // (d) activated + 正式库存在 → 补写 active_root
+        let cr4 = temp_root("t39d");
+        let target4 = temp_target("t39d");
+        fs::create_dir_all(&target4).unwrap();
+        make_valid_v2_db(&target4);
+        let op4 = state_pending("init", "op-39d", "activated", &target4)
+            .pending_operation
+            .unwrap();
+        assert_eq!(
+            crate::try_complete_pending_init(&cr4, &op4).as_deref(),
+            Some(target4.as_path())
+        );
+    }
+
+    // 40. attach 完整序列：验证 → guard → state(attach) → 启动收尾提交 active_root
+    #[test]
+    fn t40_attach_full_sequence() {
+        let cr = temp_root("t40c");
+        let target = temp_target("t40");
+        fs::create_dir_all(&target).unwrap();
+        make_valid_v2_db(&target);
+        assert_eq!(validate_existing_root(&cr, &target), Ok(()));
+        let op_id = "op-40";
+        write_compat_guard_g2(&cr, op_id, &target).unwrap();
+        save_state(
+            &cr,
+            &state_pending("attach_existing", op_id, "pending_restart", &target),
+        )
+        .unwrap();
+        let op = state_pending("attach_existing", op_id, "pending_restart", &target)
+            .pending_operation
+            .unwrap();
+        assert_eq!(
+            crate::try_complete_pending_attach(&cr, &op).as_deref(),
+            Some(target.as_path())
+        );
+        assert_eq!(
+            resolve_data_root(&cr),
+            Resolution::UseExternal(target.clone())
+        );
+        assert!(
+            recognize_guards(&cr).iter().any(|g| g.op_id == op_id),
+            "attach 完成后 G2 guard 必须保留"
+        );
+    }
+
+    // 41. Windows 重装模拟：新 Config Root（无 state/guard）+ 外部有效数据
+    //     → 初始表现为默认（新版进"选择数据位置"页，不 FreshV2）
+    //     → attach 收尾后 = UseExternal；全程未产生 C 盘正式库
+    #[test]
+    fn t41_reinstall_simulation() {
+        let external = temp_target("t41-data");
+        fs::create_dir_all(&external).unwrap();
+        make_valid_v2_db(&external);
+
+        let cr = temp_root("t41c"); // 全新 Config Root（重装后）
+        assert_eq!(resolve_data_root(&cr), Resolution::UseDefault(cr.clone()));
+        assert!(!has_formal_db(&cr), "Config Root 不得出现正式库");
+
+        assert_eq!(validate_existing_root(&cr, &external), Ok(()));
+        write_compat_guard_g2(&cr, "op-41", &external).unwrap();
+        let op = state_pending("attach_existing", "op-41", "pending_restart", &external)
+            .pending_operation
+            .unwrap();
+        assert_eq!(
+            crate::try_complete_pending_attach(&cr, &op).as_deref(),
+            Some(external.as_path())
+        );
+        assert_eq!(
+            resolve_data_root(&cr),
+            Resolution::UseExternal(external.clone())
+        );
+        assert!(!has_formal_db(&cr));
     }
 }

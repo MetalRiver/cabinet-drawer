@@ -759,6 +759,22 @@ impl AppState {
 
 // ===== 应用入口 =====
 
+impl AppState {
+    /// Phase 2C-2：统一构造入口（setup 正常路径与首次初始化选择命令共用）
+    pub fn new(db: Db, db_path: PathBuf, startup_mode: StartupMode) -> Self {
+        AppState {
+            db: Mutex::new(db),
+            db_path,
+            startup_mode: Mutex::new(startup_mode),
+            pending_v2: Mutex::new(None),
+            pending_recovery_rotation: Mutex::new(None),
+            pending_legacy_migration: Mutex::new(None),
+            master_wrap_gate: Mutex::new(()),
+            key: Mutex::new(None),
+        }
+    }
+}
+
 /// Phase 2C-1：Data Root Blocked 模式。
 /// 状态文件/guard 异常时：DB 永不打开、托盘与快捷键不创建，
 /// 只挂 BlockedState 供前端 `get_data_root_block` 读取并渲染阻断页。
@@ -769,6 +785,102 @@ fn enter_blocked_mode(app: &tauri::App, reason: data_root::BlockedReason, config
         let _ = win.show();
         let _ = win.set_focus();
     }
+}
+
+/// Phase 2C-2：首次初始化 / 恢复选择模式。
+/// 与 Blocked 模式同为"DB 未打开"的启动模式；窗口照常显示，前端读 get_setup_mode 渲染。
+fn enter_setup_mode(app: &tauri::App, mode: data_root::SetupModeInfo, config_root: PathBuf) {
+    eprintln!("[data-root] 进入初始化模式: {:?}", mode);
+    if let Some(state) = app.try_state::<data_root::SetupState>() {
+        state.set(Some(mode));
+    }
+    let _ = config_root;
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.show();
+        let _ = win.set_focus();
+    }
+}
+
+/// external root 处于 active 时，G2 guard 必须存在（派生态；缺失可安全重建，
+/// 前提见 2C-1 §九：能完全证明期望 guard 类型）。Config Root 有正式 v2 时不做重建。
+fn ensure_guard_for_active(config_root: &Path, op_id: &str, target: &Path) {
+    if data_root::has_formal_db(config_root) {
+        return;
+    }
+    let present = data_root::recognize_guards(config_root)
+        .iter()
+        .any(|g| g.op_id == op_id);
+    if !present {
+        if let Err(e) = data_root::write_compat_guard_g2(config_root, op_id, target) {
+            eprintln!("[data-root] guard 重建失败（不阻断启动）: {}", e);
+        }
+    }
+}
+
+/// 未完成 external init 的启动收尾（§十一 F/G）：
+/// - phase=activated：正式库已就位 → 补写 active_root
+/// - phase=recovery_confirmed：用户已确认恢复词，允许完成 finalize 或直接接管
+/// - preparing / recovery_presented：绝不自动激活（恢复词未确认）→ 返回 None 交恢复页
+pub(crate) fn try_complete_pending_init(
+    config_root: &Path,
+    op: &data_root::PendingOperation,
+) -> Option<PathBuf> {
+    let target = op.target.clone()?;
+    let db_path = target.join(migration::V2_DB_FILENAME);
+    let tmp_path = target.join(migration::V2_TMP_FILENAME);
+    // 硬保护：target 一旦出现可用的正式库，说明 finalize 已完成（恢复词必然已确认）
+    // → 一律按"补写 active_root"处理，绝不进入任何清理路径（防误删正式数据）。
+    if migration::open_existing_v2_db(&db_path).is_ok() {
+        data_root::save_state(config_root, &data_root::state_active_external(&target)).ok()?;
+        ensure_guard_for_active(config_root, &op.op_id, &target);
+        return Some(target);
+    }
+    match op.phase.as_str() {
+        "activated" => {
+            migration::open_existing_v2_db(&db_path).ok()?;
+            data_root::save_state(config_root, &data_root::state_active_external(&target)).ok()?;
+            ensure_guard_for_active(config_root, &op.op_id, &target);
+            Some(target)
+        }
+        "recovery_confirmed" => {
+            if migration::open_existing_v2_db(&db_path).is_ok() {
+                data_root::save_state(config_root, &data_root::state_active_external(&target))
+                    .ok()?;
+                ensure_guard_for_active(config_root, &op.op_id, &target);
+                return Some(target);
+            }
+            if migration::open_existing_v2_db(&tmp_path).is_ok() {
+                if migration::finalize_prepared_v2(&tmp_path, &db_path).is_err() {
+                    return None;
+                }
+                let lock = target.join(migration::V2_SETUP_LOCK_FILENAME);
+                let _ = std::fs::remove_file(&lock);
+                if migration::open_existing_v2_db(&db_path).is_err() {
+                    return None;
+                }
+                data_root::save_state(config_root, &data_root::state_active_external(&target))
+                    .ok()?;
+                ensure_guard_for_active(config_root, &op.op_id, &target);
+                return Some(target);
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// 未完成 attach 的启动收尾（§十五）：重新验证 target → 提交 active_root。
+pub(crate) fn try_complete_pending_attach(
+    config_root: &Path,
+    op: &data_root::PendingOperation,
+) -> Option<PathBuf> {
+    let target = op.target.clone()?;
+    if data_root::validate_existing_root(config_root, &target).is_err() {
+        return None;
+    }
+    data_root::save_state(config_root, &data_root::state_active_external(&target)).ok()?;
+    ensure_guard_for_active(config_root, &op.op_id, &target);
+    Some(target)
 }
 
 pub fn run() {
@@ -800,23 +912,81 @@ pub fn run() {
                 .app_data_dir()
                 .expect("failed to get app data dir");
             std::fs::create_dir_all(&config_root).expect("failed to create app data dir");
+            // Phase 2C-2：两个 managed 状态必须在任何早期返回（setup/blocked 模式）之前就位
+            app.manage(data_root::SetupState::default());
+            app.manage(data_root::InitContext::default());
             // Data Root 解析必须在任何 SQLite 打开之前完成（2C-0 设计硬约束）。
             let effective_root = match data_root::resolve_data_root(&config_root) {
                 data_root::Resolution::UseDefault(root) => root,
                 data_root::Resolution::UseExternal(root) => root,
-                // 2C-1 没有 pending 恢复流程 → fail closed（恢复流程属 2C-3）
-                data_root::Resolution::Pending(op) => {
-                    enter_blocked_mode(
-                        app,
-                        data_root::BlockedReason::PendingOperationNeedsRecovery(format!(
-                            "{} / {} / {}",
-                            op.op_type, op.op_id, op.phase
-                        )),
-                        config_root.clone(),
-                    );
-                    return Ok(());
-                }
+                data_root::Resolution::Pending(op) => match op.op_type.as_str() {
+                    // 未完成的 external 初始化：能安全证明完成条件时自动收尾，否则交恢复页
+                    "init" => match try_complete_pending_init(&config_root, &op) {
+                        Some(root) => root,
+                        None => {
+                            enter_setup_mode(
+                                app,
+                                data_root::SetupModeInfo::ResumeInit {
+                                    op_id: op.op_id.clone(),
+                                    target: op
+                                        .target
+                                        .as_ref()
+                                        .map(|p| p.to_string_lossy().to_string())
+                                        .unwrap_or_default(),
+                                    phase: op.phase.clone(),
+                                },
+                                config_root.clone(),
+                            );
+                            return Ok(());
+                        }
+                    },
+                    // 未完成的 attach：重新验证 target → 提交 active_root → 正常启动
+                    "attach_existing" => match try_complete_pending_attach(&config_root, &op) {
+                        Some(root) => root,
+                        None => {
+                            enter_blocked_mode(
+                                app,
+                                data_root::BlockedReason::PendingOperationNeedsRecovery(format!(
+                                    "attach_existing / {} / {}",
+                                    op.op_id, op.phase
+                                )),
+                                config_root.clone(),
+                            );
+                            return Ok(());
+                        }
+                    },
+                    // migration / restore_default 等：2C-2 无恢复流程 → fail closed
+                    other => {
+                        enter_blocked_mode(
+                            app,
+                            data_root::BlockedReason::PendingOperationNeedsRecovery(format!(
+                                "{} / {} / {}",
+                                other, op.op_id, op.phase
+                            )),
+                            config_root.clone(),
+                        );
+                        return Ok(());
+                    }
+                },
                 data_root::Resolution::Blocked(reason) => {
+                    // 特判：G2 guard 存在但 state 缺失，且 Config Root 无任何真实数据
+                    // → 可证明是"external init 在 state 落盘前中断"，给恢复入口（不自动删 guard）
+                    if matches!(reason, data_root::BlockedReason::OrphanCompatibilityGuard(_)) {
+                        if let Some(cand) = data_root::orphan_init_candidate(&config_root) {
+                            enter_setup_mode(
+                                app,
+                                data_root::SetupModeInfo::OrphanInitRecover {
+                                    op_id: cand.op_id.clone(),
+                                    target: cand
+                                        .target
+                                        .as_ref()
+                                        .map(|p| p.to_string_lossy().to_string()),
+                                },
+                                config_root.clone(),
+                            );
+                            return Ok(());
+                        }
+                    }
                     enter_blocked_mode(app, reason, config_root.clone());
                     return Ok(());
                 }
@@ -831,7 +1001,18 @@ pub fn run() {
             let (db_path, security_model, startup_mode) = match arbitration.selection {
                 migration::DbSelection::V2(path) => (path, SecurityModel::StableDekV2, StartupMode::ExistingV2),
                 migration::DbSelection::Legacy(path) => (path, SecurityModel::Legacy, StartupMode::Legacy),
-                migration::DbSelection::FreshV2(path) => (path, SecurityModel::StableDekV2, StartupMode::FreshV2),
+                // Phase 2C-2：空环境不再静默 FreshV2 —— 必须由用户显式选择数据位置。
+                // （旧行为分支已移除，见 SetupModeInfo::Choose 流程）
+                migration::DbSelection::FreshV2(_) => {
+                    enter_setup_mode(
+                        app,
+                        data_root::SetupModeInfo::Choose {
+                            config_root: config_root.to_string_lossy().to_string(),
+                        },
+                        config_root.clone(),
+                    );
+                    return Ok(());
+                }
                 migration::DbSelection::Blocked(reason) => return Err(std::io::Error::new(std::io::ErrorKind::Other, reason).into()),
             };
 
@@ -871,16 +1052,7 @@ pub fn run() {
                 StartupMode::PendingV2 => unreachable!("PendingV2 只存在于当前进程内存"),
             }.expect("failed to open database");
 
-            app.manage(AppState {
-                db: Mutex::new(db),
-                db_path,
-                startup_mode: Mutex::new(startup_mode),
-                pending_v2: Mutex::new(None),
-                pending_recovery_rotation: Mutex::new(None),
-                pending_legacy_migration: Mutex::new(None),
-                master_wrap_gate: Mutex::new(()),
-                key: Mutex::new(None),
-            });
+            app.manage(AppState::new(db, db_path, startup_mode));
 
             // 🔴 P0-#Y#SANITIZE#DB：启动后立刻执行 apps 表脏数据全表修正
             //   修正所有 app_type 与 path 实际语义不一致的历史记录（比如 URL 被写成 folder）
@@ -1220,6 +1392,14 @@ pub fn run() {
             get_data_dir,
             // Phase 2C-1：Data Root Blocked 模式查询（前端阻断页数据源）
             data_root::get_data_root_block,
+            // Phase 2C-2：首次初始化 / 已有数据重连
+            data_root::get_setup_mode,
+            setup_check_custom_root,
+            setup_choose_default,
+            setup_begin_custom_init,
+            setup_resume_custom_init,
+            setup_attach_existing,
+            setup_abandon_pending,
             // P0-#Y#FIX#PICK：原生文件 / 文件夹选择对话框
             pick_path,
             // B1：导入/导出加密备份

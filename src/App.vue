@@ -2,18 +2,22 @@
 import { ref, onMounted, onUnmounted } from "vue";
 import { useAppStore } from "./stores/app";
 import { useWidgetStore } from "./stores/widget";
-import { applyWidgetConfig, setWindowSize, getAppStatus, getDataRootBlock, restartApp } from "./api";
-import type { DataRootBlockInfo } from "./api";
+import { applyWidgetConfig, setWindowSize, getAppStatus, getDataRootBlock, getSetupMode, restartApp } from "./api";
+import type { DataRootBlockInfo, SetupModeInfo } from "./api";
 import { listen } from "@tauri-apps/api/event";
 import LockScreen from "./components/LockScreen.vue";
 import SetupWizard from "./components/SetupWizard.vue";
 import MigrationFlow from "./components/MigrationFlow.vue";
 import MainLayout from "./components/MainLayout.vue";
 import ClipToast from "./components/ClipToast.vue";
+import DataRootSetup from "./components/DataRootSetup.vue";
 
 const appStore = useAppStore();
 const widgetStore = useWidgetStore();
 const ready = ref(false);
+
+// Phase 2C-2：首次初始化模式（选择数据位置 / 恢复未完成初始化）。与 Blocked 互斥。
+const setupMode = ref<SetupModeInfo | null>(null);
 
 // Phase 2C-1：Data Root 启动阻断。非 null 时整页只渲染阻断视图：
 // 仅提供真正可用的「重试启动」「查看错误详情」，不放任何未实现功能的假按钮。
@@ -77,6 +81,17 @@ onMounted(async () => {
     }
   } catch (e) {
     console.warn("[App.vue] 查询 Data Root 阻断状态失败（视为正常启动）", e);
+  }
+  // Phase 2C-2：首次初始化 / 恢复模式优先于正常流程（此时 DB 尚未打开）
+  try {
+    const setup = await getSetupMode();
+    if (setup) {
+      setupMode.value = setup;
+      ready.value = true;
+      return;
+    }
+  } catch (e) {
+    console.warn("[App.vue] 查询初始化模式失败（视为正常启动）", e);
   }
   // 注册全局锁定事件监听（必须在主流程之前，避免 race）
   try {
@@ -191,6 +206,9 @@ onUnmounted(() => {
       </div>
     </div>
   </div>
+  <Transition v-else-if="setupMode" name="boot" appear>
+    <DataRootSetup :mode="setupMode" />
+  </Transition>
   <Transition v-else name="boot" appear>
     <div v-if="ready" class="app-root">
       <Transition name="scene" mode="out-in">

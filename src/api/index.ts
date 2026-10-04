@@ -529,6 +529,32 @@ export interface DataRootBlockInfo {
 export const getDataRootBlock = () =>
   invoke<DataRootBlockInfo | null>("get_data_root_block");
 
+/* ===== Phase 2C-2：首次初始化 / 已有数据重连 ===== */
+
+export interface SetupModeInfo {
+  kind: "choose" | "resume_init" | "orphan_init_recover";
+  config_root?: string;
+  op_id?: string;
+  target?: string | null;
+  phase?: string;
+}
+export const getSetupMode = () => invoke<SetupModeInfo | null>("get_setup_mode");
+/** 使用推荐位置（Config Root）：不写 state / guard，直接进入主密码设置 */
+export const setupChooseDefault = () => invoke<void>("setup_choose_default");
+/** 自定义位置 preflight（只检查，不落盘） */
+export const setupCheckCustomRoot = (target: string) =>
+  invoke<void>("setup_check_custom_root", { target });
+/** 自定义位置初始化：guard durable → state → 进入主密码设置 */
+export const setupBeginCustomInit = (target: string) =>
+  invoke<void>("setup_begin_custom_init", { target });
+/** 继续未完成的初始化（丢弃未确认产物，重新生成恢复词） */
+export const setupResumeCustomInit = () => invoke<void>("setup_resume_custom_init");
+/** 使用已有数据目录：完整验证 → guard → state → 重启提交 */
+export const setupAttachExisting = (target: string) =>
+  invoke<void>("setup_attach_existing", { target });
+/** 放弃未完成操作（白名单清理 + 删 guard + 删 state → 重启） */
+export const setupAbandonPending = () => invoke<void>("setup_abandon_pending");
+
 // ============ B1+B3：导入导出备份 + 重置数据 ============
 
 /** B1-2：加密导出一份 .drawerbox 备份文件（返回路径+密码解密状态统计）*/
