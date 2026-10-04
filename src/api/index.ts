@@ -520,6 +520,15 @@ export const healthCheckApps = () => invoke<number>("health_check_apps");
 // P0-#T#3：获取数据存储位置（SQLite 数据库路径）
 export const getDataDir = () => invoke<string>("get_data_dir");
 
+/** Phase 2C-1：Data Root 启动阻断状态（null = 正常启动）。
+ *  reason 为结构化枚举（snake_case），文案映射在前端；config_root 供详情展示。 */
+export interface DataRootBlockInfo {
+  reason: { reason: string; detail: string | number };
+  config_root: string;
+}
+export const getDataRootBlock = () =>
+  invoke<DataRootBlockInfo | null>("get_data_root_block");
+
 // ============ B1+B3：导入导出备份 + 重置数据 ============
 
 /** B1-2：加密导出一份 .drawerbox 备份文件（返回路径+密码解密状态统计）*/

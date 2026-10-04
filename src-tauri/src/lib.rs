@@ -12,6 +12,7 @@ use tauri_plugin_clipboard_manager::ClipboardExt;
 use std::os::windows::process::CommandExt;
 
 mod db;
+mod data_root;
 pub mod migration;
 #[cfg(test)]
 mod phase2d;
@@ -758,6 +759,18 @@ impl AppState {
 
 // ===== 应用入口 =====
 
+/// Phase 2C-1：Data Root Blocked 模式。
+/// 状态文件/guard 异常时：DB 永不打开、托盘与快捷键不创建，
+/// 只挂 BlockedState 供前端 `get_data_root_block` 读取并渲染阻断页。
+fn enter_blocked_mode(app: &tauri::App, reason: data_root::BlockedReason, config_root: PathBuf) {
+    eprintln!("[data-root] 启动阻断: {:?}", reason);
+    app.manage(data_root::BlockedState { reason, config_root });
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.show();
+        let _ = win.set_focus();
+    }
+}
+
 pub fn run() {
     tauri::Builder::default()
         // 单实例必须是第一个注册的插件：第二实例在插件 init 阶段就把参数转发给
@@ -780,18 +793,41 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .setup(|app| {
             // 初始化数据库（或在启动前先执行 factory_reset，100% 避开 Windows SQLite 文件锁）
-            let app_dir = app
+            // Phase 2C-1：config_root（= app_data_dir，state/guard 的家）与 effective_root
+            // （真正的 Data Root，DB 的家）从此分离。默认两者相同 → 老用户零行为漂移。
+            let config_root = app
                 .path()
                 .app_data_dir()
                 .expect("failed to get app data dir");
-            std::fs::create_dir_all(&app_dir).expect("failed to create app data dir");
-            migration::discard_abandoned_fresh_initialization(&app_dir)
+            std::fs::create_dir_all(&config_root).expect("failed to create app data dir");
+            // Data Root 解析必须在任何 SQLite 打开之前完成（2C-0 设计硬约束）。
+            let effective_root = match data_root::resolve_data_root(&config_root) {
+                data_root::Resolution::UseDefault(root) => root,
+                data_root::Resolution::UseExternal(root) => root,
+                // 2C-1 没有 pending 恢复流程 → fail closed（恢复流程属 2C-3）
+                data_root::Resolution::Pending(op) => {
+                    enter_blocked_mode(
+                        app,
+                        data_root::BlockedReason::PendingOperationNeedsRecovery(format!(
+                            "{} / {} / {}",
+                            op.op_type, op.op_id, op.phase
+                        )),
+                        config_root.clone(),
+                    );
+                    return Ok(());
+                }
+                data_root::Resolution::Blocked(reason) => {
+                    enter_blocked_mode(app, reason, config_root.clone());
+                    return Ok(());
+                }
+            };
+            migration::discard_abandoned_fresh_initialization(&effective_root)
                 .map_err(|reason| std::io::Error::new(std::io::ErrorKind::Other, reason))?;
             // 两阶段 legacy 升级的 orphan tmp 清理：legacy 存在且无正式 v2 时，
             // 上次升级中断留下的 tmp/lock 安全移除，保证用户永远可以重新升级。
-            migration::discard_abandoned_migration_tmp(&app_dir)
+            migration::discard_abandoned_migration_tmp(&effective_root)
                 .map_err(|reason| std::io::Error::new(std::io::ErrorKind::Other, reason))?;
-            let arbitration = migration::resolve_startup_db(&app_dir, true);
+            let arbitration = migration::resolve_startup_db(&effective_root, true);
             let (db_path, security_model, startup_mode) = match arbitration.selection {
                 migration::DbSelection::V2(path) => (path, SecurityModel::StableDekV2, StartupMode::ExistingV2),
                 migration::DbSelection::Legacy(path) => (path, SecurityModel::Legacy, StartupMode::Legacy),
@@ -805,15 +841,15 @@ pub fn run() {
             // 如果检测到数据目录下有 .factory_reset_pending 标记文件，说明上一次请求了重置
             // → 在 SQLite 打开之前（绝对零句柄）物理删掉 db + WAL/SHM + 图标缓存
             // → Windows os error 32 文件锁问题彻底解决
-            let pending_flag = app_dir.join(".factory_reset_pending");
+            let pending_flag = config_root.join(".factory_reset_pending");
             if pending_flag.exists() && security_model == SecurityModel::Legacy {
                 use std::fs;
                 eprintln!("[factory_reset] 检测到 .factory_reset_pending → 在 SQLite 打开前执行物理删除");
                 let db_file_name = db_path.file_name().unwrap().to_string_lossy().to_string();
-                let db_wal = app_dir.join(format!("{}-wal", db_file_name));
-                let db_shm = app_dir.join(format!("{}-shm", db_file_name));
-                let icons_dir = app_dir.join("icons");
-                let icon_cache_dir = app_dir.join("icon_cache");
+                let db_wal = effective_root.join(format!("{}-wal", db_file_name));
+                let db_shm = effective_root.join(format!("{}-shm", db_file_name));
+                let icons_dir = effective_root.join("icons");
+                let icon_cache_dir = effective_root.join("icon_cache");
                 let mut n = 0usize;
                 for p in [&db_path, &db_wal, &db_shm] {
                     if p.exists() { match fs::remove_file(p) { Ok(()) => n += 1, Err(e) => eprintln!("[factory_reset] 删 {:?} 失败: {}", p, e) } }
@@ -1182,6 +1218,8 @@ pub fn run() {
             // 启动健康检查 + 数据目录
             health_check_apps,
             get_data_dir,
+            // Phase 2C-1：Data Root Blocked 模式查询（前端阻断页数据源）
+            data_root::get_data_root_block,
             // P0-#Y#FIX#PICK：原生文件 / 文件夹选择对话框
             pick_path,
             // B1：导入/导出加密备份

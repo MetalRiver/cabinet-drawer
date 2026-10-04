@@ -2,7 +2,8 @@
 import { ref, onMounted, onUnmounted } from "vue";
 import { useAppStore } from "./stores/app";
 import { useWidgetStore } from "./stores/widget";
-import { applyWidgetConfig, setWindowSize, getAppStatus } from "./api";
+import { applyWidgetConfig, setWindowSize, getAppStatus, getDataRootBlock, restartApp } from "./api";
+import type { DataRootBlockInfo } from "./api";
 import { listen } from "@tauri-apps/api/event";
 import LockScreen from "./components/LockScreen.vue";
 import SetupWizard from "./components/SetupWizard.vue";
@@ -13,6 +14,26 @@ import ClipToast from "./components/ClipToast.vue";
 const appStore = useAppStore();
 const widgetStore = useWidgetStore();
 const ready = ref(false);
+
+// Phase 2C-1：Data Root 启动阻断。非 null 时整页只渲染阻断视图：
+// 仅提供真正可用的「重试启动」「查看错误详情」，不放任何未实现功能的假按钮。
+const dataRootBlock = ref<DataRootBlockInfo | null>(null);
+const showBlockDetail = ref(false);
+const BLOCK_REASON_TEXT: Record<string, string> = {
+  state_corrupted: "数据位置状态文件损坏，且备份恢复失败。为保护数据已停止启动。",
+  state_version_unsupported: "数据位置状态文件版本过新，当前版本无法识别，请升级抽屉柜。",
+  unknown_pending_operation: "存在本版本无法识别的未完成数据操作，请升级抽屉柜。",
+  external_root_missing: "数据存储位置不可访问（磁盘不存在或目录已被移除）。",
+  external_root_unreadable: "数据存储位置存在但无法读取（权限不足或被占用）。",
+  external_db_missing: "数据存储位置存在，但未找到抽屉柜数据库。",
+  external_db_invalid: "数据存储位置的数据库无效或已损坏。",
+  orphan_compatibility_guard: "检测到数据位置保护标记：数据可能保存在外部位置。请勿删除该标记文件；请安装最新版本抽屉柜并通过「使用已有数据目录」重新连接。",
+  state_guard_mismatch: "数据位置记录与保护标记不一致，已停止启动以保护数据。",
+  pending_operation_needs_recovery: "存在未完成的数据位置操作，需要恢复流程。请安装最新版本抽屉柜。",
+};
+function blockText(info: DataRootBlockInfo): string {
+  return BLOCK_REASON_TEXT[info.reason.reason] ?? "数据存储位置状态异常，已停止启动以保护数据。";
+}
 
 // P0-#LOCK#GLOBAL#LISTENER：把"app:lock"事件监听从 LockScreen 提到 App.vue
 // 原因：之前只在 LockScreen 里 listen，但用户已解锁进入 MainLayout 时
@@ -45,6 +66,18 @@ const IDLE_CHECK_MS = 30_000; // 每 30s 检测一次
 const ACTIVITY_EVENTS = ["mousedown", "keydown", "touchstart", "wheel"] as const;
 
 onMounted(async () => {
+  // Phase 2C-1：Data Root 阻断优先判断。阻断模式下后端未打开 DB，
+  // 任何业务 IPC 都不可用 → 只渲染阻断页，立即 return。
+  try {
+    const block = await getDataRootBlock();
+    if (block) {
+      dataRootBlock.value = block;
+      ready.value = true;
+      return;
+    }
+  } catch (e) {
+    console.warn("[App.vue] 查询 Data Root 阻断状态失败（视为正常启动）", e);
+  }
   // 注册全局锁定事件监听（必须在主流程之前，避免 race）
   try {
     unlistenLock = await listen("app:lock", () => {
@@ -139,7 +172,26 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <Transition name="boot" appear>
+  <!-- Phase 2C-1：Data Root 启动阻断页（fail-visible；只有真实可用的动作） -->
+  <div v-if="dataRootBlock" class="block-root">
+    <div class="block-card">
+      <div class="block-icon">⚠️</div>
+      <h2 class="block-title">抽屉柜无法启动</h2>
+      <p class="block-text">{{ blockText(dataRootBlock) }}</p>
+      <div class="block-actions">
+        <button class="block-btn primary" @click="restartApp()">重试启动</button>
+        <button class="block-btn" @click="showBlockDetail = !showBlockDetail">
+          {{ showBlockDetail ? "收起详情" : "查看错误详情" }}
+        </button>
+      </div>
+      <div v-if="showBlockDetail" class="block-detail">
+        <p><b>错误代码：</b>{{ dataRootBlock.reason.reason }}</p>
+        <p><b>技术详情：</b>{{ dataRootBlock.reason.detail }}</p>
+        <p><b>配置目录：</b>{{ dataRootBlock.config_root }}</p>
+      </div>
+    </div>
+  </div>
+  <Transition v-else name="boot" appear>
     <div v-if="ready" class="app-root">
       <Transition name="scene" mode="out-in">
         <SetupWizard v-if="appStore.isFirstRun" key="wizard" />
@@ -154,6 +206,52 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+/* Phase 2C-1：Data Root 阻断页样式（无外链依赖，纯本地） */
+.block-root {
+  height: 100%;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #10141c;
+  color: #e8ecf3;
+  padding: 24px;
+  box-sizing: border-box;
+}
+.block-card {
+  max-width: 420px;
+  background: #1a2030;
+  border: 1px solid #2c3550;
+  border-radius: 14px;
+  padding: 28px;
+  text-align: center;
+}
+.block-icon { font-size: 40px; margin-bottom: 8px; }
+.block-title { margin: 0 0 10px; font-size: 18px; }
+.block-text { margin: 0 0 18px; font-size: 13px; line-height: 1.7; color: #aab4c8; }
+.block-actions { display: flex; gap: 10px; justify-content: center; }
+.block-btn {
+  border: 1px solid #3a4568;
+  background: #232b42;
+  color: #e8ecf3;
+  border-radius: 8px;
+  padding: 8px 16px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.block-btn.primary { background: #3b6ef5; border-color: #3b6ef5; }
+.block-detail {
+  margin-top: 16px;
+  padding: 12px;
+  border-radius: 8px;
+  background: #141926;
+  text-align: left;
+  font-size: 12px;
+  color: #8a95ad;
+  word-break: break-all;
+}
+.block-detail p { margin: 4px 0; }
+
 .app-root {
   height: 100%;
   width: 100%;
