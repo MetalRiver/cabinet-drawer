@@ -555,6 +555,21 @@ export const setupAttachExisting = (target: string) =>
 /** 放弃未完成操作（白名单清理 + 删 guard + 删 state → 重启） */
 export const setupAbandonPending = () => invoke<void>("setup_abandon_pending");
 
+/* ===== Phase 2C-3：既有数据迁移（C→D / D→E） ===== */
+export const setupBeginMigration = (target: string) =>
+  invoke<void>("setup_begin_migration", { target });
+export interface LastMigrationInfo {
+  source: string;
+  target: string;
+  op_id: string;
+  archive: string;
+  completed_at: string;
+}
+export const getDataRootSummary = () =>
+  invoke<{ active_root: string | null; last_migration: LastMigrationInfo | null }>(
+    "get_data_root_summary",
+  );
+
 // ============ B1+B3：导入导出备份 + 重置数据 ============
 
 /** B1-2：加密导出一份 .drawerbox 备份文件（返回路径+密码解密状态统计）*/

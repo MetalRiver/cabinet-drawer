@@ -14,6 +14,9 @@ use crate::{AppState, SecurityModel};
 // ============================================================
 #[tauri::command]
 pub fn list_passwords(state: State<AppState>) -> Result<Vec<db::PasswordMeta>, String> {
+    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_read()?;
+
     list_passwords_inner(&state)
 }
 
@@ -45,6 +48,9 @@ pub fn create_password(
     url: String,
     notes: String,
 ) -> Result<i64, String> {
+    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_read()?;
+
     create_password_inner(&state, title, username, password, url, notes)
 }
 
@@ -90,6 +96,9 @@ fn create_password_inner(
 // ============================================================
 #[tauri::command]
 pub fn get_password_decrypted(state: State<AppState>, id: i64) -> Result<String, String> {
+    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_read()?;
+
     get_password_decrypted_inner(&state, id)
 }
 
@@ -129,6 +138,9 @@ fn get_password_decrypted_inner(state: &AppState, id: i64) -> Result<String, Str
 // ============================================================
 #[tauri::command]
 pub fn bump_password_use_count(state: State<AppState>, id: i64) -> Result<i64, String> {
+    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_read()?;
+
     bump_password_use_count_inner(&state, id)
 }
 
@@ -165,6 +177,9 @@ pub fn update_password(
     url: String,
     notes: String,
 ) -> Result<(), String> {
+    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_read()?;
+
     update_password_inner(&state, id, title, username, password, url, notes)
 }
 
@@ -239,6 +254,9 @@ fn update_password_inner(
 // ============================================================
 #[tauri::command]
 pub fn delete_password(state: State<AppState>, id: i64) -> Result<(), String> {
+    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_read()?;
+
     delete_password_inner(&state, id)
 }
 
@@ -319,6 +337,8 @@ mod phase2a2_tests {
             pending_recovery_rotation: Mutex::new(None),
             pending_legacy_migration: std::sync::Mutex::new(None),
             master_wrap_gate: Mutex::new(()),
+            data_op_gate: std::sync::RwLock::new(()),
+            migration_freeze: std::sync::atomic::AtomicBool::new(false),
             key: Mutex::new(None),
         };
         state.set_stable_dek(Zeroizing::new(V2_DEK.to_vec()));
@@ -339,6 +359,8 @@ mod phase2a2_tests {
             pending_recovery_rotation: Mutex::new(None),
             pending_legacy_migration: std::sync::Mutex::new(None),
             master_wrap_gate: Mutex::new(()),
+            data_op_gate: std::sync::RwLock::new(()),
+            migration_freeze: std::sync::atomic::AtomicBool::new(false),
             key: Mutex::new(None),
         };
         state.set_legacy_key(Zeroizing::new(key.to_vec()));

@@ -84,6 +84,9 @@ pub fn save_widget_config(
     key: String,
     value: String,
 ) -> Result<(), String> {
+    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_read()?;
+
     let db = state.db.lock().unwrap();
     db.set_setting(&format!("widget.{}", key), &value)
         .map_err(|e| e.to_string())
@@ -94,6 +97,9 @@ pub fn save_widget_config(
 // ============================================================
 #[tauri::command]
 pub fn load_widget_config(state: State<AppState>, key: String) -> Result<Option<String>, String> {
+    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_read()?;
+
     eprintln!("[IPC] load_widget_config({})", key);
     let db = state.db.lock().unwrap();
     let r = db.get_setting(&format!("widget.{}", key)).map_err(|e| e.to_string());
@@ -181,6 +187,9 @@ pub fn set_mini_mode_with_pos(
     state: State<AppState>,
     mini: bool,
 ) -> Result<(), String> {
+    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_read()?;
+
     let (x, y) = {
         let db = state.db.lock().unwrap();
         let x = db
@@ -213,6 +222,9 @@ pub fn set_mini_mode_with_pos(
 // ============================================================
 #[tauri::command]
 pub fn apply_widget_config(window: Window, state: State<AppState>) -> Result<(), String> {
+    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_read()?;
+
     eprintln!("[IPC] apply_widget_config ENTER");
     let db = state.db.lock().unwrap();
     if let Some(s) = db.get_setting("widget.always_on_top").map_err(|e| e.to_string())? {

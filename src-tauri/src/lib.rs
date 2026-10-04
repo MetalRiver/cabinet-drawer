@@ -138,12 +138,46 @@ pub struct AppState {
     /// 串行化所有会改写 v2 master wrap 的操作（Recovery / 普通改主密码）。
     /// 安全边界不能只依赖前端按钮 disabled。
     master_wrap_gate: Mutex<()>,
+    /// Phase 2C-3：ExclusiveDataOperationGate（2C-0.2 定稿）。
+    /// 普通 DB 命令持 shared permit；多阶段破坏性操作（迁移/恢复/重置/
+    /// legacy 升级/恢复词轮换/主密码改写/安全初始化）持 exclusive permit。
+    /// 锁顺序：data_op_gate → master_wrap_gate → db → conn，任何路径不得反向。
+    pub data_op_gate: std::sync::RwLock<()>,
+    /// 迁移冻结闩：restart_required 之后置位，任何 DB 命令立即拒绝，
+    /// 直到进程真正退出（防止 restart API 返回后出现业务写入窗口）。
+    pub migration_freeze: std::sync::atomic::AtomicBool,
     /// 唯一活动秘密：legacy key 或 v2 Stable DEK，不能混用。
     key: Mutex<Option<ActiveKey>>,
 }
 
 impl AppState {
     pub fn is_unlocked(&self) -> bool { self.key.lock().unwrap().is_some() }
+    /// Phase 2C-3：普通 DB 命令统一入口（shared permit）。迁移冻结期间拒绝。
+    /// 可审计性约定：所有 DB-touching 命令第一行必须是
+    /// `let _data_gate = state.data_read()?;  // [data-gate:shared]`
+    pub fn data_read(&self) -> Result<std::sync::RwLockReadGuard<'_, ()>, String> {
+        if self.migration_freeze.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err("数据迁移正在进行，数据操作已暂停，请稍后（应用将自动重启）。".to_string());
+        }
+        self.data_op_gate
+            .read()
+            .map_err(|_| "数据操作门不可用".to_string())
+    }
+    /// Phase 2C-3：多阶段破坏性操作统一入口（exclusive permit）。
+    /// 拿不到立即失败（不排队、不卡 UI）。
+    pub fn data_write(&self) -> Result<std::sync::RwLockWriteGuard<'_, ()>, String> {
+        if self.migration_freeze.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err("数据迁移正在进行，数据操作已暂停。".to_string());
+        }
+        self.data_op_gate
+            .try_write()
+            .map_err(|_| "当前有其他数据操作正在进行，请稍后重试。".to_string())
+    }
+    /// Phase 2C-3：迁移冻结闩置位（restart_required 后调用）。
+    pub fn freeze_data_operations(&self) {
+        self.migration_freeze
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
     /// 安全模型唯一事实源 = startup_mode（Legacy ⇔ legacy 模型；其余均为 v2）。
     /// legacy 升级 confirm 把 startup_mode 切到 ExistingV2，即完成模型切换。
     pub fn security_model(&self) -> SecurityModel {
@@ -770,6 +804,8 @@ impl AppState {
             pending_recovery_rotation: Mutex::new(None),
             pending_legacy_migration: Mutex::new(None),
             master_wrap_gate: Mutex::new(()),
+            data_op_gate: std::sync::RwLock::new(()),
+            migration_freeze: std::sync::atomic::AtomicBool::new(false),
             key: Mutex::new(None),
         }
     }
@@ -883,6 +919,161 @@ pub(crate) fn try_complete_pending_attach(
     Some(target)
 }
 
+/// Phase 2C-3：迁移启动收尾结果
+#[derive(Debug)]
+pub(crate) enum MigrationResume {
+    /// 迁移已完全提交（STATE_ACTIVE）→ 用 target 打开正常 AppState
+    Completed(PathBuf),
+    /// target 激活前失败已自动回滚 → source 仍 canonical
+    SourceCanonical,
+    /// 无法安全继续 → Blocked（fail visible）
+    Failed(String),
+}
+
+/// 迁移最终收尾（新进程 setup 内、UI 开放之前）：
+/// 验证 target 正式库与指纹 → source retirement（幂等）→ guard 切换 → STATE_ACTIVE。
+/// 任一步失败 → Fail Visible（不得掉到 FreshV2，不得开放业务 UI）。
+fn finalize_pending_migration(
+    config_root: &Path,
+    op: &data_root::PendingOperation,
+) -> Result<PathBuf, String> {
+    let target = op
+        .target
+        .clone()
+        .ok_or_else(|| "迁移记录缺少 target".to_string())?;
+    let target_db = target.join(migration::V2_DB_FILENAME);
+
+    // 1) target 正式库必须可打开（安全元数据 + integrity + schema）
+    {
+        let verify_db = migration::open_existing_v2_db(&target_db)
+            .map_err(|e| format!("目标正式库验证失败: {}", e))?;
+        // 2) 指纹对账：正式库必须就是本次已验证的 migration artifact
+        let recorded = op
+            .target_fingerprint
+            .clone()
+            .ok_or_else(|| "迁移记录缺少已验证的目标指纹".to_string())?;
+        let conn = verify_db.conn.lock().map_err(|_| "连接不可用".to_string())?;
+        let fp = data_root::semantic_fingerprint(&conn)?;
+        drop(conn);
+        if fp != recorded {
+            return Err("目标库指纹与迁移记录不一致（fail closed）".to_string());
+        }
+    }
+
+    // 3) source retirement（幂等；归档 identity 冲突即失败）
+    let source = op
+        .source
+        .clone()
+        .ok_or_else(|| "迁移记录缺少 source".to_string())?;
+    let current = data_root::load_state(config_root);
+    if let data_root::StateLoad::Loaded(st) = &current {
+        // 写 retiring_source
+        let _ = data_root::save_state(config_root, &data_root::state_with_migration_phase(st, "retiring_source"));
+    }
+    data_root::retire_source_db(&source, &op.op_id)?;
+
+    // 4) guard 切换（先建新 G2 并 durable，再删旧 guard；期间允许并存）
+    if let data_root::StateLoad::Loaded(st) = &current {
+        let _ = data_root::save_state(config_root, &data_root::state_with_migration_phase(st, "switching_guard"));
+    }
+    data_root::switch_guard_to_g2(config_root, &op.op_id, &target)?;
+
+    // 5) STATE_ACTIVE（最终提交点）
+    let st = match data_root::load_state(config_root) {
+        data_root::StateLoad::Loaded(st) => st,
+        _ => return Err("迁移收尾读取 state 失败".to_string()),
+    };
+    let _ = data_root::save_state(
+        config_root,
+        &data_root::state_with_migration_phase(&st, "committing"),
+    );
+    let committed = data_root::state_after_migration_commit(&st, op);
+    data_root::save_state(config_root, &committed)?;
+    Ok(target)
+}
+
+/// 迁移中断恢复决策（§二十/§二十九 崩溃矩阵的启动侧）。
+pub(crate) fn try_complete_pending_migration(
+    config_root: &Path,
+    op: &data_root::PendingOperation,
+) -> MigrationResume {
+    let target = match &op.target {
+        Some(t) => t.clone(),
+        None => return MigrationResume::Failed("迁移记录缺少 target".to_string()),
+    };
+    let source = match &op.source {
+        Some(s) => s.clone(),
+        None => return MigrationResume::Failed("迁移记录缺少 source".to_string()),
+    };
+    let target_db = target.join(migration::V2_DB_FILENAME);
+    let tmp = data_root::migration_tmp_path(&target, &op.op_id);
+
+    match op.phase.as_str() {
+        // ---- target 激活前：source 仍 canonical ----
+        "transferring" | "target_verified" => {
+            if tmp.exists() && target_db.exists() {
+                return MigrationResume::Failed(
+                    "目标目录同时存在迁移临时库与正式库（fail closed）".to_string(),
+                );
+            }
+            if target_db.exists() {
+                // rename 已完成、后续 state 写入前中断（仅 target_verified 之后合法）
+                if op.phase != "target_verified" {
+                    return MigrationResume::Failed(
+                        "transferring 阶段不应出现正式目标库（fail closed）".to_string(),
+                    );
+                }
+                return match finalize_pending_migration(config_root, op) {
+                    Ok(t) => MigrationResume::Completed(t),
+                    Err(e) => MigrationResume::Failed(e),
+                };
+            }
+            if tmp.exists() && op.phase == "target_verified" {
+                // 验证已通过、rename 前中断 → 继续激活并收尾
+                return match data_root::activate_target_tmp(&tmp, &target_db)
+                    .and_then(|_| finalize_pending_migration(config_root, op))
+                {
+                    Ok(t) => MigrationResume::Completed(t),
+                    Err(e) => MigrationResume::Failed(e),
+                };
+            }
+            // transferring 半成 → 自动回滚（§二十八 A：source 从未失位）
+            match data_root::rollback_migration(config_root, op) {
+                Ok(()) => {
+                    // 恢复 pending 清空后的稳定 state（active_root=source）
+                    let restored = data_root::state_pending_migration(
+                        &source,
+                        &target,
+                        &op.op_id,
+                        "rolled_back",
+                        data_root::SourceKind::from_str(
+                            op.source_kind.as_deref().unwrap_or(""),
+                        )
+                        .unwrap_or(data_root::SourceKind::DefaultConfigRoot),
+                        None,
+                        None,
+                        None,
+                    );
+                    let restored = data_root::DataRootState {
+                        pending_operation: None,
+                        ..restored
+                    };
+                    let _ = data_root::save_state(config_root, &restored);
+                    MigrationResume::SourceCanonical
+                }
+                Err(e) => MigrationResume::Failed(format!("迁移回滚失败: {}", e)),
+            }
+        }
+        // ---- target 激活后：默认优先完成 commit（§二十八 B）----
+        "target_activated" | "restart_required" | "retiring_source" | "switching_guard"
+        | "committing" => match finalize_pending_migration(config_root, op) {
+            Ok(t) => MigrationResume::Completed(t),
+            Err(e) => MigrationResume::Failed(e),
+        },
+        other => MigrationResume::Failed(format!("未知迁移阶段: {}", other)),
+    }
+}
+
 pub fn run() {
     tauri::Builder::default()
         // 单实例必须是第一个注册的插件：第二实例在插件 init 阶段就把参数转发给
@@ -915,6 +1106,13 @@ pub fn run() {
             // Phase 2C-2：两个 managed 状态必须在任何早期返回（setup/blocked 模式）之前就位
             app.manage(data_root::SetupState::default());
             app.manage(data_root::InitContext::default());
+            // Phase 2C-3：G1 孤儿前置清理——"G1 写成功但 migration state 未落盘"的中断
+            // （判定条件：Magic guard + Config Root 有正式库 + 无 state + 无归档）。
+            // 此时 source 仍 canonical，回滚安全；清理后按默认路径正常解析。
+            if let Some(g1) = data_root::g1_orphan_cleanup_candidate(&config_root) {
+                eprintln!("[data-root] 清理中断迁移的 G1 孤儿: {:?}", g1);
+                let _ = std::fs::remove_file(&g1);
+            }
             // Data Root 解析必须在任何 SQLite 打开之前完成（2C-0 设计硬约束）。
             let effective_root = match data_root::resolve_data_root(&config_root) {
                 data_root::Resolution::UseDefault(root) => root,
@@ -949,6 +1147,26 @@ pub fn run() {
                                 data_root::BlockedReason::PendingOperationNeedsRecovery(format!(
                                     "attach_existing / {} / {}",
                                     op.op_id, op.phase
+                                )),
+                                config_root.clone(),
+                            );
+                            return Ok(());
+                        }
+                    },
+                    // Phase 2C-3：既有数据迁移。target 激活前失败→自动回滚回 source；
+                    // target 激活后→MigrationFinalizationMode（UI 开放前完成全部收尾）。
+                    "migration" => match try_complete_pending_migration(&config_root, &op) {
+                        crate::MigrationResume::Completed(root) => root,
+                        crate::MigrationResume::SourceCanonical => op
+                            .source
+                            .clone()
+                            .unwrap_or_else(|| config_root.clone()),
+                        crate::MigrationResume::Failed(reason) => {
+                            enter_blocked_mode(
+                                app,
+                                data_root::BlockedReason::PendingOperationNeedsRecovery(format!(
+                                    "migration / {} / {}",
+                                    op.op_id, reason
                                 )),
                                 config_root.clone(),
                             );
@@ -1400,6 +1618,9 @@ pub fn run() {
             setup_resume_custom_init,
             setup_attach_existing,
             setup_abandon_pending,
+            // Phase 2C-3：既有数据迁移
+            setup_begin_migration,
+            get_data_root_summary,
             // P0-#Y#FIX#PICK：原生文件 / 文件夹选择对话框
             pick_path,
             // B1：导入/导出加密备份

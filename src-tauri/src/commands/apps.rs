@@ -550,6 +550,9 @@ pub fn list_apps(
     query: Option<String>,
     category_id: Option<i64>,
 ) -> Result<Vec<db::AppMeta>, String> {
+    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_read()?;
+
     let db = state.db.lock().unwrap();
     let q = query.unwrap_or_default();
     db.list_apps(&q, category_id).map_err(|e| e.to_string())
@@ -597,6 +600,9 @@ pub fn list_apps_with_icons(
     query: String,
     category_id: Option<i64>,
 ) -> Result<Vec<AppWithIcon>, String> {
+    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_read()?;
+
     let db = state.db.lock().unwrap();
     let apps = db.list_apps(&query, category_id).map_err(|e| e.to_string())?;
     let result: Vec<AppWithIcon> = apps.into_iter().map(|a| {
@@ -681,6 +687,9 @@ pub async fn pick_path(mode: String, title: Option<String>) -> Option<String> {
 // ============================================================
 #[tauri::command]
 pub fn fill_missing_icons(state: State<AppState>) -> Result<usize, String> {
+    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_read()?;
+
     let apps: Vec<db::AppMeta> = {
         let db = state.db.lock().unwrap();
         db.list_apps("", None).map_err(|e| e.to_string())?
@@ -721,6 +730,9 @@ pub fn fill_missing_icons(state: State<AppState>) -> Result<usize, String> {
 // ============================================================
 #[tauri::command]
 pub fn force_reextract_icons(state: State<AppState>) -> Result<usize, String> {
+    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_read()?;
+
     #[cfg(windows)]
     {
         let cleared = win_icon::clear_all_cache().map_err(|e| e.to_string())?;
@@ -763,6 +775,9 @@ pub fn restart_app(app: AppHandle) -> Result<(), String> {
 // ============================================================
 #[tauri::command]
 pub fn rescan_subtypes(state: State<AppState>) -> Result<usize, String> {
+    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_read()?;
+
     eprintln!("[rescan_subtypes] ENTER");
     let apps: Vec<db::AppMeta> = {
         let db = state.db.lock().unwrap();
@@ -789,6 +804,9 @@ pub fn rescan_subtypes(state: State<AppState>) -> Result<usize, String> {
 // ============================================================
 #[tauri::command]
 pub fn list_app_categories(state: State<AppState>) -> Result<Vec<db::AppCategoryMeta>, String> {
+    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_read()?;
+
     let db = state.db.lock().unwrap();
     db.list_app_categories().map_err(|e| e.to_string())
 }
@@ -798,6 +816,9 @@ pub fn create_app_category(
     name: String,
     icon: Option<String>,
 ) -> Result<i64, String> {
+    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_read()?;
+
     let db = state.db.lock().unwrap();
     db.create_app_category(&name, icon.as_deref().unwrap_or("📁"))
         .map_err(|e| e.to_string())
@@ -809,12 +830,18 @@ pub fn update_app_category(
     name: String,
     icon: String,
 ) -> Result<(), String> {
+    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_read()?;
+
     let db = state.db.lock().unwrap();
     db.update_app_category(id, &name, &icon)
         .map_err(|e| e.to_string())
 }
 #[tauri::command]
 pub fn delete_app_category(state: State<AppState>, id: i64) -> Result<(), String> {
+    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_read()?;
+
     let db = state.db.lock().unwrap();
     db.delete_app_category(id).map_err(|e| e.to_string())
 }
@@ -856,6 +883,9 @@ pub fn create_app(
     app_type: Option<String>,
     app_subtype: Option<String>,
 ) -> Result<i64, String> {
+    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_read()?;
+
     // P0-#DEBUG#APPTYPE：入口立刻打印所有入参（最关键）→ 同时写磁盘日志
     let db = state.db.lock().unwrap();
     let path_obj = std::path::Path::new(&path);
@@ -980,6 +1010,9 @@ pub fn import_paths(
     paths: Vec<String>,
     category_id: Option<i64>,
 ) -> Result<ImportResult, String> {
+    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_read()?;
+
     use std::path::Path;
     let mut new_ids: Vec<i64> = Vec::new();
     let mut skipped: Vec<String> = Vec::new();
@@ -1078,6 +1111,9 @@ pub fn update_app(
     app_subtype: Option<String>,
     app_type: Option<String>,
 ) -> Result<(), String> {
+    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_read()?;
+
     let db = state.db.lock().unwrap();
     // 🛡️ patch 语义（P0-#Y#FIX#PATCH）：Option 字段统一 None = 保持原值、Some(v) = 显式更新。
     // 旧实现把"未提供"（unwrap_or("")/String::new()）当成"主动清空"，导致"编辑名称/路径"表单
@@ -1102,6 +1138,9 @@ pub fn update_app(
 // ============================================================
 #[tauri::command]
 pub fn delete_app(state: State<AppState>, id: i64) -> Result<(), String> {
+    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_read()?;
+
     let db = state.db.lock().unwrap();
     db.soft_delete("apps", id).map_err(|e| e.to_string())?;
     Ok(())
@@ -1112,6 +1151,9 @@ pub fn delete_app(state: State<AppState>, id: i64) -> Result<(), String> {
 // ============================================================
 #[tauri::command]
 pub fn record_app_usage(state: State<AppState>, id: i64) -> Result<(), String> {
+    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_read()?;
+
     let db = state.db.lock().unwrap();
     db.record_app_usage(id).map_err(|e| e.to_string())
 }
@@ -1305,6 +1347,8 @@ fn scan_dir_for_name(dir: &std::path::Path, name_lower: &str, max_depth: usize, 
 
 #[tauri::command]
 pub async fn launch_app(state: State<'_, AppState>, id: i64) -> Result<String, String> {
+    // [data-gate:shared] Phase 2C-3（同步段持锁，不跨 await）
+    let _data_gate = state.data_read()?;
     let (path, args, app_type, app_name): (String, String, String, String) = {
         let db = state.db.lock().unwrap();
         let conn = db.conn.lock().unwrap();
@@ -1315,6 +1359,8 @@ pub async fn launch_app(state: State<'_, AppState>, id: i64) -> Result<String, S
             .query_row(rusqlite::params![id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
             .map_err(|e| e.to_string())?
     };
+    // gate 不跨 await：同步段结束即释放
+    drop(_data_gate);
     let _ = state.db.lock().unwrap().record_app_usage(id);
 
     #[cfg(not(windows))]
@@ -1479,6 +1525,8 @@ fn health_check_apps_sync(state: &tauri::State<'_, AppState>) -> Result<usize, S
 pub async fn health_check_apps(app: AppHandle) -> Result<usize, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state: tauri::State<AppState> = app.state();
+        // [data-gate:shared] Phase 2C-3（spawn_blocking 内同步持有）
+        let _data_gate = state.data_read()?;
         health_check_apps_sync(&state)
     })
     .await
@@ -1490,6 +1538,9 @@ pub async fn health_check_apps(app: AppHandle) -> Result<usize, String> {
 // ============================================================
 #[tauri::command]
 pub fn get_data_dir(state: State<AppState>) -> Result<String, String> {
+    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_read()?;
+
     eprintln!("[IPC] get_data_dir ENTER");
     let db = state.db.lock().unwrap();
     let conn = db.conn.lock().unwrap();

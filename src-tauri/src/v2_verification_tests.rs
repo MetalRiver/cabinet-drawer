@@ -91,6 +91,8 @@ mod v2_verification_tests {
             pending_recovery_rotation: Mutex::new(None),
             pending_legacy_migration: Mutex::new(None),
             master_wrap_gate: Mutex::new(()),
+            data_op_gate: std::sync::RwLock::new(()),
+            migration_freeze: std::sync::atomic::AtomicBool::new(false),
             key: Mutex::new(None),
         }
     }

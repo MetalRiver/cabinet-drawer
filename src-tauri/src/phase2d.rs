@@ -286,6 +286,8 @@ fn existing_state(path: &Path, dek: &[u8]) -> Result<AppState, String> {
         pending_recovery_rotation: Mutex::new(None),
         pending_legacy_migration: std::sync::Mutex::new(None),
         master_wrap_gate: Mutex::new(()),
+            data_op_gate: std::sync::RwLock::new(()),
+            migration_freeze: std::sync::atomic::AtomicBool::new(false),
         key: Mutex::new(Some(ActiveKey::StableDek(Zeroizing::new(dek.to_vec())))),
     })
 }
@@ -301,6 +303,8 @@ fn legacy_production_state(path: &Path) -> Result<AppState, String> {
         pending_recovery_rotation: Mutex::new(None),
         pending_legacy_migration: std::sync::Mutex::new(None),
         master_wrap_gate: Mutex::new(()),
+            data_op_gate: std::sync::RwLock::new(()),
+            migration_freeze: std::sync::atomic::AtomicBool::new(false),
         key: Mutex::new(None),
     })
 }

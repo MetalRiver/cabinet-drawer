@@ -1658,6 +1658,8 @@ mod migration_tests {
             pending_recovery_rotation: std::sync::Mutex::new(None),
             pending_legacy_migration: std::sync::Mutex::new(None),
             master_wrap_gate: std::sync::Mutex::new(()),
+            data_op_gate: std::sync::RwLock::new(()),
+            migration_freeze: std::sync::atomic::AtomicBool::new(false),
             key: std::sync::Mutex::new(None),
         };
         let hash_before = file_hash(&output.v2_path);
@@ -1681,6 +1683,8 @@ mod migration_tests {
             pending_recovery_rotation: std::sync::Mutex::new(None),
             pending_legacy_migration: std::sync::Mutex::new(None),
             master_wrap_gate: std::sync::Mutex::new(()),
+            data_op_gate: std::sync::RwLock::new(()),
+            migration_freeze: std::sync::atomic::AtomicBool::new(false),
             key: std::sync::Mutex::new(None),
         }
     }
@@ -1945,6 +1949,8 @@ mod migration_tests {
             pending_recovery_rotation: std::sync::Mutex::new(None),
             pending_legacy_migration: std::sync::Mutex::new(None),
             master_wrap_gate: std::sync::Mutex::new(()),
+            data_op_gate: std::sync::RwLock::new(()),
+            migration_freeze: std::sync::atomic::AtomicBool::new(false),
             key: std::sync::Mutex::new(None),
         };
         assert!(legacy_state.verify_v2_recovery_phrase(&words.join(" ")).is_err());
@@ -2356,6 +2362,8 @@ mod migration_tests {
             pending_recovery_rotation: std::sync::Mutex::new(None),
             pending_legacy_migration: std::sync::Mutex::new(None),
             master_wrap_gate: std::sync::Mutex::new(()),
+            data_op_gate: std::sync::RwLock::new(()),
+            migration_freeze: std::sync::atomic::AtomicBool::new(false),
             key: std::sync::Mutex::new(None),
         };
         assert!(legacy_state
@@ -2668,6 +2676,8 @@ mod migration_tests {
             pending_recovery_rotation: std::sync::Mutex::new(None),
             pending_legacy_migration: std::sync::Mutex::new(None),
             master_wrap_gate: std::sync::Mutex::new(()),
+            data_op_gate: std::sync::RwLock::new(()),
+            migration_freeze: std::sync::atomic::AtomicBool::new(false),
             key: std::sync::Mutex::new(None),
         };
         assert!(legacy_state.prepare_v2_recovery_rotation().is_err());

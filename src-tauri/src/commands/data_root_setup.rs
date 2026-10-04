@@ -16,7 +16,7 @@
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Manager, State};
 
 use crate::data_root::{self, DataRootInitCtx, InitContext, SetupModeInfo, SetupState, StateLoad};
 use crate::migration;
@@ -170,4 +170,191 @@ pub fn setup_abandon_pending(app: AppHandle) -> Result<(), String> {
         }
     }
     crate::commands::restart_app(app)
+}
+
+/// Phase 2C-3：数据存储位置迁移（C→D / D→E）。
+/// 流程（2C-0.2 定稿）：exclusive gate → guard first → state(transferring) →
+/// Online Backup 快照 → 验证+指纹 → target_verified → 激活（无 REPLACE）→
+/// restart_required + 冻结闩 → 重启 → 新进程 setup 内完成 retirement/guard 切换/提交。
+#[tauri::command]
+pub fn setup_begin_migration(
+    app: AppHandle,
+    state: State<AppState>,
+    target: String,
+) -> Result<(), String> {
+    let cr = config_root(&app)?;
+    let target = PathBuf::from(&target);
+
+    // 1) 仅 v2 安全模型（legacy 拒绝，§九）
+    if state.security_model() != crate::SecurityModel::StableDekV2 {
+        return Err("仅 v2 安全模型支持数据位置迁移（legacy 数据请先完成安全升级）".to_string());
+    }
+    // 2) source 判定（显式 SourceKind，不靠猜）
+    let loaded = match data_root::load_state(&cr) {
+        StateLoad::Loaded(s) => s,
+        _ => data_root::DataRootState::new(None),
+    };
+    let (source, kind) = match &loaded.active_root {
+        None => (cr.clone(), data_root::SourceKind::DefaultConfigRoot),
+        Some(p) => (p.clone(), data_root::SourceKind::External),
+    };
+    // 3) 本阶段不支持迁回默认位置（§三十三）
+    if kind == data_root::SourceKind::External {
+        let cr_norm = cr.to_string_lossy().replace('/', "\\").to_lowercase();
+        let t_norm = target.to_string_lossy().replace('/', "\\").to_lowercase();
+        if t_norm == cr_norm {
+            return Err("当前版本暂不支持直接迁回默认位置。".to_string());
+        }
+    }
+    let source_db = source.join(migration::V2_DB_FILENAME);
+    if !source_db.exists() {
+        return Err("当前数据位置未找到正式数据库，无法迁移".to_string());
+    }
+    // 4) preflight（含基于实际占用的空间要求，§八）
+    let mut required = std::fs::metadata(&source_db).map(|m| m.len()).unwrap_or(0);
+    required += std::fs::metadata(source.join(format!("{}-wal", migration::V2_DB_FILENAME)))
+        .map(|m| m.len())
+        .unwrap_or(0);
+    required += 64 * 1024 * 1024; // 安全余量
+    data_root::preflight_migration_target(&source, &target, required).map_err(|e| e.message())?;
+
+    // 5) exclusive gate（拿不到立即失败，§十一）
+    let _gate = state.data_write()?;
+    let op_id = uuid::Uuid::new_v4().to_string();
+
+    // 6) Guard First（§十二/§十三）
+    match kind {
+        data_root::SourceKind::DefaultConfigRoot => {
+            data_root::write_compat_guard_g1(&cr, &op_id)?;
+        }
+        data_root::SourceKind::External => {
+            let ok = data_root::recognize_guards(&cr).iter().any(|g| {
+                g.kind == data_root::GuardKind::G2Stray
+                    && g.target.as_deref() == Some(source.as_path())
+            });
+            if !ok {
+                return Err(
+                    "Config Root 缺少与当前数据位置一致的兼容保护标记（fail closed）".to_string(),
+                );
+            }
+        }
+    }
+
+    // 7) source 语义指纹（exclusive 持有期间 = 冻结后的真实状态）
+    let source_fp = {
+        let db = state.db.lock().map_err(|_| "数据库不可用".to_string())?;
+        let conn = db.conn.lock().map_err(|_| "数据库连接不可用".to_string())?;
+        data_root::semantic_fingerprint(&conn)?
+    };
+
+    // 8) state(transferring)：active_root 保持 source
+    data_root::save_state(
+        &cr,
+        &data_root::state_pending_migration(
+            &source,
+            &target,
+            &op_id,
+            "transferring",
+            kind,
+            Some(&source_fp),
+            None,
+            loaded.last_migration.clone(),
+        ),
+    )?;
+
+    // 9) 快照 → 验证 → 激活（任一失败：回滚到 source，§二十八 A）
+    let run = (|| -> Result<(), String> {
+        let tmp = data_root::migration_tmp_path(&target, &op_id);
+        {
+            let db = state.db.lock().map_err(|_| "数据库不可用".to_string())?;
+            let conn = db.conn.lock().map_err(|_| "数据库连接不可用".to_string())?;
+            data_root::snapshot_source_db(&conn, &tmp)?;
+        }
+        let target_fp = data_root::verify_migration_target(&tmp, &source_fp)?;
+        let st = match data_root::load_state(&cr) {
+            StateLoad::Loaded(s) => s,
+            _ => return Err("迁移过程中 state 丢失".to_string()),
+        };
+        data_root::save_state(
+            &cr,
+            &data_root::state_with_migration_phase(&st, "target_verified"),
+        )?;
+        let st = data_root::state_pending_migration(
+            &source,
+            &target,
+            &op_id,
+            "target_verified",
+            kind,
+            Some(&source_fp),
+            Some(&target_fp),
+            loaded.last_migration.clone(),
+        );
+        data_root::save_state(&cr, &st)?;
+        data_root::activate_target_tmp(&tmp, &target.join(migration::V2_DB_FILENAME))?;
+        let st = data_root::state_with_migration_phase(&st, "target_activated");
+        data_root::save_state(&cr, &st)?;
+        Ok(())
+    })();
+    if let Err(e) = run {
+        let op = match data_root::load_state(&cr) {
+            StateLoad::Loaded(s) => s.pending_operation,
+            _ => None,
+        };
+        match op {
+            Some(op) => match data_root::rollback_migration(&cr, &op) {
+                Ok(()) => {
+                    let restored = data_root::DataRootState {
+                        pending_operation: None,
+                        ..data_root::state_pending_migration(
+                            &source,
+                            &target,
+                            &op_id,
+                            "rolled_back",
+                            kind,
+                            None,
+                            None,
+                            None,
+                        )
+                    };
+                    data_root::save_state(&cr, &restored)?;
+                    return Err(format!("{}（已自动回滚，原数据未受影响）", e));
+                }
+                Err(ge) => {
+                    // 回滚失败 → 保护状态，不得恢复普通模式
+                    state.freeze_data_operations();
+                    return Err(format!(
+                        "{}；且回滚失败：{}。已进入保护状态，请重启应用。",
+                        e, ge
+                    ));
+                }
+            },
+            None => return Err(e),
+        }
+    }
+
+    // 10) restart_required + 冻结闩 + 重启（gate 持有至进程退出）
+    let st = match data_root::load_state(&cr) {
+        StateLoad::Loaded(s) => s,
+        _ => return Err("迁移收尾读取 state 失败".to_string()),
+    };
+    data_root::save_state(
+        &cr,
+        &data_root::state_with_migration_phase(&st, "restart_required"),
+    )?;
+    state.freeze_data_operations();
+    crate::commands::restart_app(app)
+}
+
+/// 数据位置摘要（设置页展示：canonical root + last_migration 保留信息）
+#[tauri::command]
+pub fn get_data_root_summary(app: AppHandle) -> serde_json::Value {
+    let cr = config_root(&app).unwrap_or_default();
+    let loaded = data_root::load_state(&cr);
+    match loaded {
+        StateLoad::Loaded(s) => serde_json::json!({
+            "active_root": s.active_root.as_ref().map(|p| p.to_string_lossy().to_string()),
+            "last_migration": s.last_migration,
+        }),
+        _ => serde_json::json!({ "active_root": null, "last_migration": null }),
+    }
 }

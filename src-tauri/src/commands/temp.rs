@@ -11,6 +11,9 @@ use crate::AppState;
 // ============================================================
 #[tauri::command]
 pub fn create_temp(state: State<AppState>, text: String, ttl_minutes: i64) -> Result<i64, String> {
+    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_read()?;
+
     let now = chrono::Utc::now().timestamp_millis();
     let expires_at = now + ttl_minutes * 60 * 1000;
     let db = state.db.lock().unwrap();
@@ -22,6 +25,9 @@ pub fn create_temp(state: State<AppState>, text: String, ttl_minutes: i64) -> Re
 // ============================================================
 #[tauri::command]
 pub fn list_temp(state: State<AppState>) -> Result<Vec<db::TempMeta>, String> {
+    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_read()?;
+
     let db = state.db.lock().unwrap();
     db.list_temp().map_err(|e| e.to_string())
 }
@@ -31,6 +37,9 @@ pub fn list_temp(state: State<AppState>) -> Result<Vec<db::TempMeta>, String> {
 // ============================================================
 #[tauri::command]
 pub fn delete_temp(state: State<AppState>, id: i64) -> Result<(), String> {
+    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_read()?;
+
     let db = state.db.lock().unwrap();
     db.soft_delete("temp_contents", id).map_err(|e| e.to_string())?;
     Ok(())
@@ -41,6 +50,9 @@ pub fn delete_temp(state: State<AppState>, id: i64) -> Result<(), String> {
 // ============================================================
 #[tauri::command]
 pub fn cleanup_expired_temp(state: State<AppState>) -> Result<usize, String> {
+    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_read()?;
+
     let db = state.db.lock().unwrap();
     db.cleanup_expired_temp().map_err(|e| e.to_string())
 }

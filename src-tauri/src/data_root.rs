@@ -54,10 +54,21 @@ pub struct PendingOperation {
     pub op_type: String,
     pub op_id: String,
     pub phase: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<PathBuf>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<PathBuf>,
+    /// Phase 2C-3：migration 专用（SourceKind::as_str）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_kind: Option<String>,
+    /// 快照前 source 语义指纹
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_fingerprint: Option<String>,
+    /// target 验证通过后持久化（rename 后 crash 的恢复依据，§十八）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
     pub updated_at: String,
 }
 
@@ -68,7 +79,20 @@ pub struct DataRootState {
     pub active_root: Option<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pending_operation: Option<PendingOperation>,
+    /// 最近一次成功迁移的保留信息（非秘密；供设置页展示与后续清理阶段使用）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_migration: Option<LastMigration>,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LastMigration {
+    pub source: PathBuf,
+    pub target: PathBuf,
+    pub op_id: String,
+    /// source 归档文件名（drawer-v2.db.migrated-<op_id>）
+    pub archive: String,
+    pub completed_at: String,
 }
 
 impl DataRootState {
@@ -77,6 +101,7 @@ impl DataRootState {
             version: STATE_VERSION,
             active_root,
             pending_operation: None,
+            last_migration: None,
             updated_at: chrono::Local::now().to_rfc3339(),
         }
     }
@@ -461,7 +486,7 @@ pub fn resolve_data_root(config_root: &Path) -> Resolution {
 
 /// 旧版归档命名（migration 的 rename 目标）：`drawer-v2.db.migrated-<op_id>`
 pub const ARCHIVE_PREFIX: &str = "drawer-v2.db.migrated-";
-pub const MIGRATION_TMP_MARKER: &str = ".migration-tmp";
+pub const MIGRATION_TMP_MARKER: &str = ".migration-";
 
 pub fn has_formal_db(dir: &Path) -> bool {
     dir.join(V2_DB_FILENAME).exists()
@@ -649,6 +674,8 @@ pub enum PreflightError {
     CreateFailed(String),
     NotWritable(String),
     NoSpace(String),
+    SameAsSource(String),
+    NestedWithSource(String),
 }
 
 impl PreflightError {
@@ -678,7 +705,11 @@ impl PreflightError {
             }
             PreflightError::CreateFailed(e) => format!("无法创建目标目录：{}", e),
             PreflightError::NotWritable(e) => format!("该目录不可写：{}", e),
-            PreflightError::NoSpace(_) => "该磁盘可用空间不足（至少需要 100 MB）。".to_string(),
+            PreflightError::NoSpace(_) => "该磁盘可用空间不足，无法容纳迁移后的数据。".to_string(),
+            PreflightError::SameAsSource(_) => "新位置与当前数据位置相同。".to_string(),
+            PreflightError::NestedWithSource(_) => {
+                "新位置与当前数据位置互相嵌套，请选择其他位置。".to_string()
+            }
         }
     }
 }
@@ -884,12 +915,17 @@ pub fn state_pending(op_type: &str, op_id: &str, phase: &str, target: &Path) -> 
     DataRootState {
         version: STATE_VERSION,
         active_root: None,
+        last_migration: None,
         pending_operation: Some(PendingOperation {
             op_type: op_type.to_string(),
             op_id: op_id.to_string(),
             phase: phase.to_string(),
             source: None,
             target: Some(target.to_path_buf()),
+            source_kind: None,
+            source_fingerprint: None,
+            target_fingerprint: None,
+            started_at: None,
             updated_at: chrono::Local::now().to_rfc3339(),
         }),
         updated_at: chrono::Local::now().to_rfc3339(),
@@ -900,6 +936,7 @@ pub fn state_active_external(target: &Path) -> DataRootState {
     DataRootState {
         version: STATE_VERSION,
         active_root: Some(target.to_path_buf()),
+        last_migration: None,
         pending_operation: None,
         updated_at: chrono::Local::now().to_rfc3339(),
     }
@@ -1059,6 +1096,432 @@ pub fn get_setup_mode(app: tauri::AppHandle) -> Option<SetupModeInfo> {
 }
 
 // ============================================================
+// Phase 2C-3：既有数据安全迁移（C→D / D→E）
+// ============================================================
+
+/// 迁移临时库命名：`drawer-v2.db.migration-<op_id>.tmp`
+pub const MIGRATION_TMP_PREFIX: &str = "drawer-v2.db.migration-";
+/// source retirement 归档命名：`drawer-v2.db.migrated-<op_id>`
+pub const MIGRATED_ARCHIVE_PREFIX: &str = "drawer-v2.db.migrated-";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceKind {
+    DefaultConfigRoot,
+    External,
+}
+
+impl SourceKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SourceKind::DefaultConfigRoot => "default_config_root",
+            SourceKind::External => "external",
+        }
+    }
+    pub fn from_str(s: &str) -> Option<SourceKind> {
+        match s {
+            "default_config_root" => Some(SourceKind::DefaultConfigRoot),
+            "external" => Some(SourceKind::External),
+            _ => None,
+        }
+    }
+}
+
+pub fn migration_tmp_path(target: &Path, op_id: &str) -> PathBuf {
+    target.join(format!("{}{}.tmp", MIGRATION_TMP_PREFIX, op_id))
+}
+
+pub fn migrated_archive_path(source_dir: &Path, op_id: &str) -> PathBuf {
+    source_dir.join(format!("{}{}", MIGRATED_ARCHIVE_PREFIX, op_id))
+}
+
+/// 迁移目标 preflight（§八）：在 2C-2 preflight 语义之上增加
+/// 与 source 的互斥/非嵌套校验与基于实际 DB 占用的空间要求。
+pub fn preflight_migration_target(
+    source: &Path,
+    target: &Path,
+    required_bytes: u64,
+) -> Result<(), PreflightError> {
+    if !target.is_absolute() {
+        return Err(PreflightError::NotAbsolute(
+            target.to_string_lossy().to_string(),
+        ));
+    }
+    let target_s = normalized_lower(target);
+    let source_s = normalized_lower(source);
+    if target_s == source_s {
+        return Err(PreflightError::SameAsSource(target_s));
+    }
+    if target_s.starts_with(&format!("{}\\", source_s))
+        || source_s.starts_with(&format!("{}\\", target_s))
+    {
+        return Err(PreflightError::NestedWithSource(target_s));
+    }
+    if is_unc_path(target) {
+        return Err(PreflightError::NetworkOrRemovable(target_s));
+    }
+    if looks_like_sync_folder(target) {
+        return Err(PreflightError::SyncFolder(target_s));
+    }
+    if looks_like_system_dir(target) {
+        return Err(PreflightError::SystemDirectory(target_s));
+    }
+    if !target.exists() {
+        fs::create_dir_all(target).map_err(|e| PreflightError::CreateFailed(e.to_string()))?;
+    }
+    if !target.is_dir() {
+        return Err(PreflightError::CreateFailed("目标不是目录".to_string()));
+    }
+    if !drive_is_fixed(target) {
+        return Err(PreflightError::NetworkOrRemovable(target_s));
+    }
+    // 已有一套抽屉柜数据 → 禁止迁移覆盖（转 attach / 换目录）
+    if has_formal_db(target) || has_legacy_db(target) || has_renamed_archive(target) {
+        return Err(PreflightError::HasExistingDrawerData(target_s));
+    }
+    if !dir_is_empty(target) {
+        return Err(PreflightError::NotEmpty(target_s));
+    }
+    writable_probe(target).map_err(PreflightError::NotWritable)?;
+    if let Some(free) = free_space_bytes(target) {
+        if free < required_bytes {
+            return Err(PreflightError::NoSpace(target_s));
+        }
+    }
+    Ok(())
+}
+
+/// 语义指纹：枚举 sqlite_master 正式 user tables（排除 sqlite_%）逐表 count，
+/// SHA256("table=count;...")。迁移前后必须一致。
+pub fn semantic_fingerprint(conn: &rusqlite::Connection) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    let mut stmt = conn
+        .prepare(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+        )
+        .map_err(|e| e.to_string())?;
+    let tables: Vec<String> = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    let mut line = String::new();
+    for t in &tables {
+        let n: i64 = conn
+            .query_row(
+                &format!("SELECT COUNT(*) FROM \"{}\"", t.replace('"', "\"\"")),
+                [],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        line.push_str(&format!("{}={};", t, n));
+    }
+    Ok(format!("{:x}", Sha256::digest(line.as_bytes())))
+}
+
+/// FINAL SOURCE SNAPSHOT：SQLite Online Backup API 从活连接取一致快照。
+/// 禁止 fs::copy 热 SQLite / 禁止复制 db+wal+shm 三件套 / 禁止 checkpoint+copy。
+pub fn snapshot_source_db(
+    source_conn: &rusqlite::Connection,
+    tmp_path: &Path,
+) -> Result<(), String> {
+    if tmp_path.exists() {
+        return Err("迁移临时文件已存在，拒绝覆盖".to_string());
+    }
+    let mut dest =
+        rusqlite::Connection::open(tmp_path).map_err(|e| format!("无法创建迁移临时库: {}", e))?;
+    let backup = rusqlite::backup::Backup::new(source_conn, &mut dest)
+        .map_err(|e| format!("无法开始迁移快照: {}", e))?;
+    backup
+        .run_to_completion(64, std::time::Duration::from_millis(5), None)
+        .map_err(|e| format!("迁移快照失败: {}", e))?;
+    drop(backup);
+    drop(dest);
+    Ok(())
+}
+
+/// 目标临时库验证：安全元数据 + integrity + schema + 语义指纹对账。
+pub fn verify_migration_target(
+    tmp_path: &Path,
+    source_fingerprint: &str,
+) -> Result<String, String> {
+    let db = crate::migration::open_existing_v2_db(tmp_path)
+        .map_err(|e| format!("目标库校验失败: {}", e))?;
+    let conn = db.conn.lock().map_err(|_| "目标库连接不可用".to_string())?;
+    let fp = semantic_fingerprint(&conn)?;
+    drop(conn);
+    drop(db);
+    if fp != source_fingerprint {
+        return Err("迁移后数据对账不一致（行数指纹不匹配）".to_string());
+    }
+    Ok(fp)
+}
+
+/// TARGET_ACTIVATE：checkpoint → integrity → 关连接 → File::sync_all →
+/// 确认正式位不存在 → MoveFileExW（仅 WRITE_THROUGH，**不带** REPLACE_EXISTING，
+/// 目标已存在即失败=绝不覆盖未知密码库）。
+pub fn activate_target_tmp(tmp_path: &Path, target_db: &Path) -> Result<(), String> {
+    {
+        let conn = rusqlite::Connection::open(tmp_path)
+            .map_err(|e| format!("无法打开迁移临时库: {}", e))?;
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .map_err(|e| format!("checkpoint 失败: {}", e))?;
+        let ic: String = conn
+            .query_row("PRAGMA integrity_check", [], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        if ic != "ok" {
+            return Err(format!("迁移临时库完整性校验失败: {}", ic));
+        }
+    }
+    {
+        let f = fs::OpenOptions::new()
+            .write(true)
+            .open(tmp_path)
+            .map_err(|e| format!("打开迁移临时库失败: {}", e))?;
+        f.sync_all()
+            .map_err(|e| format!("sync 迁移临时库失败: {}", e))?;
+    }
+    if target_db.exists() {
+        return Err("目标位置已出现正式数据库，拒绝覆盖（fail closed）".to_string());
+    }
+    atomic_rename_no_replace(tmp_path, target_db)
+}
+
+/// Windows 原子 rename：仅 WRITE_THROUGH（目标存在即失败）。
+#[cfg(windows)]
+fn atomic_rename_no_replace(tmp: &Path, dest: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::GetLastError;
+    use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_WRITE_THROUGH};
+    let to_wide = |p: &Path| -> Vec<u16> {
+        p.as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    };
+    let temp_w = to_wide(tmp);
+    let dest_w = to_wide(dest);
+    let ok = unsafe { MoveFileExW(temp_w.as_ptr(), dest_w.as_ptr(), MOVEFILE_WRITE_THROUGH) };
+    if ok == 0 {
+        let code = unsafe { GetLastError() };
+        return Err(format!("MoveFileExW 失败 (os error {})", code));
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn atomic_rename_no_replace(tmp: &Path, dest: &Path) -> Result<(), String> {
+    if dest.exists() {
+        return Err("目标已存在，拒绝覆盖".to_string());
+    }
+    fs::rename(tmp, dest).map_err(|e| format!("rename 失败: {}", e))
+}
+
+/// SOURCE RETIREMENT（幂等）：db→.migrated-<op_id>；wal/journal→同名归档；
+/// shm→删除（可重建瞬态）。归档 identity 冲突一律报错，绝不猜。
+pub fn retire_source_db(source_dir: &Path, op_id: &str) -> Result<(), String> {
+    let db = source_dir.join(V2_DB_FILENAME);
+    let archive = migrated_archive_path(source_dir, op_id);
+    if db.exists() {
+        if archive.exists() {
+            return Err("归档与源库并存，状态矛盾（fail closed）".to_string());
+        }
+        std::fs::rename(&db, &archive).map_err(|e| format!("源库归档失败: {}", e))?;
+    } else if !archive.exists() {
+        return Err("源库与归档均不存在，状态矛盾（fail closed）".to_string());
+    }
+    for (src_name, arch_name) in [
+        (
+            format!("{}-wal", V2_DB_FILENAME),
+            format!("{}-wal", format!("{}{}", MIGRATED_ARCHIVE_PREFIX, op_id)),
+        ),
+        (
+            format!("{}-journal", V2_DB_FILENAME),
+            format!(
+                "{}-journal",
+                format!("{}{}", MIGRATED_ARCHIVE_PREFIX, op_id)
+            ),
+        ),
+    ] {
+        let s = source_dir.join(&src_name);
+        let d = source_dir.join(&arch_name);
+        if s.exists() {
+            if d.exists() {
+                return Err(format!("归档 sidecar 冲突: {}", arch_name));
+            }
+            std::fs::rename(&s, &d).map_err(|e| format!("归档 {} 失败: {}", src_name, e))?;
+        }
+    }
+    let shm = source_dir.join(format!("{}-shm", V2_DB_FILENAME));
+    if shm.exists() {
+        fs::remove_file(&shm).map_err(|e| format!("删除 shm 失败: {}", e))?;
+    }
+    Ok(())
+}
+
+/// Guard 切换（§二十四/§二十五）：先创建新 G2（durable + 读回复核），
+/// 再删除所有其他 op_id 的 guard（G1 或旧 G2），期间允许短暂并存。
+pub fn switch_guard_to_g2(config_root: &Path, op_id: &str, target: &Path) -> Result<(), String> {
+    let new_path = write_compat_guard_g2(config_root, op_id, target)?;
+    for g in recognize_guards(config_root) {
+        // 移除：其他 op_id 的任何 guard，以及本 op_id 的 G1（G2 是唯一稳定态）
+        if g.op_id != op_id || g.kind != GuardKind::G2Stray {
+            fs::remove_file(&g.path).map_err(|e| format!("移除旧 guard 失败: {}", e))?;
+        }
+    }
+    match parse_guard_file(&new_path) {
+        Some(g) if g.op_id == op_id => Ok(()),
+        _ => Err("新 G2 guard durable 复核失败".to_string()),
+    }
+}
+
+/// 迁移 pending state 构造（§十四）：active_root 保持 source，不得提前指向 target。
+#[allow(clippy::too_many_arguments)]
+pub fn state_pending_migration(
+    source: &Path,
+    target: &Path,
+    op_id: &str,
+    phase: &str,
+    kind: SourceKind,
+    source_fingerprint: Option<&str>,
+    target_fingerprint: Option<&str>,
+    keep_last_migration: Option<LastMigration>,
+) -> DataRootState {
+    let now = chrono::Local::now().to_rfc3339();
+    DataRootState {
+        version: STATE_VERSION,
+        active_root: match kind {
+            SourceKind::DefaultConfigRoot => None,
+            SourceKind::External => Some(source.to_path_buf()),
+        },
+        pending_operation: Some(PendingOperation {
+            op_type: "migration".to_string(),
+            op_id: op_id.to_string(),
+            phase: phase.to_string(),
+            source: Some(source.to_path_buf()),
+            target: Some(target.to_path_buf()),
+            source_kind: Some(kind.as_str().to_string()),
+            source_fingerprint: source_fingerprint.map(|s| s.to_string()),
+            target_fingerprint: target_fingerprint.map(|s| s.to_string()),
+            started_at: Some(now.clone()),
+            updated_at: now,
+        }),
+        last_migration: keep_last_migration,
+        updated_at: chrono::Local::now().to_rfc3339(),
+    }
+}
+
+/// 在已加载 state 上把 pending phase 推进到下一阶段（active_root 不变）。
+pub fn state_with_migration_phase(state: &DataRootState, phase: &str) -> DataRootState {
+    let mut s = state.clone();
+    if let Some(op) = s.pending_operation.as_mut() {
+        op.phase = phase.to_string();
+        op.updated_at = chrono::Local::now().to_rfc3339();
+    }
+    s.updated_at = chrono::Local::now().to_rfc3339();
+    s
+}
+
+/// 迁移最终提交：active_root=target、pending=null、记录 last_migration。
+pub fn state_after_migration_commit(
+    previous: &DataRootState,
+    op: &PendingOperation,
+) -> DataRootState {
+    let target = op.target.clone().unwrap_or_default();
+    DataRootState {
+        version: STATE_VERSION,
+        active_root: Some(target.clone()),
+        pending_operation: None,
+        last_migration: Some(LastMigration {
+            source: op.source.clone().unwrap_or_default(),
+            archive: format!("{}{}", MIGRATED_ARCHIVE_PREFIX, op.op_id),
+            target,
+            op_id: op.op_id.clone(),
+            completed_at: chrono::Local::now().to_rfc3339(),
+        }),
+        updated_at: chrono::Local::now().to_rfc3339(),
+    }
+}
+
+/// C→D 兼容守卫 G1 写入（§十二）：Guard First——快照之前必须完成。
+/// 已存在同名 tmp：是本 operation 的合法 guard 则复用；否则 FAIL CLOSED。
+pub fn write_compat_guard_g1(config_root: &Path, op_id: &str) -> Result<PathBuf, String> {
+    let path = config_root.join(V2_TMP_FILENAME);
+    if path.exists() {
+        return match parse_guard_file(&path) {
+            Some(g) if g.op_id == op_id && g.kind == GuardKind::G1Tmp => Ok(path),
+            _ => Err("Config Root 存在非本操作的迁移临时文件，拒绝覆盖（fail closed）".to_string()),
+        };
+    }
+    let text = format!(
+        "{}
+guard_version={}
+guard_type={}
+op_id={}
+",
+        GUARD_MAGIC, GUARD_VERSION, GUARD_TYPE, op_id
+    );
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|e| format!("创建 G1 guard 失败: {}", e))?;
+    file.write_all(text.as_bytes())
+        .map_err(|e| format!("写 G1 guard 失败: {}", e))?;
+    file.sync_all()
+        .map_err(|e| format!("sync G1 guard 失败: {}", e))?;
+    drop(file);
+    match parse_guard_file(&path) {
+        Some(g) if g.op_id == op_id => Ok(path),
+        _ => Err("G1 guard durable 复核失败".to_string()),
+    }
+}
+
+/// 迁移回滚（仅限 target 激活前的失败，§二十八 A）：
+/// 删除本 operation 的 target tmp、清 pending、guard 恢复稳定态。
+/// guard 清理失败 → 返回 Err（调用方必须进入 Blocked，不得恢复普通模式）。
+pub fn rollback_migration(config_root: &Path, op: &PendingOperation) -> Result<(), String> {
+    if let Some(target) = &op.target {
+        let tmp = migration_tmp_path(target, &op.op_id);
+        if tmp.exists() {
+            fs::remove_file(&tmp).map_err(|e| format!("清理迁移临时库失败: {}", e))?;
+        }
+    }
+    match op.source_kind.as_deref().and_then(SourceKind::from_str) {
+        Some(SourceKind::DefaultConfigRoot) => {
+            // C→D：移除 G1（仅当它是本 operation 的 guard）
+            let g1 = config_root.join(V2_TMP_FILENAME);
+            if g1.exists() {
+                match parse_guard_file(&g1) {
+                    Some(g) if g.op_id == op.op_id => {
+                        fs::remove_file(&g1).map_err(|e| format!("移除 G1 失败: {}", e))?;
+                    }
+                    _ => return Err("G1 与本操作不匹配，拒绝清理（fail closed）".to_string()),
+                }
+            }
+        }
+        Some(SourceKind::External) => {
+            // D→E：保留旧 G2（target==source，仍是稳定态），无需删除
+        }
+        None => return Err("未知 source_kind，拒绝回滚".to_string()),
+    }
+    Ok(())
+}
+
+/// G1 孤儿清理判定（§九/2C-2）：Magic guard + Config Root 有正式库 +
+/// 无 state + 无归档 → 可证明是"guard 写成功但 state 未落盘"的中断。
+pub fn g1_orphan_cleanup_candidate(config_root: &Path) -> Option<PathBuf> {
+    if matches!(load_state(config_root), StateLoad::Loaded(_)) {
+        return None;
+    }
+    if !has_formal_db(config_root) || has_renamed_archive(config_root) {
+        return None;
+    }
+    let g1_path = config_root.join(V2_TMP_FILENAME);
+    let guard = parse_guard_file(&g1_path)?;
+    Some(g1_path).filter(|_| guard.op_id != "")
+}
+
+// ============================================================
 // 测试辅助（2C-1 不在生产路径写 guard；此处仅供单测构造文件）
 // ============================================================
 
@@ -1193,6 +1656,10 @@ mod tests {
             phase: "transferring".to_string(),
             source: None,
             target: None,
+            source_kind: None,
+            source_fingerprint: None,
+            target_fingerprint: None,
+            started_at: None,
             updated_at: chrono::Local::now().to_rfc3339(),
         });
         put_state(&root, &state);
@@ -1423,7 +1890,10 @@ mod tests {
 
     /// 独立的 target 目录（不得嵌在 config root 里——那会被 preflight 正确拒绝）
     fn temp_target(label: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("drawer-target-{}-{}", label, uuid::Uuid::new_v4()))
+        let d =
+            std::env::temp_dir().join(format!("drawer-target-{}-{}", label, uuid::Uuid::new_v4()));
+        fs::create_dir_all(&d).expect("建目标目录失败");
+        d
     }
 
     // 21. preflight：新目录（不存在）→ 创建并 Ok
@@ -1798,5 +2268,492 @@ mod tests {
             Resolution::UseExternal(external.clone())
         );
         assert!(!has_formal_db(&cr));
+    }
+
+    // ==================== Phase 2C-3 ====================
+
+    use SourceKind;
+
+    /// 在已有 v2 库中插入一条片段（模拟测试数据）
+    fn add_snippet_row(dir: &Path, title: &str) {
+        let db =
+            crate::migration::open_existing_v2_db(&dir.join(V2_DB_FILENAME)).expect("打开库失败");
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO snippets (title, content, language, created_at, updated_at) VALUES (?1, ?2, 'text', 1, 1)",
+            rusqlite::params![title, "content"],
+        )
+        .expect("插入片段失败");
+    }
+
+    fn snippet_count_by_title(dir: &Path, title: &str) -> i64 {
+        let db = crate::migration::open_existing_v2_db(&dir.join(V2_DB_FILENAME)).unwrap();
+        let conn = db.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM snippets WHERE title = ?1",
+            rusqlite::params![title],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    // 42. C→D 迁移完整序列（核心函数级端到端）
+    #[test]
+    fn t42_migration_c_to_d_full() {
+        let cr = temp_root("t42c");
+        let target = temp_target("t42");
+        make_valid_v2_db(&cr);
+        add_snippet_row(&cr, "first-batch");
+
+        let source_db = cr.join(V2_DB_FILENAME);
+        let src = crate::migration::open_existing_v2_db(&source_db).unwrap();
+        let source_fp = {
+            let conn = src.conn.lock().unwrap();
+            semantic_fingerprint(&conn).unwrap()
+        };
+        assert_eq!(
+            preflight_migration_target(&cr, &target, 64 * 1024 * 1024),
+            Ok(())
+        );
+        // Guard First（C→D：G1）
+        write_compat_guard_g1(&cr, "op42").unwrap();
+        save_state(
+            &cr,
+            &state_pending_migration(
+                &cr,
+                &target,
+                "op42",
+                "transferring",
+                SourceKind::DefaultConfigRoot,
+                Some(&source_fp),
+                None,
+                None,
+            ),
+        )
+        .unwrap();
+        let tmp = migration_tmp_path(&target, "op42");
+        {
+            let conn = src.conn.lock().unwrap();
+            snapshot_source_db(&conn, &tmp).unwrap();
+        }
+        let target_fp = verify_migration_target(&tmp, &source_fp).unwrap();
+        save_state(
+            &cr,
+            &state_pending_migration(
+                &cr,
+                &target,
+                "op42",
+                "target_verified",
+                SourceKind::DefaultConfigRoot,
+                Some(&source_fp),
+                Some(&target_fp),
+                None,
+            ),
+        )
+        .unwrap();
+        // 模拟进程边界：drop source 连接后走启动收尾
+        drop(src);
+        let op = match load_state(&cr) {
+            StateLoad::Loaded(s) => s.pending_operation.unwrap(),
+            _ => panic!(),
+        };
+        match crate::try_complete_pending_migration(&cr, &op) {
+            crate::MigrationResume::Completed(t) => assert_eq!(t, target),
+            other => panic!("期望 Completed，实际 {:?}", other),
+        }
+        assert!(!source_db.exists(), "source 正式库应已归档");
+        assert!(migrated_archive_path(&cr, "op42").exists());
+        assert!(target.join(V2_DB_FILENAME).exists());
+        let guards = recognize_guards(&cr);
+        assert_eq!(guards.len(), 1, "G1 应已移除、仅剩 G2");
+        assert_eq!(guards[0].kind, GuardKind::G2Stray);
+        assert_eq!(guards[0].op_id, "op42");
+        match load_state(&cr) {
+            StateLoad::Loaded(s) => {
+                assert_eq!(s.active_root.as_deref(), Some(target.as_path()));
+                assert!(s.pending_operation.is_none());
+                let lm = s.last_migration.expect("应记录 last_migration");
+                assert_eq!(lm.op_id, "op42");
+                assert!(lm.archive.contains("migrated-op42"));
+            }
+            other => panic!("期望 Loaded，实际 {:?}", other),
+        }
+        assert_eq!(
+            resolve_data_root(&cr),
+            Resolution::UseExternal(target.clone())
+        );
+        assert_eq!(snippet_count_by_title(&target, "first-batch"), 1);
+    }
+
+    // 43. D→E 迁移（两 G2 过渡 + 两批数据保全）
+    #[test]
+    fn t43_migration_d_to_e_full() {
+        let cr = temp_root("t43c");
+        let d_root = temp_target("t43d");
+        let e_root = temp_target("t43e");
+        make_valid_v2_db(&d_root);
+        add_snippet_row(&d_root, "batch-1");
+        save_state(&cr, &state_active_external(&d_root)).unwrap();
+        write_compat_guard_g2(&cr, "op-old", &d_root).unwrap();
+
+        let src = crate::migration::open_existing_v2_db(&d_root.join(V2_DB_FILENAME)).unwrap();
+        let source_fp = {
+            let conn = src.conn.lock().unwrap();
+            semantic_fingerprint(&conn).unwrap()
+        };
+        add_snippet_row(&d_root, "batch-2"); // 第二批数据（快照前新增）
+        let source_fp = {
+            let conn = src.conn.lock().unwrap();
+            semantic_fingerprint(&conn).unwrap()
+        };
+        preflight_migration_target(&d_root, &e_root, 64 * 1024 * 1024).unwrap();
+        save_state(
+            &cr,
+            &state_pending_migration(
+                &d_root,
+                &e_root,
+                "op43",
+                "transferring",
+                SourceKind::External,
+                Some(&source_fp),
+                None,
+                None,
+            ),
+        )
+        .unwrap();
+        let tmp = migration_tmp_path(&e_root, "op43");
+        {
+            let conn = src.conn.lock().unwrap();
+            snapshot_source_db(&conn, &tmp).unwrap();
+        }
+        let target_fp = verify_migration_target(&tmp, &source_fp).unwrap();
+        save_state(
+            &cr,
+            &state_pending_migration(
+                &d_root,
+                &e_root,
+                "op43",
+                "target_verified",
+                SourceKind::External,
+                Some(&source_fp),
+                Some(&target_fp),
+                None,
+            ),
+        )
+        .unwrap();
+        drop(src);
+        let op = match load_state(&cr) {
+            StateLoad::Loaded(s) => s.pending_operation.unwrap(),
+            _ => panic!(),
+        };
+        match crate::try_complete_pending_migration(&cr, &op) {
+            crate::MigrationResume::Completed(t) => assert_eq!(t, e_root),
+            other => panic!("期望 Completed，实际 {:?}", other),
+        }
+        assert_eq!(snippet_count_by_title(&e_root, "batch-1"), 1);
+        assert_eq!(snippet_count_by_title(&e_root, "batch-2"), 1);
+        assert!(migrated_archive_path(&d_root, "op43").exists());
+        assert!(!d_root.join(V2_DB_FILENAME).exists());
+        let guards = recognize_guards(&cr);
+        assert_eq!(guards.len(), 1);
+        assert_eq!(guards[0].op_id, "op43");
+        assert_eq!(guards[0].target.as_deref(), Some(e_root.as_path()));
+        match load_state(&cr) {
+            StateLoad::Loaded(s) => assert_eq!(s.active_root.as_deref(), Some(e_root.as_path())),
+            _ => panic!(),
+        }
+    }
+
+    // 44. 激活期崩溃矩阵（§二十 A-D）
+    #[test]
+    fn t44_activation_crash_matrix() {
+        // B: state=target_verified、tmp 已不见、正式 target 存在 → 继续
+        let cr = temp_root("t44b");
+        let target = temp_target("t44b");
+        make_valid_v2_db(&cr);
+        let src = crate::migration::open_existing_v2_db(&cr.join(V2_DB_FILENAME)).unwrap();
+        let source_fp = {
+            let conn = src.conn.lock().unwrap();
+            semantic_fingerprint(&conn).unwrap()
+        };
+        let tmp = migration_tmp_path(&target, "op44b");
+        {
+            let conn = src.conn.lock().unwrap();
+            snapshot_source_db(&conn, &tmp).unwrap();
+        }
+        let target_fp = verify_migration_target(&tmp, &source_fp).unwrap();
+        save_state(
+            &cr,
+            &state_pending_migration(
+                &cr,
+                &target,
+                "op44b",
+                "target_verified",
+                SourceKind::DefaultConfigRoot,
+                Some(&source_fp),
+                Some(&target_fp),
+                None,
+            ),
+        )
+        .unwrap();
+        activate_target_tmp(&tmp, &target.join(V2_DB_FILENAME)).unwrap();
+        drop(src);
+        let op = match load_state(&cr) {
+            StateLoad::Loaded(s) => s.pending_operation.unwrap(),
+            _ => panic!(),
+        };
+        assert!(matches!(
+            crate::try_complete_pending_migration(&cr, &op),
+            crate::MigrationResume::Completed(_)
+        ));
+
+        // C: tmp 与正式库并存 → Failed
+        let cr2 = temp_root("t44c");
+        let target2 = temp_target("t44c");
+        make_valid_v2_db(&cr2);
+        let src2 = crate::migration::open_existing_v2_db(&cr2.join(V2_DB_FILENAME)).unwrap();
+        let fp2 = {
+            let conn = src2.conn.lock().unwrap();
+            semantic_fingerprint(&conn).unwrap()
+        };
+        let tmp2 = migration_tmp_path(&target2, "op44c");
+        {
+            let conn = src2.conn.lock().unwrap();
+            snapshot_source_db(&conn, &tmp2).unwrap();
+        }
+        fs::write(target2.join(V2_DB_FILENAME), b"???").unwrap();
+        save_state(
+            &cr2,
+            &state_pending_migration(
+                &cr2,
+                &target2,
+                "op44c",
+                "target_verified",
+                SourceKind::DefaultConfigRoot,
+                Some(&fp2),
+                Some(&fp2),
+                None,
+            ),
+        )
+        .unwrap();
+        let op2 = match load_state(&cr2) {
+            StateLoad::Loaded(s) => s.pending_operation.unwrap(),
+            _ => panic!(),
+        };
+        assert!(matches!(
+            crate::try_complete_pending_migration(&cr2, &op2),
+            crate::MigrationResume::Failed(_)
+        ));
+
+        // D: tmp 与正式库都不存在 → 回滚 SourceCanonical
+        let cr3 = temp_root("t44d");
+        let target3 = temp_target("t44d");
+        make_valid_v2_db(&cr3);
+        save_state(
+            &cr3,
+            &state_pending_migration(
+                &cr3,
+                &target3,
+                "op44d",
+                "transferring",
+                SourceKind::DefaultConfigRoot,
+                None,
+                None,
+                None,
+            ),
+        )
+        .unwrap();
+        write_compat_guard_g1(&cr3, "op44d").unwrap();
+        let op3 = match load_state(&cr3) {
+            StateLoad::Loaded(s) => s.pending_operation.unwrap(),
+            _ => panic!(),
+        };
+        assert!(matches!(
+            crate::try_complete_pending_migration(&cr3, &op3),
+            crate::MigrationResume::SourceCanonical
+        ));
+        assert!(!cr3.join(V2_TMP_FILENAME).exists(), "G1 应回滚移除");
+        match load_state(&cr3) {
+            StateLoad::Loaded(s) => {
+                assert!(s.pending_operation.is_none());
+                assert!(s.active_root.is_none());
+            }
+            _ => panic!(),
+        }
+        assert!(matches!(
+            crate::migration::resolve_startup_db(&cr3, true).selection,
+            crate::migration::DbSelection::V2(_)
+        ));
+    }
+
+    // 45. 指纹对账：行数不同必须检出
+    #[test]
+    fn t45_fingerprint_detects_row_diff() {
+        let cr = temp_root("t45");
+        make_valid_v2_db(&cr);
+        let fp1 = {
+            let db = crate::migration::open_existing_v2_db(&cr.join(V2_DB_FILENAME)).unwrap();
+            let conn = db.conn.lock().unwrap();
+            semantic_fingerprint(&conn).unwrap()
+        };
+        add_snippet_row(&cr, "extra");
+        let fp2 = {
+            let db = crate::migration::open_existing_v2_db(&cr.join(V2_DB_FILENAME)).unwrap();
+            let conn = db.conn.lock().unwrap();
+            semantic_fingerprint(&conn).unwrap()
+        };
+        assert_ne!(fp1, fp2);
+    }
+
+    // 46. 迁移 preflight：同位/嵌套/已有数据/空目录
+    #[test]
+    fn t46_migration_preflight_rules() {
+        let d_root = temp_target("t46d");
+        fs::create_dir_all(&d_root).unwrap();
+        assert!(matches!(
+            preflight_migration_target(&d_root, &d_root, 1024),
+            Err(PreflightError::SameAsSource(_))
+        ));
+        let nested = d_root.join("inside");
+        assert!(matches!(
+            preflight_migration_target(&d_root, &nested, 1024),
+            Err(PreflightError::NestedWithSource(_))
+        ));
+        let has_data = temp_target("t46-hasdata");
+        fs::write(has_data.join(V2_DB_FILENAME), b"x").unwrap();
+        assert!(matches!(
+            preflight_migration_target(&d_root, &has_data, 1024),
+            Err(PreflightError::HasExistingDrawerData(_))
+        ));
+        let clean = temp_target("t46-clean");
+        assert_eq!(preflight_migration_target(&d_root, &clean, 1024), Ok(()));
+    }
+
+    // 47. Gate 并发语义（shared 并存 / exclusive 互斥，无死锁）
+    #[test]
+    fn t47_gate_concurrency_semantics() {
+        let gate = std::sync::RwLock::new(());
+        {
+            let r1 = gate.try_read().unwrap();
+            let r2 = gate.try_read().unwrap();
+            assert!(gate.try_write().is_err(), "读持有期间 exclusive 必须失败");
+            drop(r1);
+            drop(r2);
+        }
+        {
+            let w = gate.try_write().unwrap();
+            assert!(
+                gate.try_read().is_err(),
+                "exclusive 持有期间 shared 必须失败"
+            );
+            assert!(gate.try_write().is_err());
+            drop(w);
+        }
+        {
+            let w = gate.try_write().unwrap();
+            drop(w);
+            let r = gate.try_read().unwrap();
+            drop(r);
+        }
+    }
+
+    // 48. 目标激活 rename：目标存在时必须失败（绝不 REPLACE 用户库）
+    #[test]
+    fn t48_activate_never_replaces() {
+        let dir = temp_root("t48");
+        let tmp = dir.join("a.tmp");
+        let dst = dir.join("b.db");
+        // tmp 必须是合法 SQLite 库（激活流程会做 checkpoint/integrity）
+        rusqlite::Connection::open(&tmp)
+            .unwrap()
+            .execute_batch("CREATE TABLE x(a)")
+            .unwrap();
+        fs::write(&dst, b"existing-user-db").unwrap();
+        assert!(
+            activate_target_tmp(&tmp, &dst).is_err(),
+            "目标已存在必须失败"
+        );
+        assert_eq!(
+            fs::read(&dst).unwrap(),
+            b"existing-user-db",
+            "用户库不得被覆盖"
+        );
+        fs::remove_file(&dst).unwrap();
+        activate_target_tmp(&tmp, &dst).unwrap();
+        assert!(dst.exists());
+        assert!(!tmp.exists());
+    }
+
+    // 49. 迁移回滚：pre-activation 失败后 target tmp 清除、guard 恢复
+    #[test]
+    fn t49_rollback_pre_activation() {
+        let cr = temp_root("t49c");
+        let target = temp_target("t49");
+        make_valid_v2_db(&cr);
+        write_compat_guard_g1(&cr, "op49").unwrap();
+        let tmp = migration_tmp_path(&target, "op49");
+        fs::write(&tmp, b"partial").unwrap();
+        let op = state_pending_migration(
+            &cr,
+            &target,
+            "op49",
+            "transferring",
+            SourceKind::DefaultConfigRoot,
+            None,
+            None,
+            None,
+        )
+        .pending_operation
+        .unwrap();
+        rollback_migration(&cr, &op).unwrap();
+        assert!(!tmp.exists());
+        assert!(!cr.join(V2_TMP_FILENAME).exists(), "G1 应回滚移除");
+        let cr2 = temp_root("t49b");
+        let d_root = temp_target("t49d");
+        write_compat_guard_g2(&cr2, "op-old", &d_root).unwrap();
+        let op2 = state_pending_migration(
+            &d_root,
+            &temp_target("t49e"),
+            "op49b",
+            "transferring",
+            SourceKind::External,
+            None,
+            None,
+            None,
+        )
+        .pending_operation
+        .unwrap();
+        rollback_migration(&cr2, &op2).unwrap();
+        assert!(
+            recognize_guards(&cr2).iter().any(|g| g.op_id == "op-old"),
+            "旧 G2 必须保留"
+        );
+    }
+
+    // 50. G1 孤儿清理判定
+    #[test]
+    fn t50_g1_orphan_cleanup_candidate() {
+        let cr = temp_root("t50a");
+        make_valid_v2_db(&cr);
+        let g1 = write_compat_guard_g1(&cr, "op50").unwrap();
+        assert_eq!(g1_orphan_cleanup_candidate(&cr).as_ref(), Some(&g1));
+        save_state(&cr, &state_active_external(&temp_target("t50x"))).unwrap();
+        assert!(
+            g1_orphan_cleanup_candidate(&cr).is_none(),
+            "有 state 不得当作孤儿"
+        );
+        let cr2 = temp_root("t50b");
+        write_compat_guard_g1(&cr2, "op50b").unwrap();
+        assert!(
+            g1_orphan_cleanup_candidate(&cr2).is_none(),
+            "无正式库不得当作 G1 孤儿"
+        );
+        let cr3 = temp_root("t50c");
+        make_valid_v2_db(&cr3);
+        fs::write(cr3.join(V2_TMP_FILENAME), b"real legacy tmp").unwrap();
+        assert!(
+            g1_orphan_cleanup_candidate(&cr3).is_none(),
+            "真实 tmp 不得误判"
+        );
     }
 }

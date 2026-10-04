@@ -11,6 +11,9 @@ use crate::AppState;
 // ============================================================
 #[tauri::command]
 pub fn list_trash(state: State<AppState>) -> Result<Vec<db::TrashItem>, String> {
+    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_read()?;
+
     let db = state.db.lock().unwrap();
     db.list_trash().map_err(|e| e.to_string())
 }
@@ -20,6 +23,9 @@ pub fn list_trash(state: State<AppState>) -> Result<Vec<db::TrashItem>, String> 
 // ============================================================
 #[tauri::command]
 pub fn restore_from_trash(state: State<AppState>, table: String, id: i64) -> Result<usize, String> {
+    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_read()?;
+
     let db = state.db.lock().unwrap();
     db.restore(&table, id).map_err(|e| e.to_string())
 }
@@ -29,6 +35,9 @@ pub fn restore_from_trash(state: State<AppState>, table: String, id: i64) -> Res
 // ============================================================
 #[tauri::command]
 pub fn permanent_delete(state: State<AppState>, table: String, id: i64) -> Result<usize, String> {
+    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_read()?;
+
     let db = state.db.lock().unwrap();
     db.hard_delete(&table, id).map_err(|e| e.to_string())
 }
@@ -38,6 +47,9 @@ pub fn permanent_delete(state: State<AppState>, table: String, id: i64) -> Resul
 // ============================================================
 #[tauri::command]
 pub fn empty_trash(state: State<AppState>, table: String) -> Result<usize, String> {
+    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_read()?;
+
     let db = state.db.lock().unwrap();
     db.empty_trash(&table).map_err(|e| e.to_string())
 }
@@ -47,6 +59,9 @@ pub fn empty_trash(state: State<AppState>, table: String) -> Result<usize, Strin
 // ============================================================
 #[tauri::command]
 pub fn cleanup_trash(state: State<AppState>, retention_days: i64) -> Result<Vec<(String, usize)>, String> {
+    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_read()?;
+
     let db = state.db.lock().unwrap();
     let retention_ms = retention_days * 24 * 60 * 60 * 1000;
     let raw = db.cleanup_expired_trash(retention_ms).map_err(|e| e.to_string())?;
@@ -58,6 +73,9 @@ pub fn cleanup_trash(state: State<AppState>, retention_days: i64) -> Result<Vec<
 // ============================================================
 #[tauri::command]
 pub fn trash_count(state: State<AppState>) -> Result<i64, String> {
+    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_read()?;
+
     let db_guard = state.db.lock().unwrap();
     let conn = db_guard.conn.lock().unwrap();
     let n: i64 = conn

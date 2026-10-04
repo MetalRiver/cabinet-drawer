@@ -14,6 +14,9 @@ pub fn list_snippets(
     state: State<AppState>,
     query: Option<String>,
 ) -> Result<Vec<db::SnippetMeta>, String> {
+    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_read()?;
+
     let db = state.db.lock().unwrap();
     db.list_snippets(&query.unwrap_or_default())
         .map_err(|e| e.to_string())
@@ -30,6 +33,9 @@ pub fn create_snippet(
     language: Option<String>,
     tags: Option<String>,
 ) -> Result<i64, String> {
+    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_read()?;
+
     let db = state.db.lock().unwrap();
     db.create_snippet(
         &title,
@@ -52,6 +58,9 @@ pub fn update_snippet(
     language: Option<String>,
     tags: Option<String>,
 ) -> Result<(), String> {
+    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_read()?;
+
     let db = state.db.lock().unwrap();
     db.update_snippet(
         id,
@@ -68,6 +77,9 @@ pub fn update_snippet(
 // ============================================================
 #[tauri::command]
 pub fn delete_snippet(state: State<AppState>, id: i64) -> Result<(), String> {
+    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_read()?;
+
     let db = state.db.lock().unwrap();
     db.soft_delete("snippets", id).map_err(|e| e.to_string())?;
     Ok(())
@@ -78,6 +90,9 @@ pub fn delete_snippet(state: State<AppState>, id: i64) -> Result<(), String> {
 // ============================================================
 #[tauri::command]
 pub fn get_snippet_content(state: State<AppState>, id: i64) -> Result<String, String> {
+    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_read()?;
+
     let db = state.db.lock().unwrap();
     db.get_snippet_content(id)
         .map_err(|e| e.to_string())?
@@ -89,6 +104,9 @@ pub fn get_snippet_content(state: State<AppState>, id: i64) -> Result<String, St
 // ============================================================
 #[tauri::command]
 pub fn record_snippet_usage(state: State<AppState>, id: i64) -> Result<(), String> {
+    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_read()?;
+
     let db = state.db.lock().unwrap();
     db.record_snippet_usage(id).map_err(|e| e.to_string())
 }

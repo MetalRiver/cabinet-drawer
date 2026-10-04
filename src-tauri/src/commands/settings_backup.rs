@@ -49,6 +49,9 @@ fn verify_master_password_inner(
 // ============================================================
 #[tauri::command]
 pub fn factory_reset(state: State<AppState>, app: AppHandle) -> Result<(), String> {
+    // [data-gate:exclusive] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_write()?;
+
     state.require_legacy_model()?;
     let _ = state;
     let app_clone = app.clone();
@@ -103,6 +106,9 @@ pub fn export_encrypted_backup(
     state: State<AppState>,
     master_password: String,
 ) -> Result<ExportResult, String> {
+    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_read()?;
+
     let master_password = Zeroizing::new(master_password);
 
     // 1. 弹窗选保存路径
@@ -231,6 +237,9 @@ pub fn import_encrypted_backup(
     master_password: String,
     policy: db::ImportConflictPolicy,
 ) -> Result<db::ImportStats, String> {
+    // [data-gate:exclusive] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_write()?;
+
     let master_password = Zeroizing::new(master_password);
     if state.security_model() == SecurityModel::StableDekV2 {
         let restored = backup_v2::restore_v2_from_path(
@@ -499,6 +508,8 @@ pub fn migrate_data(
 // ============================================================
 #[tauri::command]
 pub fn hard_purge_trash(state: State<AppState>) -> Result<usize, String> {
+    // [data-gate:shared] Phase 2C-3 统一数据操作门
+    let _data_gate = state.data_read()?;
     state.require_legacy_model()?;
     let db = state.db.lock().unwrap();
     let mut total = 0;
@@ -521,12 +532,18 @@ pub fn hard_purge_trash(state: State<AppState>) -> Result<usize, String> {
 // ============================================================
 #[tauri::command]
 pub fn get_setting(state: State<AppState>, key: String) -> Result<Option<String>, String> {
+    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_read()?;
+
     state.require_legacy_model()?;
     let db = state.db.lock().unwrap();
     db.get_setting(&key).map_err(|e| e.to_string())
 }
 #[tauri::command]
 pub fn set_setting(state: State<AppState>, key: String, value: String) -> Result<(), String> {
+    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_read()?;
+
     state.require_legacy_model()?;
     let db = state.db.lock().unwrap();
     db.set_setting(&key, &value).map_err(|e| e.to_string())

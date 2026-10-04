@@ -47,6 +47,9 @@ pub fn prepare_legacy_migration(
     state: State<AppState>,
     master_password: String,
 ) -> Result<LegacyMigrationPreparation, String> {
+    // [data-gate:exclusive] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_write()?;
+
     let master_password = Zeroizing::new(master_password);
     state.prepare_legacy_migration(master_password.as_str())
 }
@@ -57,6 +60,9 @@ pub fn confirm_legacy_migration(
     migration_token: String,
     confirmation_words: Vec<String>,
 ) -> Result<(), String> {
+    // [data-gate:exclusive] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_write()?;
+
     let confirmation_words = Zeroizing::new(confirmation_words);
     state.confirm_legacy_migration(&migration_token, confirmation_words.as_slice())
 }
@@ -66,6 +72,9 @@ pub fn cancel_legacy_migration(
     state: State<AppState>,
     migration_token: String,
 ) -> Result<(), String> {
+    // [data-gate:exclusive] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_write()?;
+
     state.cancel_legacy_migration(&migration_token)
 }
 
@@ -89,6 +98,9 @@ pub fn initialize_v2_security(
     state: State<AppState>,
     master_password: String,
 ) -> Result<Vec<String>, String> {
+    // [data-gate:exclusive] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_write()?;
+
     let master_password = Zeroizing::new(master_password);
     if master_password.len() < 6 {
         return Err("主密码长度至少 6 位".to_string());
@@ -104,6 +116,9 @@ pub fn finalize_v2_security(
     state: State<AppState>,
     init_ctx: State<crate::data_root::InitContext>,
 ) -> Result<(), String> {
+    // [data-gate:exclusive] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_write()?;
+
     use tauri::Manager;
     // Phase 2C-2：自定义 Data Root 时，finalize 前先落 recovery_confirmed
     // （此刻起崩溃都可由启动收尾安全接管；恢复词从未写入任何持久化位置）
@@ -157,6 +172,9 @@ pub fn recover_v2_with_phrase(
     recovery_phrase: String,
     new_master_password: String,
 ) -> Result<(), String> {
+    // [data-gate:exclusive] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_write()?;
+
     let recovery_phrase = Zeroizing::new(recovery_phrase);
     let new_master_password = Zeroizing::new(new_master_password);
     state.recover_v2_with_phrase_and_store(
@@ -174,6 +192,9 @@ pub fn change_v2_master_password(
     current_password: String,
     new_password: String,
 ) -> Result<(), String> {
+    // [data-gate:exclusive] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_write()?;
+
     let current_password = Zeroizing::new(current_password);
     let new_password = Zeroizing::new(new_password);
     state.change_v2_master_password(current_password.as_str(), new_password.as_str())
@@ -186,6 +207,9 @@ pub fn change_v2_master_password(
 pub fn prepare_v2_recovery_rotation(
     state: State<AppState>,
 ) -> Result<RecoveryRotationPreparation, String> {
+    // [data-gate:exclusive] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_write()?;
+
     state.prepare_v2_recovery_rotation()
 }
 
@@ -195,6 +219,9 @@ pub fn confirm_v2_recovery_rotation(
     rotation_token: String,
     confirmation_words: Vec<String>,
 ) -> Result<(), String> {
+    // [data-gate:exclusive] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_write()?;
+
     let confirmation_words = Zeroizing::new(confirmation_words);
     state.confirm_v2_recovery_rotation(&rotation_token, confirmation_words.as_slice())
 }
@@ -204,6 +231,9 @@ pub fn cancel_v2_recovery_rotation(
     state: State<AppState>,
     rotation_token: String,
 ) -> Result<(), String> {
+    // [data-gate:exclusive] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_write()?;
+
     state.cancel_v2_recovery_rotation(&rotation_token)
 }
 
@@ -216,6 +246,9 @@ pub fn setup_master_password(
     master_password: String,
     recovery_phrase: Vec<String>,
 ) -> Result<(), String> {
+    // [data-gate:exclusive] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_write()?;
+
     state.require_legacy_model()?;
     ensure_not_legacy_startup(&state)?;
     if master_password.len() < 6 {
@@ -249,6 +282,9 @@ pub fn setup_master_password(
 // 生产语义唯一实现 = AppState::unlock_app_core（可测）。
 #[tauri::command]
 pub fn unlock_app(state: State<AppState>, master_password: String) -> Result<Vec<String>, String> {
+    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_read()?;
+
     state.unlock_app_core(&master_password)
 }
 
@@ -268,6 +304,9 @@ pub fn change_master_password(
     current_password: String,
     new_password: String,
 ) -> Result<ReencryptStats, String> {
+    // [data-gate:exclusive] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_write()?;
+
     state.require_legacy_model()?;
     ensure_not_legacy_startup(&state)?;
     if new_password.len() < 6 {
@@ -381,6 +420,9 @@ pub fn lock_app(state: State<AppState>) {
 // ============================================================
 #[tauri::command]
 pub fn has_second_password(state: State<AppState>) -> bool {
+    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = match state.data_read() { Ok(g) => g, Err(_) => return false }; // gate 不可用=fail closed
+
     has_second_password_core(&state)
 }
 
@@ -404,6 +446,9 @@ pub fn change_second_password(
     old_verify_input: String,
     new_second_password_opt: Option<String>,
 ) -> Result<(), String> {
+    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_read()?;
+
     state.require_legacy_model()?;
     ensure_not_legacy_startup(&state)?;
     let db = state.db.lock().map_err(|e| e.to_string())?;
@@ -479,6 +524,9 @@ pub fn change_second_password(
 // ============================================================
 #[tauri::command]
 pub fn verify_password_for_pw_view(state: State<AppState>, input_password: String) -> bool {
+    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = match state.data_read() { Ok(g) => g, Err(_) => return false }; // gate 不可用=fail closed
+
     let input_password = Zeroizing::new(input_password);
     verify_password_for_pw_view_core(&state, input_password.as_str())
 }
@@ -576,6 +624,9 @@ pub fn rescue_passwords_with_master(
     state: State<AppState>,
     old_master_password: String,
 ) -> Result<RescueStats, String> {
+    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+    let _data_gate = state.data_read()?;
+
     state.require_legacy_model()?;
     ensure_not_legacy_startup(&state)?;
     if old_master_password.len() < 6 {
@@ -635,5 +686,6 @@ pub fn rescue_passwords_with_master(
 // ============================================================
 #[tauri::command]
 pub fn verify_master_password(state: State<AppState>, master_password: String) -> bool {
+    // [data-gate:shared] 由内部委托的 verify_password_for_pw_view 统一持有（避免重复取锁）
     verify_password_for_pw_view(state, master_password)
 }

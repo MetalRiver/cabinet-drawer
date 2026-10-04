@@ -11,6 +11,8 @@ import {
   setWindowSize,
   setWindowPosition,
   getDataDir,
+  setupBeginMigration,
+  getDataRootSummary,
   restartApp,
   getAppVersion,
   pickPath,
@@ -82,6 +84,43 @@ async function copyDataDir() {
   } catch (e) { console.error("复制失败", e); }
 }
 onMounted(loadDataDir);
+
+// ========== Phase 2C-3：更改数据存储位置（事务式迁移） ==========
+const migrationTarget = ref<string>("");
+const migrationBusy = ref(false);
+const migrationRunning = ref(false);
+const migrationDone = ref<{ source: string; target: string; archive: string } | null>(null);
+async function loadMigrationInfo() {
+  try {
+    const s = await getDataRootSummary();
+    if (s.last_migration) migrationDone.value = s.last_migration;
+  } catch { /* 摘要不可用时静默 */ }
+}
+onMounted(loadMigrationInfo);
+async function migrationPick() {
+  const p = await pickPath({ mode: "folder", title: "选择新的数据存储位置（需为空目录）" });
+  if (p) {
+    if (p.trim().toLowerCase() === dataDir.value.trim().toLowerCase()) {
+      migrationTarget.value = "";
+      alert("新位置与当前数据位置相同。");
+      return;
+    }
+    migrationTarget.value = p;
+  }
+}
+async function migrationStart() {
+  if (migrationBusy.value || !migrationTarget.value) return;
+  migrationBusy.value = true;
+  migrationRunning.value = true;
+  try {
+    // 成功后后端会自行重启应用（迁移收尾在新进程 setup 内完成）
+    await setupBeginMigration(migrationTarget.value);
+  } catch (e) {
+    migrationRunning.value = false;
+    migrationBusy.value = false;
+    alert(String(e));
+  }
+}
 
 // ========== 行为（自动锁定 / 临时内容 / 剪贴板）==========
 const autoLockMinutes = ref(widgetStore.autoLockMinutes);
@@ -994,6 +1033,42 @@ onMounted(() => {
           软件安装位置与数据存储位置相互独立：重新安装软件或改变安装位置不会自动移动这些数据。<br />
           建议定期使用加密备份，并将重要备份保存在非系统盘。
         </p>
+
+        <!-- Phase 2C-3：更改数据存储位置（事务式迁移 C→D / D→E） -->
+        <div class="migration-block" v-if="!migrationRunning && !migrationDone">
+          <button class="btn-mini tap" @click="migrationPick" data-interactive :disabled="migrationBusy">
+            🚚 更改数据存储位置
+          </button>
+        </div>
+
+        <!-- 迁移确认面板 -->
+        <div class="migration-confirm" v-if="migrationTarget && !migrationRunning">
+          <p><b>当前位置：</b><code>{{ dataDir }}</code></p>
+          <p><b>新位置：</b><code>{{ migrationTarget }}</code></p>
+          <p class="hint-left">
+            迁移过程中抽屉柜会暂时停止数据操作。<br />
+            新位置验证成功前不会删除原数据。<br />
+            迁移完成后应用会自动重新启动。<br />
+            发生异常时会保留原数据并阻止继续写入。
+          </p>
+          <div class="action-row">
+            <button class="btn-mini tap" @click="migrationTarget = ''" data-interactive>取消</button>
+            <button class="btn-primary" @click="migrationStart" data-interactive :disabled="migrationBusy">
+              开始迁移
+            </button>
+          </div>
+        </div>
+
+        <!-- 迁移进行中（真实阶段提示，无假进度条） -->
+        <div class="migration-running" v-if="migrationRunning">
+          <p>⏳ 正在迁移数据：复制数据 → 验证数据一致性 → 完成后自动重启。<br />请勿关闭抽屉柜。</p>
+        </div>
+
+        <!-- 迁移成功后的保留提示（一次性展示） -->
+        <div class="migration-done" v-if="migrationDone">
+          <p>✅ 数据存储位置已更改：{{ migrationDone.target }}<br />
+          原位置数据（{{ migrationDone.source }}）已停止使用，并保留作为安全副本（{{ migrationDone.archive }}）。</p>
+        </div>
       </div>
 
       <!-- 迁移卡片已移除（Phase 2A 2026-10）：migrate_data fail closed，

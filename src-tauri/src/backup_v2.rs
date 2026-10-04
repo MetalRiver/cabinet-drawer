@@ -592,6 +592,8 @@ mod tests {
             pending_recovery_rotation: Mutex::new(None),
             pending_legacy_migration: std::sync::Mutex::new(None),
             master_wrap_gate: Mutex::new(()),
+            data_op_gate: std::sync::RwLock::new(()),
+            migration_freeze: std::sync::atomic::AtomicBool::new(false),
             key: Mutex::new(Some(ActiveKey::StableDek(Zeroizing::new(expected_dek.clone())))),
         };
         (dir, state, words, expected_dek)
