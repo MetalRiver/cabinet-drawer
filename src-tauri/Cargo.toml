@@ -1,6 +1,6 @@
 [package]
 name = "drawer-box"
-version = "0.3.2"
+version = "0.4.0"
 description = "抽屉柜 - 桌面面板"
 license = "GPL-3.0-only"
 authors = ["Aa990602 <Aa990602@users.noreply.gitee.com>"]
@@ -46,6 +46,8 @@ zstd = "0.13"
 # C1-1：关掉默认 features（默认 10+ 种格式解码器/编码器，我们只用 PNG），只保留 png
 #      预估减 1~2MB exe 体积，功能完全不受影响
 image = { version = "0.25", default-features = false, features = ["png"] }
+tauri-plugin-updater = "2.13.1"
+tauri-plugin-process = "2.4.0"
 
 # Windows 专用：贴边自动隐藏 + ShellExecuteW 启动软件 + 抽 .exe 图标 + 文件选择对话框
 [target."cfg(windows)".dependencies]

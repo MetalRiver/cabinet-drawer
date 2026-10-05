@@ -499,18 +499,54 @@ async function onRestartApp() {
 // 已移除（Phase 2A 2026-10）：migrate_data 后端 fail closed（复制运行中 SQLite
 // 无一致性保证，且新路径不被启动仲裁采用=迁移无效）。数据目录迁移另行独立设计。
 
-// ========== 应用更新 ==========
+// ========== 应用更新（Phase 2E：官方 Tauri updater，签名校验 + 用户确认安装）==========
 const versionInfo = ref<string>("");
 const updateBusy = ref(false);
 const updateResult = ref<string>("");
+const updateReady = ref<null | { version: string; notes: string; download: () => Promise<void> }>(null);
+const updateProgress = ref<string>("");
 getAppVersion().then((v) => (versionInfo.value = v)).catch(() => {});
+
 async function onCheckUpdate() {
-  updateBusy.value = true; updateResult.value = "正在检查更新…";
+  updateBusy.value = true; updateResult.value = "正在检查更新…"; updateReady.value = null; updateProgress.value = "";
   try {
-    const v = await getAppVersion();
-    updateResult.value = `当前版本：${v}。更新检查功能开发中（需接入 GitHub releases API）。`;
+    const { check } = await import("@tauri-apps/plugin-updater");
+    const update = await check();
+    if (!update) {
+      updateResult.value = `✓ 当前已是最新版本（${versionInfo.value}）`;
+      return;
+    }
+    updateReady.value = {
+      version: update.version,
+      notes: update.body || "",
+      download: async () => {
+        let total = 0, received = 0;
+        await update.downloadAndInstall((event) => {
+          if (event.event === "Started") { total = event.data.contentLength ?? 0; }
+          else if (event.event === "Progress") { received += event.data.chunkLength; }
+          else if (event.event === "Finished") { received = total; }
+          updateProgress.value = total > 0
+            ? `下载中 ${Math.round((received / total) * 100)}%（${Math.round(received / 1024)} / ${Math.round(total / 1024)} KB）`
+            : `下载中 ${Math.round(received / 1024)} KB`;
+        });
+      },
+    };
+    updateResult.value = `发现新版本 v${update.version}` + (update.body ? `：${update.body}` : "");
   } catch (e) {
-    updateResult.value = "✗ 失败：" + e;
+    updateResult.value = "✗ 检查更新失败：" + e + "（请检查网络连接）";
+  } finally { updateBusy.value = false; }
+}
+
+async function onUpdateInstall() {
+  if (!updateReady.value) return;
+  updateBusy.value = true;
+  try {
+    await updateReady.value.download();
+    updateResult.value = "✓ 下载完成，即将重启以完成安装…";
+    const { relaunch } = await import("@tauri-apps/plugin-process");
+    setTimeout(() => { relaunch().catch(() => {}); }, 1200);
+  } catch (e) {
+    updateResult.value = "✗ 下载/安装失败：" + e + "。当前安装未受影响，可稍后重试。";
   } finally { updateBusy.value = false; }
 }
 
@@ -1374,9 +1410,13 @@ onMounted(() => {
         </p>
         <div class="action-row">
           <button class="btn-primary" @click="onCheckUpdate" :disabled="updateBusy" data-interactive>
-            {{ updateBusy ? "检查中…" : "🔍 检查更新" }}
+            {{ updateBusy && !updateReady ? "检查中…" : "🔍 检查更新" }}
+          </button>
+          <button v-if="updateReady && !updateBusy" class="btn-primary" @click="onUpdateInstall" data-interactive>
+            ⬇️ 下载并安装 v{{ updateReady.version }}
           </button>
         </div>
+        <p v-if="updateProgress" class="hint-inline">{{ updateProgress }}</p>
         <p v-if="updateResult" class="hint-inline" :class="{ 'hint-ok': !updateResult.startsWith('✗'), 'hint-err': updateResult.startsWith('✗') }">
           {{ updateResult }}
         </p>

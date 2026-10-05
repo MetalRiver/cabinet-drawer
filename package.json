@@ -2,7 +2,7 @@
   "name": "drawer-box",
   "private": true,
   "license": "GPL-3.0-only",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -11,10 +11,12 @@
     "tauri": "tauri"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.2.0",
+    "@tauri-apps/api": "^2.12.1",
     "@tauri-apps/plugin-clipboard-manager": "^2.2.0",
-    "@tauri-apps/plugin-global-shortcut": "^2.2.0",
-    "@tauri-apps/plugin-shell": "^2.2.0",
+    "@tauri-apps/plugin-global-shortcut": "^2.4.0",
+    "@tauri-apps/plugin-process": "^2.4.0",
+    "@tauri-apps/plugin-shell": "^2.4.0",
+    "@tauri-apps/plugin-updater": "^2.13.1",
     "highlight.js": "^11.11.0",
     "pinia": "^2.3.0",
     "vue": "^3.5.13",

@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/nickkuk/nickkuk.github.io/refs/heads/main/tauri-conf.schema.json",
   "productName": "抽屉柜 Drawer",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "identifier": "com.drawer-box.app",
   "build": {
     "beforeBuildCommand": "pnpm build",
@@ -21,7 +21,7 @@
         "minHeight": 400,
         "maxWidth": 1400,
         "maxHeight": 1100,
-          "decorations": false,
+        "decorations": false,
         "transparent": true,
         "alwaysOnTop": false,
         "skipTaskbar": true,
@@ -51,7 +51,9 @@
     "publisher": "Wind-zp",
     "shortDescription": "Windows 桌面抽屉柜：密码 / 软件 / 命令行 / 临时四合一，玻璃质感常驻桌面",
     "longDescription": "抽屉柜是一款本地优先的 Windows 桌面工具，把常用的 4 类数据收纳进一个轻量小窗：\n\n• 密码：仅密码字段本地加密存储（AES-256-GCM + Argon2id），查看/复制需主密码验证，剪贴板自动清空（默认 15 秒，可设置）\n• 应用：扫描开始菜单/桌面/ProgramFiles，拖入文件/文件夹/快捷方式自动分类，一键启动\n• 片段：常用命令、代码片段一键复制\n• 临时：草稿/便签，3 天自动清理\n\n特性：\n• 无账号、不依赖云端服务、无遥测，数据只存本地\n• 5 分钟闲置自动锁定（可设置）\n• 忘记主密码可用首次生成的 12 个恢复词重置\n• 支持认证加密备份与恢复",
-    "targets": ["nsis"],
+    "targets": [
+      "nsis"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -67,7 +69,10 @@
         "sidebarImage": "icons/nsis-sidebar.bmp",
         "startMenuFolder": "抽屉柜 Drawer",
         "installMode": "currentUser",
-        "languages": ["SimpChinese", "English"],
+        "languages": [
+          "SimpChinese",
+          "English"
+        ],
         "displayLanguageSelector": false
       },
       "webviewInstallMode": {
@@ -80,6 +85,12 @@
     "shell": {
       "open": "^https?://"
     },
-    "clipboard-manager": null
+    "clipboard-manager": null,
+    "updater": {
+      "endpoints": [
+        "https://github.com/MetalRiver/cabinet-drawer/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IHJlbGVhc2UgcGxhY2Vob2xkZXI="
+    }
   }
 }
