@@ -999,7 +999,11 @@ fn t66_first_run_backup_restore_default() {
     drop(prepared.setup_lock);
     let _ = fs::remove_file(src_dir.join(V2_SETUP_LOCK_FILENAME));
     let db = open_existing_v2_db(&src_dir.join(V2_DB_FILENAME)).unwrap();
-    let state = crate::AppState::new(db, src_dir.join(V2_DB_FILENAME), crate::StartupMode::ExistingV2);
+    let state = crate::AppState::new(
+        db,
+        src_dir.join(V2_DB_FILENAME),
+        crate::StartupMode::ExistingV2,
+    );
     state.set_stable_dek(Zeroizing::new(dek.to_vec()));
     let backup_path = src_dir.join("machine-a.drawerbox");
     export_v2_to_path(&state, "Old-Master-Pw!", &backup_path).unwrap();
@@ -1025,7 +1029,10 @@ fn t66_first_run_backup_restore_default() {
     // 激活绝不覆盖已存在正式库
     let staging2 = cr.join("drawer-v2.db.restore-op66b.tmp");
     fs::write(&staging2, b"x").unwrap();
-    assert!(activate_staging_no_replace(&staging2, &formal).is_err(), "目标已存在必须 fail closed");
+    assert!(
+        activate_staging_no_replace(&staging2, &formal).is_err(),
+        "目标已存在必须 fail closed"
+    );
 }
 
 // 67. 首次启动备份恢复（external 目标）：guard/state/staging 顺序 + 重启收尾提交 active_root
@@ -1041,7 +1048,11 @@ fn t67_first_run_backup_restore_external() {
     drop(prepared.setup_lock);
     let _ = fs::remove_file(src_dir.join(V2_SETUP_LOCK_FILENAME));
     let db = open_existing_v2_db(&src_dir.join(V2_DB_FILENAME)).unwrap();
-    let state = crate::AppState::new(db, src_dir.join(V2_DB_FILENAME), crate::StartupMode::ExistingV2);
+    let state = crate::AppState::new(
+        db,
+        src_dir.join(V2_DB_FILENAME),
+        crate::StartupMode::ExistingV2,
+    );
     state.set_stable_dek(Zeroizing::new(prepared.dek.to_vec()));
     let backup_path = src_dir.join("t67.drawerbox");
     export_v2_to_path(&state, "Old-Master-Pw!", &backup_path).unwrap();
@@ -1050,21 +1061,39 @@ fn t67_first_run_backup_restore_external() {
     preflight_new_root(&cr, &target).unwrap();
     // Guard First：G2 durable → state(restore_backup/preparing)
     write_compat_guard_g2(&cr, "op-rb67", &target).unwrap();
-    put_state(&cr, &state_pending("restore_backup", "op-rb67", "preparing", &target));
+    put_state(
+        &cr,
+        &state_pending("restore_backup", "op-rb67", "preparing", &target),
+    );
     // staging：migration-<op_id>.tmp（绝不占用 G1 文件名）
     let staging = migration_tmp_path(&target, "op-rb67");
     prepare_restored_staging(&backup_path, "Old-Master-Pw!", &staging).unwrap();
     assert_ne!(staging, cr.join(V2_TMP_FILENAME));
-    put_state(&cr, &state_pending("restore_backup", "op-rb67", "activated", &target));
+    put_state(
+        &cr,
+        &state_pending("restore_backup", "op-rb67", "activated", &target),
+    );
     activate_staging_no_replace(&staging, &target.join(V2_DB_FILENAME)).unwrap();
 
     // 重启收尾：Pending(restore_backup/activated) → 复用 init 收尾提交 active_root
     let op = load(&cr).pending_operation.unwrap();
-    assert_eq!(crate::try_complete_pending_init(&cr, &op).as_deref(), Some(target.as_path()));
-    assert_eq!(resolve_data_root(&cr), Resolution::UseExternal(target.clone()));
-    assert!(recognize_guards(&cr).iter().any(|g| g.op_id == "op-rb67"), "G2 必须保留");
+    assert_eq!(
+        crate::try_complete_pending_init(&cr, &op).as_deref(),
+        Some(target.as_path())
+    );
+    assert_eq!(
+        resolve_data_root(&cr),
+        Resolution::UseExternal(target.clone())
+    );
+    assert!(
+        recognize_guards(&cr).iter().any(|g| g.op_id == "op-rb67"),
+        "G2 必须保留"
+    );
     assert!(target.join(V2_DB_FILENAME).exists());
-    assert!(!cr.join(V2_DB_FILENAME).exists(), "Config Root 绝不能出现正式库");
+    assert!(
+        !cr.join(V2_DB_FILENAME).exists(),
+        "Config Root 绝不能出现正式库"
+    );
 }
 
 // 68. Factory Reset v2 finalization（external intent）：canonical 清理 + retained 保留
@@ -1073,7 +1102,7 @@ fn t68_factory_reset_v2_external() {
     let cr = temp_root("t68c");
     let d_root = temp_target("t68d");
     let e_root = temp_target("t68e"); // retained archive 所在的其他位置
-    // D canonical：正式库 + 图标缓存目录
+                                      // D canonical：正式库 + 图标缓存目录
     make_valid_v2_db(&d_root);
     fs::create_dir_all(d_root.join("icons")).unwrap();
     fs::write(d_root.join("icons").join("app.ico"), b"icon").unwrap();
@@ -1090,7 +1119,11 @@ fn t68_factory_reset_v2_external() {
     });
     put_state(&cr, &st);
     write_compat_guard_g2(&cr, "op-g2", &d_root).unwrap();
-    fs::write(e_root.join("drawer-v2.db.migrated-op-ret"), b"retained copy").unwrap();
+    fs::write(
+        e_root.join("drawer-v2.db.migrated-op-ret"),
+        b"retained copy",
+    )
+    .unwrap();
     // durable intent
     let flag = cr.join(".factory_reset_pending");
     let intent = serde_json::json!({"v2": true, "active_root": d_root.to_string_lossy(), "generated_at": "x"});
@@ -1108,7 +1141,10 @@ fn t68_factory_reset_v2_external() {
     // flag 已删
     assert!(!flag.exists());
     // retained archive 完好（他盘绝不被触碰）
-    assert!(e_root.join("drawer-v2.db.migrated-op-ret").exists(), "retained archive 绝不能因 reset 被删");
+    assert!(
+        e_root.join("drawer-v2.db.migrated-op-ret").exists(),
+        "retained archive 绝不能因 reset 被删"
+    );
     // D 根目录本身保留（目录内其他用户文件不动）
     assert!(d_root.exists());
     // 之后解析 → 空环境 → Choose
@@ -1124,10 +1160,21 @@ fn t68_factory_reset_v2_external() {
 fn t69_factory_reset_finalization_idempotent() {
     let cr = temp_root("t69");
     let flag = cr.join(".factory_reset_pending");
-    assert_eq!(crate::data_root::run_v2_factory_reset_finalization(&cr, &flag).unwrap(), 0, "无 intent = 无操作");
-    fs::write(&flag, "reset
-").unwrap(); // legacy 文本 intent：v2 finalization 不碰
-    assert_eq!(crate::data_root::run_v2_factory_reset_finalization(&cr, &flag).unwrap(), 0, "legacy intent 由 legacy 路径处理");
+    assert_eq!(
+        crate::data_root::run_v2_factory_reset_finalization(&cr, &flag).unwrap(),
+        0,
+        "无 intent = 无操作"
+    );
+    fs::write(
+        &flag, "reset
+",
+    )
+    .unwrap(); // legacy 文本 intent：v2 finalization 不碰
+    assert_eq!(
+        crate::data_root::run_v2_factory_reset_finalization(&cr, &flag).unwrap(),
+        0,
+        "legacy intent 由 legacy 路径处理"
+    );
     assert!(flag.exists(), "legacy intent 不得被 v2 finalization 删除");
 }
 // 70. Runtime fixture：用真实 export 实现生成 .drawerbox 备份文件到固定路径，
@@ -1148,7 +1195,11 @@ fn t70_write_runtime_fixture_backup() {
     drop(prepared.setup_lock);
     let _ = fs::remove_file(src_dir.join(V2_SETUP_LOCK_FILENAME));
     let db = open_existing_v2_db(&src_dir.join(V2_DB_FILENAME)).unwrap();
-    let state = crate::AppState::new(db, src_dir.join(V2_DB_FILENAME), crate::StartupMode::ExistingV2);
+    let state = crate::AppState::new(
+        db,
+        src_dir.join(V2_DB_FILENAME),
+        crate::StartupMode::ExistingV2,
+    );
     state.set_stable_dek(Zeroizing::new(dek.to_vec()));
     // 真实业务数据（可通过解锁后 UI 验证）
     {
@@ -1172,6 +1223,3 @@ fn t70_write_runtime_fixture_backup() {
     drop(state);
     let _ = fs::remove_dir_all(&src_dir);
 }
-
-
-
