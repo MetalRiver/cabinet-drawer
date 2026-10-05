@@ -78,6 +78,7 @@ export const useSoftwareStore = defineStore("software", () => {
         path: it.path,
         icon_path: it.icon_path,
         args: it.args,
+        available: it.available,
         category_id: it.category_id,
         app_type: it.app_type,
         app_subtype: it.app_subtype,

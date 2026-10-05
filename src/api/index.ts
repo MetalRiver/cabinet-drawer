@@ -269,6 +269,8 @@ export interface AppMeta {
   use_count: number;
   last_used_at: number;
   created_at: number;
+  /** Phase 2D：运行时派生可用性（路径失效≠删除） */
+  available: boolean;
 }
 
 export interface AppCategoryMeta {
@@ -382,7 +384,17 @@ export interface AppWithIcon {
   use_count: number;
   last_used_at: number;
   created_at: number;
+  /** Phase 2D：运行时派生可用性（路径失效≠删除） */
+  available: boolean;
 }
+/** Phase 2D：重新关联失效应用（只改路径，保留元数据） */
+export const relinkApp = (id: number, newPath: string) =>
+  invoke<void>("relink_app", { id, newPath });
+
+/** Phase 2D：打开应用原位置（最近仍存在的祖先目录） */
+export const openAppLocation = (id: number) =>
+  invoke<void>("open_app_location", { id });
+
 export const listAppsWithIcons = (
   query = "",
   categoryId?: number

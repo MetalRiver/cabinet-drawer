@@ -1,8 +1,8 @@
 //! ===== 命令分组 ⑦：🛡️ 软件管理（apps）+ 分类 + 图标 + 扫描 + 启动 + 健康检查 =====
 //! 包含：扫描系统软件、软件 CRUD、分类 CRUD、图标提取/批量重抽、文件选择、批量导入路径、启动软件（含自动重定位）、健康检查（跨盘修复路径）
 
-use tauri::{AppHandle, Manager, State};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use tauri::{AppHandle, Manager, State};
 
 use crate::crypto;
 use crate::db::{self, Db};
@@ -15,9 +15,9 @@ use crate::win_icon;
 #[cfg(windows)]
 use crate::win_launch;
 
-use std::path::PathBuf;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
+use std::path::PathBuf;
 // ============================================================
 // 📦 扫描系统软件时返回的条目
 // ============================================================
@@ -50,9 +50,11 @@ pub fn detect_type_from_path(path: &std::path::Path) -> &'static str {
     #[cfg(not(windows))]
     {
         let sl = s.to_lowercase();
-        if sl.starts_with("http://") || sl.starts_with("https://")
+        if sl.starts_with("http://")
+            || sl.starts_with("https://")
             || sl.contains("://")
-            || sl.ends_with(".url") {
+            || sl.ends_with(".url")
+        {
             return "url";
         }
     }
@@ -64,8 +66,8 @@ pub fn detect_type_from_path(path: &std::path::Path) -> &'static str {
     match ext.as_str() {
         "exe" | "lnk" | "bat" | "cmd" | "msi" => "app",
         "url" => "url",
-        "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx" | "pdf"
-        | "txt" | "md" | "rtf" | "odt" | "ods" | "odp" | "csv" => "document",
+        "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx" | "pdf" | "txt" | "md" | "rtf" | "odt"
+        | "ods" | "odp" | "csv" => "document",
         _ => "app",
     }
 }
@@ -75,7 +77,9 @@ pub fn detect_launchable(path: &std::path::Path) -> bool {
     let s = path.to_string_lossy();
     #[cfg(windows)]
     {
-        if win_launch::is_url_path(&s) { return true; }
+        if win_launch::is_url_path(&s) {
+            return true;
+        }
     }
     #[cfg(not(windows))]
     {
@@ -125,9 +129,23 @@ pub fn detect_subtype_from_path(path: &std::path::Path, app_type: &str) -> &'sta
         .unwrap_or_default();
 
     let game_kw = [
-        "steam", "epic", "origin", "ubisoft", "uplay", "riot", "battlenet", "battle.net",
-        "xbox", "playstation", "minecraft", "wegame",
-        "netease", "lol", "dota", "csgo", "pubg",
+        "steam",
+        "epic",
+        "origin",
+        "ubisoft",
+        "uplay",
+        "riot",
+        "battlenet",
+        "battle.net",
+        "xbox",
+        "playstation",
+        "minecraft",
+        "wegame",
+        "netease",
+        "lol",
+        "dota",
+        "csgo",
+        "pubg",
     ];
     for kw in game_kw.iter() {
         if name_lower.contains(kw) || path_lower.contains(kw) {
@@ -135,8 +153,19 @@ pub fn detect_subtype_from_path(path: &std::path::Path, app_type: &str) -> &'sta
         }
     }
     let office_kw = [
-        "office", "word", "excel", "powerpoint", "outlook", "wps", "dingtalk",
-        "feishu", "lark", "wework", "teams", "zoom", "notion",
+        "office",
+        "word",
+        "excel",
+        "powerpoint",
+        "outlook",
+        "wps",
+        "dingtalk",
+        "feishu",
+        "lark",
+        "wework",
+        "teams",
+        "zoom",
+        "notion",
     ];
     for kw in office_kw.iter() {
         if name_lower.contains(kw) || path_lower.contains(kw) {
@@ -144,13 +173,51 @@ pub fn detect_subtype_from_path(path: &std::path::Path, app_type: &str) -> &'sta
         }
     }
     let dev_kw = [
-        "code", "vscode", "visual studio", "rider", "pycharm", "intellij", "idea",
-        "webstorm", "goland", "clion", "android studio", "xcode", "sublime",
-        "vim", "neovim", "git", "github", "gitlab", "docker", "kubernetes", "kubectl",
-        "postman", "insomnia", "dbeaver", "navicat", "redis", "mongodb", "mysql",
-        "wsl", "terminal", "powershell", "cmd", "node", "npm", "yarn",
-        "pnpm", "cargo", "rust", "python", "java", "jdk", "gradle", "maven",
-        "electron", "tauri",
+        "code",
+        "vscode",
+        "visual studio",
+        "rider",
+        "pycharm",
+        "intellij",
+        "idea",
+        "webstorm",
+        "goland",
+        "clion",
+        "android studio",
+        "xcode",
+        "sublime",
+        "vim",
+        "neovim",
+        "git",
+        "github",
+        "gitlab",
+        "docker",
+        "kubernetes",
+        "kubectl",
+        "postman",
+        "insomnia",
+        "dbeaver",
+        "navicat",
+        "redis",
+        "mongodb",
+        "mysql",
+        "wsl",
+        "terminal",
+        "powershell",
+        "cmd",
+        "node",
+        "npm",
+        "yarn",
+        "pnpm",
+        "cargo",
+        "rust",
+        "python",
+        "java",
+        "jdk",
+        "gradle",
+        "maven",
+        "electron",
+        "tauri",
     ];
     for kw in dev_kw.iter() {
         if name_lower.contains(kw) || path_lower.contains(kw) {
@@ -158,8 +225,15 @@ pub fn detect_subtype_from_path(path: &std::path::Path, app_type: &str) -> &'sta
         }
     }
     let media_kw = [
-        "potplayer", "vlc", "mpv", "kmplayer", "foobar", "spotify",
-        "youtube", "obs", "shotcut",
+        "potplayer",
+        "vlc",
+        "mpv",
+        "kmplayer",
+        "foobar",
+        "spotify",
+        "youtube",
+        "obs",
+        "shotcut",
     ];
     for kw in media_kw.iter() {
         if name_lower.contains(kw) || path_lower.contains(kw) {
@@ -167,8 +241,14 @@ pub fn detect_subtype_from_path(path: &std::path::Path, app_type: &str) -> &'sta
         }
     }
     let design_kw = [
-        "photoshop", "illustrator", "figma", "sketch",
-        "indesign", "canva", "pixso", "mastergo",
+        "photoshop",
+        "illustrator",
+        "figma",
+        "sketch",
+        "indesign",
+        "canva",
+        "pixso",
+        "mastergo",
     ];
     for kw in design_kw.iter() {
         if name_lower.contains(kw) || path_lower.contains(kw) {
@@ -283,7 +363,9 @@ fn walk_mixed(
     depth: u8,
 ) {
     use std::fs;
-    if depth == 0 { return; }
+    if depth == 0 {
+        return;
+    }
     let entries = match fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return,
@@ -322,7 +404,11 @@ fn walk_mixed(
                 .unwrap_or_default();
             let app_type = detect_type_from_path(&path);
             if app_type == "app"
-                && ext != "lnk" && ext != "exe" && ext != "bat" && ext != "cmd" && ext != "msi"
+                && ext != "lnk"
+                && ext != "exe"
+                && ext != "bat"
+                && ext != "cmd"
+                && ext != "msi"
             {
                 continue;
             }
@@ -364,7 +450,9 @@ fn walk_exe(
     depth: u8,
 ) {
     use std::fs;
-    if depth == 0 { return; }
+    if depth == 0 {
+        return;
+    }
     let entries = match fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return,
@@ -377,9 +465,7 @@ fn walk_exe(
         };
         if ft.is_dir() {
             walk_exe(&path, source, out, seen_paths, seen_names, depth - 1);
-        } else if ft.is_file()
-            && path.extension().and_then(|e| e.to_str()) == Some("exe")
-        {
+        } else if ft.is_file() && path.extension().and_then(|e| e.to_str()) == Some("exe") {
             let path_str = path.to_string_lossy().to_string();
             let name_lc = path
                 .file_stem()
@@ -388,10 +474,18 @@ fn walk_exe(
                 .unwrap_or_default();
             let skip = matches!(
                 name_lc.as_str(),
-                "uninstall" | "uninst" | "setup" | "installer"
-                    | "update" | "updater" | "crashpad_handler" | "vcredist"
+                "uninstall"
+                    | "uninst"
+                    | "setup"
+                    | "installer"
+                    | "update"
+                    | "updater"
+                    | "crashpad_handler"
+                    | "vcredist"
             );
-            if skip { continue; }
+            if skip {
+                continue;
+            }
             if seen_paths.insert(path_str.clone()) && seen_names.insert(name_lc) {
                 let name = path
                     .file_stem()
@@ -428,7 +522,10 @@ pub fn scan_installed_software() -> Vec<ScannedApp> {
 
     let candidates: [(std::path::PathBuf, &str); 6] = [
         (dirs_known::start_menu_user().join("Programs"), "StartMenu"),
-        (dirs_known::start_menu_common().join("Programs"), "StartMenu"),
+        (
+            dirs_known::start_menu_common().join("Programs"),
+            "StartMenu",
+        ),
         (dirs_known::desktop_user(), "Desktop"),
         (dirs_known::desktop_common(), "Desktop"),
         (dirs_known::program_files(), "ProgramFiles"),
@@ -436,11 +533,27 @@ pub fn scan_installed_software() -> Vec<ScannedApp> {
     ];
 
     for (dir, source) in candidates.iter() {
-        if !dir.exists() { continue; }
+        if !dir.exists() {
+            continue;
+        }
         if *source == "ProgramFiles" {
-            walk_exe(dir, source, &mut results, &mut seen_paths, &mut seen_names, 2);
+            walk_exe(
+                dir,
+                source,
+                &mut results,
+                &mut seen_paths,
+                &mut seen_names,
+                2,
+            );
         } else {
-            walk_mixed(dir, source, &mut results, &mut seen_paths, &mut seen_names, 3);
+            walk_mixed(
+                dir,
+                source,
+                &mut results,
+                &mut seen_paths,
+                &mut seen_names,
+                3,
+            );
         }
     }
 
@@ -449,7 +562,9 @@ pub fn scan_installed_software() -> Vec<ScannedApp> {
             if let Ok(entries) = fs::read_dir(&p) {
                 for entry in entries.flatten() {
                     if let Ok(ft) = entry.file_type() {
-                        if !ft.is_file() { continue; }
+                        if !ft.is_file() {
+                            continue;
+                        }
                     }
                     let path = entry.path();
                     if path.extension().and_then(|e| e.to_str()) == Some("exe") {
@@ -521,8 +636,12 @@ pub fn scan_installed_software() -> Vec<ScannedApp> {
             }
         }
         for app in results.iter_mut() {
-            if !app.icon_path.is_empty() { continue; }
-            if app.app_type != "app" { continue; }
+            if !app.icon_path.is_empty() {
+                continue;
+            }
+            if app.app_type != "app" {
+                continue;
+            }
             let p = std::path::Path::new(&app.path);
             let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
             let target = if ext == "lnk" {
@@ -530,7 +649,9 @@ pub fn scan_installed_software() -> Vec<ScannedApp> {
             } else {
                 app.path.clone()
             };
-            if target.is_empty() { continue; }
+            if target.is_empty() {
+                continue;
+            }
             if let Some(cached) = win_icon::extract_to_cache(&target) {
                 app.icon_path = cached.to_string_lossy().to_string();
             }
@@ -575,6 +696,8 @@ pub struct AppWithIcon {
     use_count: i64,
     last_used_at: i64,
     created_at: i64,
+    /// Phase 2D：运行时派生可用性（来自 AppMeta.available）
+    available: bool,
 }
 
 fn read_icon_as_data_url_inner(path: String) -> Option<String> {
@@ -604,29 +727,92 @@ pub fn list_apps_with_icons(
     let _data_gate = state.data_read()?;
 
     let db = state.db.lock().unwrap();
-    let apps = db.list_apps(&query, category_id).map_err(|e| e.to_string())?;
-    let result: Vec<AppWithIcon> = apps.into_iter().map(|a| {
-        let icon_data_url = if a.icon_path.is_empty() {
-            None
-        } else {
-            read_icon_as_data_url_inner(a.icon_path.clone())
-        };
-        AppWithIcon {
-            id: a.id,
-            name: a.name,
-            path: a.path,
-            icon_path: a.icon_path,
-            icon_data_url,
-            args: a.args,
-            category_id: a.category_id,
-            app_type: a.app_type,
-            app_subtype: a.app_subtype,
-            use_count: a.use_count,
-            last_used_at: a.last_used_at,
-            created_at: a.created_at,
-        }
-    }).collect();
+    let apps = db
+        .list_apps(&query, category_id)
+        .map_err(|e| e.to_string())?;
+    let result: Vec<AppWithIcon> = apps
+        .into_iter()
+        .map(|a| {
+            let icon_data_url = if a.icon_path.is_empty() {
+                None
+            } else {
+                read_icon_as_data_url_inner(a.icon_path.clone())
+            };
+            AppWithIcon {
+                id: a.id,
+                name: a.name,
+                path: a.path,
+                icon_path: a.icon_path,
+                icon_data_url,
+                args: a.args,
+                category_id: a.category_id,
+                app_type: a.app_type,
+                app_subtype: a.app_subtype,
+                use_count: a.use_count,
+                last_used_at: a.last_used_at,
+                created_at: a.created_at,
+                available: a.available,
+            }
+        })
+        .collect();
     Ok(result)
+}
+
+// ============================================================
+// 🧭 Phase 2D：应用生命周期失效治理
+// ============================================================
+// 重新关联：只改 path，保留原 Drawer 元数据（名称/分类/统计/图标选择）。
+// 不做自动删除，不冒充卸载器——真正卸载第三方软件永远是用户与系统的事。
+#[tauri::command]
+pub fn relink_app(state: State<AppState>, id: i64, new_path: String) -> Result<(), String> {
+    let p = std::path::Path::new(&new_path);
+    if !p.exists() {
+        return Err("所选路径不存在，无法关联".to_string());
+    }
+    let db = state.db.lock().unwrap();
+    db.update_app_path(id, &new_path).map_err(|e| e.to_string())
+}
+
+/// 打开原位置：从记录路径向上找最近的"仍存在"的祖先目录并打开。
+/// 全部祖先都失效时返回明确错误，绝不假装成功。
+#[tauri::command]
+pub fn open_app_location(state: State<AppState>, id: i64) -> Result<(), String> {
+    let (name, path, app_type) = {
+        let db = state.db.lock().unwrap();
+        let apps = db.list_apps("", None).map_err(|e| e.to_string())?;
+        match apps.into_iter().find(|a| a.id == id) {
+            Some(a) => (a.name, a.path, a.app_type),
+            None => return Err("应用不存在或已移除".to_string()),
+        }
+    };
+    if app_type == "url" {
+        return Err("网址类型没有本地位置".to_string());
+    }
+    let p = std::path::PathBuf::from(&path);
+    let mut dir: Option<std::path::PathBuf> = None;
+    if p.is_dir() {
+        dir = Some(p);
+    } else {
+        let mut cur = p.parent().map(|x| x.to_path_buf());
+        while let Some(d) = cur {
+            if d.is_dir() {
+                dir = Some(d);
+                break;
+            }
+            cur = d.parent().map(|x| x.to_path_buf());
+        }
+    }
+    let dir = dir.ok_or_else(|| format!("「{}」的原位置已完全失效，请重新关联", name))?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        std::process::Command::new("explorer.exe")
+            .arg(dir.as_os_str())
+            .creation_flags(0x08000000)
+            .spawn()
+            .map_err(|e| format!("打开位置失败: {}", e))?;
+    }
+    Ok(())
 }
 
 // ============================================================
@@ -654,7 +840,13 @@ pub fn read_icon_as_data_url(path: String) -> Option<String> {
 // ============================================================
 #[tauri::command]
 pub async fn pick_path(mode: String, title: Option<String>) -> Option<String> {
-    let title = title.unwrap_or_else(|| if mode == "folder" { "选择文件夹".to_string() } else { "选择文件".to_string() });
+    let title = title.unwrap_or_else(|| {
+        if mode == "folder" {
+            "选择文件夹".to_string()
+        } else {
+            "选择文件".to_string()
+        }
+    });
     let result = tauri::async_runtime::spawn_blocking(move || {
         if mode == "folder" {
             rfd::FileDialog::new()
@@ -663,7 +855,8 @@ pub async fn pick_path(mode: String, title: Option<String>) -> Option<String> {
                 .map(|p| p.to_string_lossy().to_string())
         } else {
             let lower_title = title.to_lowercase();
-            let is_backup_picker = lower_title.contains("备份") || lower_title.contains("drawerbox");
+            let is_backup_picker =
+                lower_title.contains("备份") || lower_title.contains("drawerbox");
             let mut dlg = rfd::FileDialog::new().set_title(&title);
             if is_backup_picker {
                 dlg = dlg.add_filter("抽屉柜备份文件", &["drawerbox"]);
@@ -697,13 +890,12 @@ pub fn fill_missing_icons(state: State<AppState>) -> Result<usize, String> {
     let missing: Vec<(i64, String)> = apps
         .into_iter()
         .filter(|a| !a.path.is_empty())
-        .filter(|a| {
-            a.icon_path.is_empty()
-                || !std::path::Path::new(&a.icon_path).exists()
-        })
+        .filter(|a| a.icon_path.is_empty() || !std::path::Path::new(&a.icon_path).exists())
         .map(|a| (a.id, a.path))
         .collect();
-    if missing.is_empty() { return Ok(0); }
+    if missing.is_empty() {
+        return Ok(0);
+    }
     #[cfg(windows)]
     {
         let exe_paths: Vec<String> = missing.iter().map(|(_, p)| p.clone()).collect();
@@ -722,7 +914,9 @@ pub fn fill_missing_icons(state: State<AppState>) -> Result<usize, String> {
         Ok(updated)
     }
     #[cfg(not(windows))]
-    { Ok(0) }
+    {
+        Ok(0)
+    }
 }
 
 // ============================================================
@@ -762,9 +956,7 @@ pub fn restart_app(app: AppHandle) -> Result<(), String> {
     }
     #[cfg(not(windows))]
     {
-        Command::new(&exe_str)
-            .spawn()
-            .map_err(|e| e.to_string())?;
+        Command::new(&exe_str).spawn().map_err(|e| e.to_string())?;
     }
     app.exit(0);
     Ok(())
@@ -786,11 +978,24 @@ pub fn rescan_subtypes(state: State<AppState>) -> Result<usize, String> {
     let mut updated = 0;
     let db = state.db.lock().unwrap();
     for a in &apps {
-        if !a.app_subtype.is_empty() { continue; }
+        if !a.app_subtype.is_empty() {
+            continue;
+        }
         let p = std::path::Path::new(&a.path);
         let new_sub = detect_subtype_from_path(p, &a.app_type).to_string();
         if !new_sub.is_empty() {
-            if db.update_app(a.id, &a.name, &a.path, &a.icon_path, &a.args, a.category_id, &new_sub).is_ok() {
+            if db
+                .update_app(
+                    a.id,
+                    &a.name,
+                    &a.path,
+                    &a.icon_path,
+                    &a.args,
+                    a.category_id,
+                    &new_sub,
+                )
+                .is_ok()
+            {
                 updated += 1;
             }
         }
@@ -853,7 +1058,11 @@ pub fn delete_app_category(state: State<AppState>, id: i64) -> Result<(), String
 pub fn log_frontend(level: String, msg: String) {
     let log_path = std::env::var("APPDATA")
         .or_else(|_| std::env::var("LOCALAPPDATA"))
-        .map(|p| std::path::PathBuf::from(p).join("com.drawer-box.app").join("frontend.log"))
+        .map(|p| {
+            std::path::PathBuf::from(p)
+                .join("com.drawer-box.app")
+                .join("frontend.log")
+        })
         .unwrap_or_else(|_| std::path::PathBuf::from("frontend.log"));
     let _ = std::fs::create_dir_all(log_path.parent().unwrap());
     let ts = std::time::SystemTime::now()
@@ -891,9 +1100,7 @@ pub fn create_app(
     let path_obj = std::path::Path::new(&path);
 
     // P0-#Y#FIX#URL#APPTYPE#SANITY：app_type 二次校验（双保险）
-    let mut at = app_type.unwrap_or_else(|| {
-        detect_type_from_path(path_obj).to_string()
-    });
+    let mut at = app_type.unwrap_or_else(|| detect_type_from_path(path_obj).to_string());
 
     #[cfg(windows)]
     {
@@ -907,8 +1114,12 @@ pub fn create_app(
     #[cfg(not(windows))]
     {
         let pl = path.to_lowercase();
-        if (pl.starts_with("http://") || pl.starts_with("https://") || pl.contains("://") || pl.ends_with(".url"))
-            && at != "url" {
+        if (pl.starts_with("http://")
+            || pl.starts_with("https://")
+            || pl.contains("://")
+            || pl.ends_with(".url"))
+            && at != "url"
+        {
             eprintln!("[create_app] app_type 纠正: 路径是 URL 形式，但前端传 app_type={} → 强制为 url (path={})", at, path);
             at = "url".to_string();
         }
@@ -918,7 +1129,11 @@ pub fn create_app(
         // folder 必须是真实存在的目录；如果不是就按 detect_type_from_path 重推
         if !path_obj.is_dir() {
             let corrected = detect_type_from_path(path_obj);
-            eprintln!("[create_app] app_type 纠正: app_type=folder 但 path 不是目录({:?}) → 改为 {}", path_obj.exists(), corrected);
+            eprintln!(
+                "[create_app] app_type 纠正: app_type=folder 但 path 不是目录({:?}) → 改为 {}",
+                path_obj.exists(),
+                corrected
+            );
             at = corrected.to_string();
         }
     }
@@ -937,7 +1152,9 @@ pub fn create_app(
                 .unwrap_or_default()
         }
         #[cfg(not(windows))]
-        { String::new() }
+        {
+            String::new()
+        }
     } else {
         String::new()
     };
@@ -972,7 +1189,9 @@ fn resolve_lnk_targets_batch_paths(paths: &[String]) -> std::collections::HashMa
         .filter(|p| std::path::Path::new(p).extension().and_then(|e| e.to_str()) == Some("lnk"))
         .map(|s| s.as_str())
         .collect();
-    if lnk_paths.is_empty() { return out; }
+    if lnk_paths.is_empty() {
+        return out;
+    }
     let mut ps = String::from("$sh = New-Object -ComObject WScript.Shell; ");
     for lnk in &lnk_paths {
         let escaped = lnk.replace('\'', "''");
@@ -1027,7 +1246,11 @@ pub fn import_paths(
             errors.push(format!("文件不存在: {}", path_str));
             continue;
         }
-        let ext = p.extension().and_then(|e| e.to_str()).map(|e| e.to_lowercase()).unwrap_or_default();
+        let ext = p
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_lowercase())
+            .unwrap_or_default();
         let (db_path, db_name) = if ext == "lnk" {
             if let Some(target) = lnk_targets.get(path_str) {
                 if !target.is_empty() && Path::new(target).exists() {
@@ -1044,16 +1267,40 @@ pub fn import_paths(
                             .to_string();
                         (target.clone(), target_name)
                     } else {
-                        (path_str.clone(), p.file_name().and_then(|s| s.to_str()).unwrap_or("Unknown").to_string())
+                        (
+                            path_str.clone(),
+                            p.file_name()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or("Unknown")
+                                .to_string(),
+                        )
                     }
                 } else {
-                    (path_str.clone(), p.file_name().and_then(|s| s.to_str()).unwrap_or("Unknown").to_string())
+                    (
+                        path_str.clone(),
+                        p.file_name()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("Unknown")
+                            .to_string(),
+                    )
                 }
             } else {
-                (path_str.clone(), p.file_name().and_then(|s| s.to_str()).unwrap_or("Unknown").to_string())
+                (
+                    path_str.clone(),
+                    p.file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("Unknown")
+                        .to_string(),
+                )
             }
         } else {
-            (path_str.clone(), p.file_name().and_then(|s| s.to_str()).unwrap_or("Unknown").to_string())
+            (
+                path_str.clone(),
+                p.file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("Unknown")
+                    .to_string(),
+            )
         };
         if let Ok(Some(_)) = db.find_app_id_by_path(&db_path) {
             skipped.push(db_path);
@@ -1075,25 +1322,23 @@ pub fn import_paths(
                 } else {
                     "app"
                 }
-            } else { "app" }
+            } else {
+                "app"
+            }
         } else {
             detect_type_from_path(p)
         };
         let app_subtype = detect_subtype_from_path(p, app_type).to_string();
-        match db.create_app(
-            &name,
-            &db_path,
-            "",
-            "",
-            category_id,
-            app_type,
-            &app_subtype,
-        ) {
+        match db.create_app(&name, &db_path, "", "", category_id, app_type, &app_subtype) {
             Ok(id) => new_ids.push(id),
             Err(e) => errors.push(format!("{}: {}", db_path, e)),
         }
     }
-    Ok(ImportResult { new_ids, skipped, errors })
+    Ok(ImportResult {
+        new_ids,
+        skipped,
+        errors,
+    })
 }
 
 // ============================================================
@@ -1218,9 +1463,16 @@ async fn launch_with_path(
     if app_type == "folder" {
         let p = std::path::Path::new(&path);
         if p.is_dir() {
-            match std::process::Command::new("explorer.exe").arg(&path).spawn() {
-                Ok(_) => { return Ok(()); }
-                Err(e) => { return Err(format!("打开文件夹失败: {} ({})", path, e)); }
+            match std::process::Command::new("explorer.exe")
+                .arg(&path)
+                .spawn()
+            {
+                Ok(_) => {
+                    return Ok(());
+                }
+                Err(e) => {
+                    return Err(format!("打开文件夹失败: {} ({})", path, e));
+                }
             }
         } else {
             // 再检查一次是不是 URL 形式（裸域名）
@@ -1233,14 +1485,14 @@ async fn launch_with_path(
                 Err(e) => Err(format!(
                     "app_type=folder 但 path 不是目录，兜底打开也失败: path={} → {}",
                     path, e
-                ))
+                )),
             };
         }
     }
     // 普通 app/document：直接 win_launch::launch（ShellExecuteW 会根据扩展名关联打开）
     match win_launch::launch(&path, &args) {
         Ok(()) => Ok(()),
-        Err(e) => Err(e)
+        Err(e) => Err(e),
     }
 }
 #[cfg(not(windows))]
@@ -1272,8 +1524,12 @@ fn try_relocate_app(app_name: &str, _old_path: &str) -> Option<String> {
     }
     candidates.push(PathBuf::from("C:\\Program Files"));
     candidates.push(PathBuf::from("C:\\Program Files (x86)"));
-    if let Ok(pf) = std::env::var("ProgramFiles") { candidates.push(PathBuf::from(pf)); }
-    if let Ok(pf86) = std::env::var("ProgramFiles(x86)") { candidates.push(PathBuf::from(pf86)); }
+    if let Ok(pf) = std::env::var("ProgramFiles") {
+        candidates.push(PathBuf::from(pf));
+    }
+    if let Ok(pf86) = std::env::var("ProgramFiles(x86)") {
+        candidates.push(PathBuf::from(pf86));
+    }
     if let Ok(localappdata) = std::env::var("LOCALAPPDATA") {
         candidates.push(PathBuf::from(localappdata).join("Programs"));
     }
@@ -1287,9 +1543,16 @@ fn try_relocate_app(app_name: &str, _old_path: &str) -> Option<String> {
     }
     let name_lower = app_name.to_lowercase();
     for dir in &candidates {
-        if !dir.exists() { continue; }
+        if !dir.exists() {
+            continue;
+        }
         if let Some(found) = scan_dir_for_name(dir, &name_lower, 5, 30) {
-            eprintln!("[try_relocate_app] 在 {} 找到 {}: {}", dir.display(), app_name, found);
+            eprintln!(
+                "[try_relocate_app] 在 {} 找到 {}: {}",
+                dir.display(),
+                app_name,
+                found
+            );
             return Some(found);
         }
     }
@@ -1297,8 +1560,15 @@ fn try_relocate_app(app_name: &str, _old_path: &str) -> Option<String> {
     None
 }
 
-fn scan_dir_for_name(dir: &std::path::Path, name_lower: &str, max_depth: usize, max_results: usize) -> Option<String> {
-    if max_depth == 0 { return None; }
+fn scan_dir_for_name(
+    dir: &std::path::Path,
+    name_lower: &str,
+    max_depth: usize,
+    max_results: usize,
+) -> Option<String> {
+    if max_depth == 0 {
+        return None;
+    }
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return None,
@@ -1309,11 +1579,16 @@ fn scan_dir_for_name(dir: &std::path::Path, name_lower: &str, max_depth: usize, 
         if p.is_dir() {
             if let Some(sub) = scan_dir_for_name(&p, name_lower, max_depth - 1, max_results) {
                 found.push(sub);
-                if found.len() >= max_results { break; }
+                if found.len() >= max_results {
+                    break;
+                }
             }
         } else if let Some(fname) = p.file_name().and_then(|s| s.to_str()) {
             let fname_lower = fname.to_lowercase();
-            if let Some(stem) = std::path::Path::new(&fname_lower).file_stem().and_then(|s| s.to_str()) {
+            if let Some(stem) = std::path::Path::new(&fname_lower)
+                .file_stem()
+                .and_then(|s| s.to_str())
+            {
                 if stem == name_lower || fname_lower.starts_with(name_lower) {
                     let ext = std::path::Path::new(&fname_lower)
                         .extension()
@@ -1322,7 +1597,9 @@ fn scan_dir_for_name(dir: &std::path::Path, name_lower: &str, max_depth: usize, 
                     if matches!(ext, "exe" | "lnk" | "bat" | "cmd") {
                         if let Some(s) = p.to_str() {
                             found.push(s.to_string());
-                            if found.len() >= max_results { break; }
+                            if found.len() >= max_results {
+                                break;
+                            }
                         }
                     }
                 }
@@ -1355,9 +1632,10 @@ pub async fn launch_app(state: State<'_, AppState>, id: i64) -> Result<String, S
         let mut stmt = conn
             .prepare("SELECT path, args, app_type, name FROM apps WHERE id=?1")
             .map_err(|e| e.to_string())?;
-        stmt
-            .query_row(rusqlite::params![id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
-            .map_err(|e| e.to_string())?
+        stmt.query_row(rusqlite::params![id], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
+        .map_err(|e| e.to_string())?
     };
     // gate 不跨 await：同步段结束即释放
     drop(_data_gate);
@@ -1374,7 +1652,10 @@ pub async fn launch_app(state: State<'_, AppState>, id: i64) -> Result<String, S
     );
 
     if !path_exists && !is_url_path_flag {
-        eprintln!("[launch_app] 路径不存在: {} (id={}, name={})", path, id, app_name);
+        eprintln!(
+            "[launch_app] 路径不存在: {} (id={}, name={})",
+            path, id, app_name
+        );
         if let Some(new_path) = try_relocate_app(&app_name, &path) {
             eprintln!("[launch_app] 自动重定位: {} → {}", path, new_path);
             {
@@ -1383,7 +1664,10 @@ pub async fn launch_app(state: State<'_, AppState>, id: i64) -> Result<String, S
             }
             return match launch_with_path(new_path.clone(), args, app_type, app_name).await {
                 Ok(()) => Ok(format!("ok:auto-relocated:{} → {}", path, new_path)),
-                Err(e) => Err(format!("relocated-but-still-fail:{} → {}: {}", path, new_path, e)),
+                Err(e) => Err(format!(
+                    "relocated-but-still-fail:{} → {}: {}",
+                    path, new_path, e
+                )),
             };
         }
         if app_type == "url" || path.to_lowercase().ends_with(".url") {
@@ -1402,16 +1686,33 @@ pub async fn launch_app(state: State<'_, AppState>, id: i64) -> Result<String, S
             "[launch_app] 文件不存在但判定为 URL 形式，强制启动（app_type={}，path={}）",
             app_type, path
         );
-        return match launch_with_path(path.clone(), args.clone(), "url".to_string(), app_name.clone()).await {
+        return match launch_with_path(
+            path.clone(),
+            args.clone(),
+            "url".to_string(),
+            app_name.clone(),
+        )
+        .await
+        {
             Ok(()) => Ok(format!("ok:forced-url-launch:{}", path)),
             Err(e) => Err(format!("url-launch-fail:{} → {}", path, e)),
         };
     }
 
-    match launch_with_path(path.clone(), args.clone(), app_type.clone(), app_name.clone()).await {
+    match launch_with_path(
+        path.clone(),
+        args.clone(),
+        app_type.clone(),
+        app_name.clone(),
+    )
+    .await
+    {
         Ok(()) => Ok("ok".to_string()),
         Err(e) => {
-            eprintln!("[launch_app] 启动失败 (path 存在但 ShellExecuteW 报错): {} → {}", path, e);
+            eprintln!(
+                "[launch_app] 启动失败 (path 存在但 ShellExecuteW 报错): {} → {}",
+                path, e
+            );
             if let Some(new_path) = try_relocate_app(&app_name, &path) {
                 if new_path != path && std::path::Path::new(&new_path).exists() {
                     eprintln!("[launch_app] 运行搬迁恢复: {} → {}", path, new_path);
@@ -1419,9 +1720,13 @@ pub async fn launch_app(state: State<'_, AppState>, id: i64) -> Result<String, S
                         let db = state.db.lock().unwrap();
                         let _ = db.update_app_path(id, &new_path);
                     }
-                    return match launch_with_path(new_path.clone(), args, app_type, app_name).await {
+                    return match launch_with_path(new_path.clone(), args, app_type, app_name).await
+                    {
                         Ok(()) => Ok(format!("ok:auto-relocated:{} → {}", path, new_path)),
-                        Err(e2) => Err(format!("relocated-but-still-fail:{} → {}: {}", path, new_path, e2)),
+                        Err(e2) => Err(format!(
+                            "relocated-but-still-fail:{} → {}: {}",
+                            path, new_path, e2
+                        )),
                     };
                 }
             }
@@ -1448,7 +1753,9 @@ fn health_check_apps_sync(state: &tauri::State<'_, AppState>) -> Result<usize, S
             .prepare("SELECT id, name, path, app_type FROM apps WHERE deleted_at IS NULL")
             .map_err(|e| e.to_string())?;
         let v: Vec<(i64, String, String, String)> = stmt
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
             .map_err(|e| e.to_string())?
             .filter_map(|r| r.ok())
             .collect();
@@ -1466,7 +1773,9 @@ fn health_check_apps_sync(state: &tauri::State<'_, AppState>) -> Result<usize, S
             .map(|e| e.to_lowercase())
             .unwrap_or_default();
         let path_exists = path_p.exists();
-        if app_type == "folder" { continue; }
+        if app_type == "folder" {
+            continue;
+        }
         #[cfg(windows)]
         {
             if ext == "lnk" && path_exists {
@@ -1488,9 +1797,14 @@ fn health_check_apps_sync(state: &tauri::State<'_, AppState>) -> Result<usize, S
                 }
             }
         }
-        if ext == "url" && path_exists { continue; }
+        if ext == "url" && path_exists {
+            continue;
+        }
         if !path_exists {
-            eprintln!("[health_check] app {} (id={}) path 失效: {}", name, id, path);
+            eprintln!(
+                "[health_check] app {} (id={}) path 失效: {}",
+                name, id, path
+            );
             if let Some(new_path) = try_relocate_app(&name, &path) {
                 if new_path != path {
                     eprintln!("[health_check]   → 重定位: {}", new_path);
@@ -1501,10 +1815,7 @@ fn health_check_apps_sync(state: &tauri::State<'_, AppState>) -> Result<usize, S
                 }
             }
             if ext == "lnk" {
-                let stem = path_p
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or(&name);
+                let stem = path_p.file_stem().and_then(|s| s.to_str()).unwrap_or(&name);
                 if let Some(new_path) = try_relocate_app(stem, &path) {
                     if new_path != path {
                         eprintln!("[health_check]   → lnk 兜底重定位: {}", new_path);
@@ -1574,7 +1885,9 @@ pub fn sanitize_db_on_startup(state: &tauri::State<'_, AppState>) -> Result<usiz
         .prepare("SELECT id, name, path, app_type FROM apps WHERE deleted_at IS NULL")
         .map_err(|e| e.to_string())?;
     let rows: Vec<(i64, String, String, String)> = stmt
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
         .collect();
@@ -1588,7 +1901,10 @@ pub fn sanitize_db_on_startup(state: &tauri::State<'_, AppState>) -> Result<usiz
         #[cfg(not(windows))]
         let path_is_url = {
             let pl = path.to_lowercase();
-            pl.starts_with("http://") || pl.starts_with("https://") || pl.contains("://") || pl.ends_with(".url")
+            pl.starts_with("http://")
+                || pl.starts_with("https://")
+                || pl.contains("://")
+                || pl.ends_with(".url")
         };
         let mut new_app_type: Option<String> = None;
 
@@ -1607,7 +1923,9 @@ pub fn sanitize_db_on_startup(state: &tauri::State<'_, AppState>) -> Result<usiz
                 "UPDATE apps SET app_type=?1 WHERE id=?2",
                 rusqlite::params![new_at, id],
             ) {
-                Ok(_) => { fixed_count += 1; }
+                Ok(_) => {
+                    fixed_count += 1;
+                }
                 Err(_) => { /* 写失败按未修正处理，不中断启动 */ }
             }
         }
@@ -1620,9 +1938,13 @@ pub fn sanitize_db_on_startup(state: &tauri::State<'_, AppState>) -> Result<usiz
 // 🛡️ 22. 贴边隐藏相关（暂时留空，诊断用）
 // ============================================================
 #[tauri::command]
-pub fn is_dock_hidden() -> bool { false }
+pub fn is_dock_hidden() -> bool {
+    false
+}
 #[tauri::command]
-pub fn force_dock_reveal(_app: AppHandle) -> Result<(), String> { Ok(()) }
+pub fn force_dock_reveal(_app: AppHandle) -> Result<(), String> {
+    Ok(())
+}
 
 // 让 crypto / BASE64 import 不 warning（有的文件直接用到，有的没用到）
 #[allow(unused_imports)]

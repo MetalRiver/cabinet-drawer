@@ -109,12 +109,27 @@ impl Db {
         Self::migrate_add_column(&conn, "apps", "use_count", "INTEGER NOT NULL DEFAULT 0")?;
         Self::migrate_add_column(&conn, "apps", "last_used_at", "INTEGER NOT NULL DEFAULT 0")?;
         Self::migrate_add_column(&conn, "snippets", "use_count", "INTEGER NOT NULL DEFAULT 0")?;
-        Self::migrate_add_column(&conn, "snippets", "last_used_at", "INTEGER NOT NULL DEFAULT 0")?;
+        Self::migrate_add_column(
+            &conn,
+            "snippets",
+            "last_used_at",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
         // P1-#PW#USE#PERSIST：密码表也补 use_count / last_used_at
         // 之前：前端用 in-memory 计数，刷新页面就丢
         // 现在：与 apps / snippets 一样持久化
-        Self::migrate_add_column(&conn, "passwords", "use_count", "INTEGER NOT NULL DEFAULT 0")?;
-        Self::migrate_add_column(&conn, "passwords", "last_used_at", "INTEGER NOT NULL DEFAULT 0")?;
+        Self::migrate_add_column(
+            &conn,
+            "passwords",
+            "use_count",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        Self::migrate_add_column(
+            &conn,
+            "passwords",
+            "last_used_at",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
         Ok(())
     }
 
@@ -162,9 +177,7 @@ impl Db {
     pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare("SELECT value FROM settings WHERE key = ?1")?;
-        let result: Option<String> = stmt
-            .query_row(params![key], |row| row.get(0))
-            .ok();
+        let result: Option<String> = stmt.query_row(params![key], |row| row.get(0)).ok();
         Ok(result)
     }
 
@@ -285,11 +298,13 @@ impl Db {
     }
 
     /// 获取单条密码的加密内容
-    pub fn get_password_encrypted(&self, id: i64) -> Result<Option<(String, String, String, String, String)>> {
+    pub fn get_password_encrypted(
+        &self,
+        id: i64,
+    ) -> Result<Option<(String, String, String, String, String)>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT title, username, password, url, notes FROM passwords WHERE id = ?1",
-        )?;
+        let mut stmt = conn
+            .prepare("SELECT title, username, password, url, notes FROM passwords WHERE id = ?1")?;
         let result = stmt
             .query_row(params![id], |row| {
                 Ok((
@@ -307,9 +322,7 @@ impl Db {
     /// 读取 v2 解密所需的最小材料，不加载其它用户元数据。
     pub fn get_password_v2(&self, id: i64) -> Result<Option<V2PasswordRecord>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT record_uuid, password FROM passwords WHERE id = ?1",
-        )?;
+        let mut stmt = conn.prepare("SELECT record_uuid, password FROM passwords WHERE id = ?1")?;
         let result = stmt
             .query_row(params![id], |row| {
                 Ok(V2PasswordRecord {
@@ -443,9 +456,7 @@ impl Db {
             params![now, id],
         )?;
         let mut stmt = conn.prepare("SELECT use_count FROM passwords WHERE id = ?1")?;
-        let count: i64 = stmt
-            .query_row(params![id], |row| row.get(0))
-            .unwrap_or(0);
+        let count: i64 = stmt.query_row(params![id], |row| row.get(0)).unwrap_or(0);
         Ok(count)
     }
 
@@ -472,9 +483,7 @@ impl Db {
     pub fn list_passwords_full(&self) -> Result<Vec<PasswordWithCipher>> {
         let conn = self.conn.lock().unwrap();
         // deleted_at 可能在 schema 里没有，先尝试读，失败则当 NULL
-        let mut stmt = conn.prepare(
-            "SELECT id, password, deleted_at FROM passwords"
-        )?;
+        let mut stmt = conn.prepare("SELECT id, password, deleted_at FROM passwords")?;
         let rows = stmt
             .query_map([], |row| {
                 Ok(PasswordWithCipher {
@@ -523,42 +532,53 @@ impl Db {
 
     /// 列出所有软件（可选搜索 + 分类过滤）
     pub fn list_apps(&self, query: &str, category_id: Option<i64>) -> Result<Vec<AppMeta>> {
-        let conn = self.conn.lock().unwrap();
-        let mut sql = String::from(
+        let mut rows = {
+            let conn = self.conn.lock().unwrap();
+            let mut sql = String::from(
             "SELECT id, name, path, icon_path, args, category_id, app_type, app_subtype, use_count, last_used_at, created_at
              FROM apps WHERE deleted_at IS NULL",
         );
-        let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
-        if !query.is_empty() {
-            sql.push_str(" AND (name LIKE ?1 OR path LIKE ?1)");
-            params_vec.push(Box::new(format!("%{}%", query)));
-        }
-        if let Some(cat) = category_id {
-            let idx = params_vec.len() + 1;
-            sql.push_str(&format!(" AND category_id = ?{}", idx));
-            params_vec.push(Box::new(cat));
-        }
-        sql.push_str(" ORDER BY use_count DESC, last_used_at DESC, created_at DESC");
+            let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+            if !query.is_empty() {
+                sql.push_str(" AND (name LIKE ?1 OR path LIKE ?1)");
+                params_vec.push(Box::new(format!("%{}%", query)));
+            }
+            if let Some(cat) = category_id {
+                let idx = params_vec.len() + 1;
+                sql.push_str(&format!(" AND category_id = ?{}", idx));
+                params_vec.push(Box::new(cat));
+            }
+            sql.push_str(" ORDER BY use_count DESC, last_used_at DESC, created_at DESC");
 
-        let mut stmt = conn.prepare(&sql)?;
-        let params_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|b| b.as_ref()).collect();
-        let rows = stmt
-            .query_map(params_refs.as_slice(), |row| {
-                Ok(AppMeta {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    path: row.get(2)?,
-                    icon_path: row.get(3)?,
-                    args: row.get(4)?,
-                    category_id: row.get(5)?,
-                    app_type: row.get(6)?,
-                    app_subtype: row.get(7)?,
-                    use_count: row.get(8)?,
-                    last_used_at: row.get(9)?,
-                    created_at: row.get(10)?,
-                })
-            })?
-            .collect::<Result<Vec<_>>>()?;
+            let mut stmt = conn.prepare(&sql)?;
+            let params_refs: Vec<&dyn rusqlite::ToSql> =
+                params_vec.iter().map(|b| b.as_ref()).collect();
+            let rows = stmt
+                .query_map(params_refs.as_slice(), |row| {
+                    Ok(AppMeta {
+                        id: row.get(0)?,
+                        name: row.get(1)?,
+                        path: row.get(2)?,
+                        icon_path: row.get(3)?,
+                        args: row.get(4)?,
+                        category_id: row.get(5)?,
+                        app_type: row.get(6)?,
+                        app_subtype: row.get(7)?,
+                        use_count: row.get(8)?,
+                        last_used_at: row.get(9)?,
+                        created_at: row.get(10)?,
+                        // 占位 true，list_apps 返回前在锁外统一派生真实可用性
+                        available: true,
+                    })
+                })?
+                .collect::<Result<Vec<_>>>()?;
+            rows
+        };
+        // Phase 2D：可用性在 DB 锁外派生（fs 检查绝不持锁），失败一律视为不可用但不影响加载
+        for m in rows.iter_mut() {
+            m.available = std::panic::catch_unwind(|| app_path_available(&m.app_type, &m.path))
+                .unwrap_or(false);
+        }
         Ok(rows)
     }
 
@@ -605,8 +625,10 @@ impl Db {
         let conn = self.conn.lock().unwrap();
         // 动态构建 SET：只更新 Some 字段（patch 语义），列名为固定白名单字面量
         let mut sets: Vec<&str> = vec!["name=?", "path=?"];
-        let mut values: Vec<rusqlite::types::Value> =
-            vec![rusqlite::types::Value::from(name.to_string()), rusqlite::types::Value::from(path.to_string())];
+        let mut values: Vec<rusqlite::types::Value> = vec![
+            rusqlite::types::Value::from(name.to_string()),
+            rusqlite::types::Value::from(path.to_string()),
+        ];
         if let Some(v) = icon_path {
             sets.push("icon_path=?");
             values.push(rusqlite::types::Value::from(v.to_string()));
@@ -655,18 +677,21 @@ impl Db {
         // 通过 file_stem 匹配：path 中文件名去掉扩展名 = stem
         // 用 LIKE '%/<stem>.%' 或 '%\<stem>.%' 匹配（Windows 路径分隔符）
         let lower_stem = stem.to_lowercase();
-        let pat_linux = format!("%/{}", lower_stem);   // Linux 风格
-        let pat_win = format!("%\\{}", lower_stem);    // Windows 风格
+        let pat_linux = format!("%/{}", lower_stem); // Linux 风格
+        let pat_win = format!("%\\{}", lower_stem); // Windows 风格
         let mut stmt = conn.prepare(
             "SELECT id, path FROM apps
              WHERE (LOWER(path) LIKE ?1 OR LOWER(path) LIKE ?2)
-             LIMIT 5"
+             LIMIT 5",
         )?;
         let rows = stmt.query_map(params![pat_linux, pat_win], |row| {
             let id: i64 = row.get(0)?;
             let path: String = row.get(1)?;
             // 双重确认：path 的 file_stem 真的等于 stem
-            if let Some(p) = std::path::Path::new(&path).file_stem().and_then(|s| s.to_str()) {
+            if let Some(p) = std::path::Path::new(&path)
+                .file_stem()
+                .and_then(|s| s.to_str())
+            {
                 if p.to_lowercase() == lower_stem {
                     return Ok(Some(id));
                 }
@@ -811,7 +836,9 @@ impl Db {
                     source: "软件".to_string(),
                 })
             })?;
-            for r in rows { out.push(r?); }
+            for r in rows {
+                out.push(r?);
+            }
         }
         {
             let mut stmt = conn.prepare(
@@ -829,7 +856,9 @@ impl Db {
                     source: "密码".to_string(),
                 })
             })?;
-            for r in rows { out.push(r?); }
+            for r in rows {
+                out.push(r?);
+            }
         }
         {
             let mut stmt = conn.prepare(
@@ -847,7 +876,9 @@ impl Db {
                     source: "命令行".to_string(),
                 })
             })?;
-            for r in rows { out.push(r?); }
+            for r in rows {
+                out.push(r?);
+            }
         }
         {
             let mut stmt = conn.prepare(
@@ -871,7 +902,9 @@ impl Db {
                     source: "便签".to_string(),
                 })
             })?;
-            for r in rows { out.push(r?); }
+            for r in rows {
+                out.push(r?);
+            }
         }
         out.sort_by(|a, b| b.deleted_at.cmp(&a.deleted_at));
         Ok(out)
@@ -950,10 +983,7 @@ impl Db {
             "UPDATE apps SET category_id = NULL WHERE category_id = ?1",
             params![id],
         )?;
-        conn.execute(
-            "DELETE FROM app_categories WHERE id = ?1",
-            params![id],
-        )?;
+        conn.execute("DELETE FROM app_categories WHERE id = ?1", params![id])?;
         Ok(())
     }
 
@@ -990,7 +1020,8 @@ impl Db {
         sql.push_str(" ORDER BY updated_at DESC");
 
         let mut stmt = conn.prepare(&sql)?;
-        let params_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|b| b.as_ref()).collect();
+        let params_refs: Vec<&dyn rusqlite::ToSql> =
+            params_vec.iter().map(|b| b.as_ref()).collect();
         let rows = stmt
             .query_map(params_refs.as_slice(), |row| {
                 Ok(SnippetMeta {
@@ -1012,7 +1043,9 @@ impl Db {
     pub fn get_snippet_content(&self, id: i64) -> Result<Option<String>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare("SELECT content FROM snippets WHERE id=?1")?;
-        let result = stmt.query_row(params![id], |row| row.get::<_, String>(0)).ok();
+        let result = stmt
+            .query_row(params![id], |row| row.get::<_, String>(0))
+            .ok();
         Ok(result)
     }
 
@@ -1158,6 +1191,26 @@ pub struct AppMeta {
     pub use_count: i64,
     pub last_used_at: i64,
     pub created_at: i64,
+    /// Phase 2D：运行时派生的可用性（非持久化）。路径失效≠删除，UI 据此提供
+    /// 重新关联/打开所在位置/从抽屉柜移除；removable/network 路径离线只显示不可用。
+    #[serde(default = "default_true")]
+    pub available: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Phase 2D：按 app_type 计算可用性（DB 锁外调用，禁止在持锁时做 fs 检查）
+pub fn app_path_available(app_type: &str, path: &str) -> bool {
+    if app_type == "url" {
+        return true; // 网址永远"可用"，失效只会在打开时提示
+    }
+    let p = std::path::Path::new(path);
+    if app_type == "folder" {
+        return p.is_dir();
+    }
+    p.exists()
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -1194,12 +1247,12 @@ pub struct TempMeta {
 pub struct TrashItem {
     pub id: i64,
     pub name: String,
-    pub kind: String,         // "app" / "password" / "snippet" / "temp"（前端显示用，历史保留）
-    pub table_name: String,   // ✅ 新增：真实表名，恢复/硬删时直接传这个！"apps" / "passwords" / "snippets" / "temp_contents"
-    pub kind_detail: String,  // app_type / username / language
-    pub sub_detail: String,   // app_subtype / url / tags
-    pub deleted_at: i64,      // ms timestamp
-    pub source: String,       // "软件" / "密码" / "命令行" / "便签"
+    pub kind: String, // "app" / "password" / "snippet" / "temp"（前端显示用，历史保留）
+    pub table_name: String, // ✅ 新增：真实表名，恢复/硬删时直接传这个！"apps" / "passwords" / "snippets" / "temp_contents"
+    pub kind_detail: String, // app_type / username / language
+    pub sub_detail: String, // app_subtype / url / tags
+    pub deleted_at: i64,    // ms timestamp
+    pub source: String,     // "软件" / "密码" / "命令行" / "便签"
 }
 
 /// 初始化数据库（兼容旧 API）
@@ -1233,7 +1286,9 @@ pub enum ImportConflictPolicy {
 }
 
 impl Default for ImportConflictPolicy {
-    fn default() -> Self { ImportConflictPolicy::Skip }
+    fn default() -> Self {
+        ImportConflictPolicy::Skip
+    }
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -1266,7 +1321,10 @@ pub struct ImportStats {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct SettingRow { pub key: String, pub value: String }
+pub struct SettingRow {
+    pub key: String,
+    pub value: String,
+}
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct PasswordRow {
@@ -1413,8 +1471,9 @@ impl BackupFullData {
         match &self.settings {
             // 情况 1：数组（新格式）→ 直接反序列化成 Vec<SettingRow>
             serde_json::Value::Array(arr) => {
-                let rows: Vec<SettingRow> = serde_json::from_value(serde_json::Value::Array(arr.clone()))
-                    .map_err(|e| format!("settings 数组格式错误: {}", e))?;
+                let rows: Vec<SettingRow> =
+                    serde_json::from_value(serde_json::Value::Array(arr.clone()))
+                        .map_err(|e| format!("settings 数组格式错误: {}", e))?;
                 Ok(rows)
             }
             // 情况 2：对象（旧格式 Map<String, String>）→ 转成 Vec<SettingRow>
@@ -1425,14 +1484,20 @@ impl BackupFullData {
                         serde_json::Value::String(s) => s.clone(),
                         other => other.to_string(),
                     };
-                    out.push(SettingRow { key: k.clone(), value: v_str });
+                    out.push(SettingRow {
+                        key: k.clone(),
+                        value: v_str,
+                    });
                 }
                 Ok(out)
             }
             // 情况 3：空（Null）→ 返回空数组
             serde_json::Value::Null => Ok(Vec::new()),
             // 其他情况 → 报错
-            other => Err(format!("settings 字段格式异常（既不是对象也不是数组）: {:?}", other)),
+            other => Err(format!(
+                "settings 字段格式异常（既不是对象也不是数组）: {:?}",
+                other
+            )),
         }
     }
 }
@@ -1455,24 +1520,33 @@ impl Db {
                 "SELECT key, value FROM settings
                  WHERE key NOT IN ('master_password_hash','master_password_salt','recovery_phrase_encrypted','pw2nd_hash','pw2nd_salt')"
             )?;
-            let rows = stmt.query_map([], |row| Ok(SettingRow {
-                key: row.get(0)?,
-                value: row.get(1)?,
-            }))?.collect::<Result<Vec<_>>>()?;
-            out.settings = serde_json::to_value(&rows).map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok(SettingRow {
+                        key: row.get(0)?,
+                        value: row.get(1)?,
+                    })
+                })?
+                .collect::<Result<Vec<_>>>()?;
+            out.settings = serde_json::to_value(&rows)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;
         }
 
         // 2) 软件分类
         {
             let mut stmt = conn.prepare(
-                "SELECT id, name, icon, sort_order FROM app_categories ORDER BY sort_order, id"
+                "SELECT id, name, icon, sort_order FROM app_categories ORDER BY sort_order, id",
             )?;
-            let rows = stmt.query_map([], |row| Ok(CategoryRow {
-                id: Some(row.get(0)?),
-                name: row.get(1)?,
-                icon: row.get(2)?,
-                sort_order: row.get(3)?,
-            }))?.collect::<Result<Vec<_>>>()?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok(CategoryRow {
+                        id: Some(row.get(0)?),
+                        name: row.get(1)?,
+                        icon: row.get(2)?,
+                        sort_order: row.get(3)?,
+                    })
+                })?
+                .collect::<Result<Vec<_>>>()?;
             out.categories = rows;
         }
 
@@ -1482,20 +1556,24 @@ impl Db {
                 "SELECT id, title, username, password, url, notes, use_count, last_used_at, created_at, updated_at, deleted_at
                  FROM passwords"
             )?;
-            let rows = stmt.query_map([], |row| Ok(PasswordRow {
-                id: Some(row.get(0)?),
-                title: row.get(1)?,
-                username: row.get(2)?,
-                encrypted_password: row.get(3)?,
-                password_plaintext: None, // 导出时先空，settings_backup.rs 会解密填明文
-                url: row.get(4)?,
-                notes: row.get(5)?,
-                use_count: row.get::<_, i64>(6).unwrap_or(0),
-                last_used_at: row.get::<_, i64>(7).unwrap_or(0),
-                created_at: row.get(8)?,
-                updated_at: row.get(9)?,
-                deleted_at: row.get::<_, Option<i64>>(10).ok().flatten(),
-            }))?.collect::<Result<Vec<_>>>()?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok(PasswordRow {
+                        id: Some(row.get(0)?),
+                        title: row.get(1)?,
+                        username: row.get(2)?,
+                        encrypted_password: row.get(3)?,
+                        password_plaintext: None, // 导出时先空，settings_backup.rs 会解密填明文
+                        url: row.get(4)?,
+                        notes: row.get(5)?,
+                        use_count: row.get::<_, i64>(6).unwrap_or(0),
+                        last_used_at: row.get::<_, i64>(7).unwrap_or(0),
+                        created_at: row.get(8)?,
+                        updated_at: row.get(9)?,
+                        deleted_at: row.get::<_, Option<i64>>(10).ok().flatten(),
+                    })
+                })?
+                .collect::<Result<Vec<_>>>()?;
             out.passwords = rows;
         }
 
@@ -1505,7 +1583,8 @@ impl Db {
             let cat_rows = cat_stmt.query_map([], |row| {
                 Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
             })?;
-            let mut cat_id_to_name: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
+            let mut cat_id_to_name: std::collections::HashMap<i64, String> =
+                std::collections::HashMap::new();
             for r in cat_rows {
                 let (id, name) = r?;
                 cat_id_to_name.insert(id, name);
@@ -1515,20 +1594,28 @@ impl Db {
                 "SELECT id, name, path, icon_path, args, category_id, app_type, app_subtype, use_count, last_used_at, created_at, deleted_at
                  FROM apps"
             )?;
-            let rows = stmt.query_map([], |row| Ok(AppRow {
-                id: Some(row.get(0)?),
-                name: row.get(1)?,
-                path: row.get(2)?,
-                icon_path: row.get(3)?,
-                args: row.get(4)?,
-                category_name: row.get::<_, Option<i64>>(5).ok().flatten().and_then(|id| cat_id_to_name.get(&id).cloned()),
-                app_type: row.get(6)?,
-                app_subtype: row.get(7)?,
-                use_count: row.get::<_, i64>(8).unwrap_or(0),
-                last_used_at: row.get::<_, i64>(9).unwrap_or(0),
-                created_at: row.get(10)?,
-                deleted_at: row.get::<_, Option<i64>>(11).ok().flatten(),
-            }))?.collect::<Result<Vec<_>>>()?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok(AppRow {
+                        id: Some(row.get(0)?),
+                        name: row.get(1)?,
+                        path: row.get(2)?,
+                        icon_path: row.get(3)?,
+                        args: row.get(4)?,
+                        category_name: row
+                            .get::<_, Option<i64>>(5)
+                            .ok()
+                            .flatten()
+                            .and_then(|id| cat_id_to_name.get(&id).cloned()),
+                        app_type: row.get(6)?,
+                        app_subtype: row.get(7)?,
+                        use_count: row.get::<_, i64>(8).unwrap_or(0),
+                        last_used_at: row.get::<_, i64>(9).unwrap_or(0),
+                        created_at: row.get(10)?,
+                        deleted_at: row.get::<_, Option<i64>>(11).ok().flatten(),
+                    })
+                })?
+                .collect::<Result<Vec<_>>>()?;
             out.apps = rows;
         }
 
@@ -1538,33 +1625,41 @@ impl Db {
                 "SELECT id, title, content, language, tags, use_count, last_used_at, created_at, updated_at, deleted_at
                  FROM snippets"
             )?;
-            let rows = stmt.query_map([], |row| Ok(SnippetRow {
-                id: Some(row.get(0)?),
-                title: row.get(1)?,
-                content: row.get(2)?,
-                language: row.get(3)?,
-                tags: row.get(4)?,
-                use_count: row.get::<_, i64>(5).unwrap_or(0),
-                last_used_at: row.get::<_, i64>(6).unwrap_or(0),
-                created_at: row.get(7)?,
-                updated_at: row.get(8)?,
-                deleted_at: row.get::<_, Option<i64>>(9).ok().flatten(),
-            }))?.collect::<Result<Vec<_>>>()?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok(SnippetRow {
+                        id: Some(row.get(0)?),
+                        title: row.get(1)?,
+                        content: row.get(2)?,
+                        language: row.get(3)?,
+                        tags: row.get(4)?,
+                        use_count: row.get::<_, i64>(5).unwrap_or(0),
+                        last_used_at: row.get::<_, i64>(6).unwrap_or(0),
+                        created_at: row.get(7)?,
+                        updated_at: row.get(8)?,
+                        deleted_at: row.get::<_, Option<i64>>(9).ok().flatten(),
+                    })
+                })?
+                .collect::<Result<Vec<_>>>()?;
             out.snippets = rows;
         }
 
         // 6) 便签
         {
             let mut stmt = conn.prepare(
-                "SELECT id, text, created_at, expires_at, deleted_at FROM temp_contents"
+                "SELECT id, text, created_at, expires_at, deleted_at FROM temp_contents",
             )?;
-            let rows = stmt.query_map([], |row| Ok(TempRow {
-                id: Some(row.get(0)?),
-                text: row.get(1)?,
-                created_at: row.get(2)?,
-                expires_at: row.get(3)?,
-                deleted_at: row.get::<_, Option<i64>>(4).ok().flatten(),
-            }))?.collect::<Result<Vec<_>>>()?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok(TempRow {
+                        id: Some(row.get(0)?),
+                        text: row.get(1)?,
+                        created_at: row.get(2)?,
+                        expires_at: row.get(3)?,
+                        deleted_at: row.get::<_, Option<i64>>(4).ok().flatten(),
+                    })
+                })?
+                .collect::<Result<Vec<_>>>()?;
             out.temps = rows;
         }
 
@@ -1574,7 +1669,11 @@ impl Db {
     // ============================================================
     // 🗄️ 备份导入：按策略合并，用事务保证原子性（失败全回滚）
     // ============================================================
-    pub fn import_all_data(&self, data: &BackupFullData, policy: ImportConflictPolicy) -> Result<ImportStats> {
+    pub fn import_all_data(
+        &self,
+        data: &BackupFullData,
+        policy: ImportConflictPolicy,
+    ) -> Result<ImportStats> {
         let conn = self.conn.lock().unwrap();
         // 开启事务（任何一步失败自动回滚）
         conn.execute("BEGIN IMMEDIATE", [])?;
@@ -1583,11 +1682,20 @@ impl Db {
             use std::collections::HashMap;
 
             // 1) 设置：先兼容转换（Map / Array 两种格式），再 INSERT OR REPLACE（保留本地主密码相关设置不动）
-            let settings_rows = data.settings_rows().map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+            let settings_rows = data
+                .settings_rows()
+                .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
             for s in &settings_rows {
-                if matches!(s.key.as_str(),
-                    "master_password_hash" | "master_password_salt" | "recovery_phrase_encrypted"
-                    | "pw2nd_hash" | "pw2nd_salt") { continue; }
+                if matches!(
+                    s.key.as_str(),
+                    "master_password_hash"
+                        | "master_password_salt"
+                        | "recovery_phrase_encrypted"
+                        | "pw2nd_hash"
+                        | "pw2nd_salt"
+                ) {
+                    continue;
+                }
                 conn.execute(
                     "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
                     params![&s.key, &s.value],
@@ -1628,13 +1736,17 @@ impl Db {
             }
 
             // 辅助：按策略决定最终名称（冲突时用）
-            fn resolve_name(existing: Option<()>, name: &str, policy: &ImportConflictPolicy)
-                -> std::result::Result<Option<String>, ()>
-            {
+            fn resolve_name(
+                existing: Option<()>,
+                name: &str,
+                policy: &ImportConflictPolicy,
+            ) -> std::result::Result<Option<String>, ()> {
                 match (existing, policy) {
                     (Some(_), ImportConflictPolicy::Skip) => Ok(None),
                     (Some(_), ImportConflictPolicy::Overwrite) => Ok(Some(name.to_string())),
-                    (Some(_), ImportConflictPolicy::Merge) => Ok(Some(format!("{} (导入副本)", name))),
+                    (Some(_), ImportConflictPolicy::Merge) => {
+                        Ok(Some(format!("{} (导入副本)", name)))
+                    }
                     (None, _) => Ok(Some(name.to_string())),
                 }
             }
@@ -1645,14 +1757,21 @@ impl Db {
                 let dup_id: Option<i64> = {
                     let mut stmt = conn.prepare(
                         "SELECT id FROM passwords
-                         WHERE title = ?1 AND username = ?2 AND deleted_at IS NULL LIMIT 1"
+                         WHERE title = ?1 AND username = ?2 AND deleted_at IS NULL LIMIT 1",
                     )?;
-                    stmt.query_row(params![&p.title, &p.username], |row| row.get::<_, i64>(0)).ok()
+                    stmt.query_row(params![&p.title, &p.username], |row| row.get::<_, i64>(0))
+                        .ok()
                 };
                 let final_name = match resolve_name(dup_id.map(|_| ()), &p.title, &policy) {
                     Ok(Some(n)) => n,
-                    Ok(None) => { stats.passwords_skipped += 1; continue; },
-                    Err(_) => { stats.passwords_skipped += 1; continue; },
+                    Ok(None) => {
+                        stats.passwords_skipped += 1;
+                        continue;
+                    }
+                    Err(_) => {
+                        stats.passwords_skipped += 1;
+                        continue;
+                    }
                 };
                 if dup_id.is_some() {
                     match policy {
@@ -1668,7 +1787,7 @@ impl Db {
                                     chrono::Utc::now().timestamp_millis(), p.deleted_at, id],
                             )?;
                             stats.passwords_overwritten += 1;
-                        },
+                        }
                         ImportConflictPolicy::Merge => {
                             conn.execute(
                                 "INSERT INTO passwords (title, username, password, url, notes, use_count, last_used_at, created_at, updated_at, deleted_at)
@@ -1678,7 +1797,7 @@ impl Db {
                                     p.created_at, chrono::Utc::now().timestamp_millis(), p.deleted_at],
                             )?;
                             stats.passwords_merged += 1;
-                        },
+                        }
                         _ => unreachable!(), // Skip 已在 resolve_name 中处理
                     }
                 } else {
@@ -1696,17 +1815,22 @@ impl Db {
 
             // 4) 软件（冲突判断：同 path，或同 name stem）
             for a in &data.apps {
-                let local_cat_id = a.category_name.as_ref().and_then(|n| cat_name_to_id.get(n).copied());
+                let local_cat_id = a
+                    .category_name
+                    .as_ref()
+                    .and_then(|n| cat_name_to_id.get(n).copied());
                 // 查找本地是否存在相同路径或同名【只看正常的，不看回收站的】
                 let dup_id: Option<i64> = {
                     let lower = a.path.to_lowercase();
                     let mut stmt = conn.prepare(
-                        "SELECT id FROM apps WHERE LOWER(path) = ?1 AND deleted_at IS NULL LIMIT 1"
+                        "SELECT id FROM apps WHERE LOWER(path) = ?1 AND deleted_at IS NULL LIMIT 1",
                     )?;
                     if let Ok(id) = stmt.query_row(params![&lower], |row| row.get::<_, i64>(0)) {
                         Some(id)
                     } else if let Some(stem) = std::path::Path::new(&a.path)
-                        .file_stem().and_then(|s| s.to_str()) {
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                    {
                         let pat1 = format!("%/{}", stem.to_lowercase());
                         let pat2 = format!("%\\{}", stem.to_lowercase());
                         let mut stmt2 = conn.prepare(
@@ -1720,17 +1844,31 @@ impl Db {
                         let mut found = None;
                         for r in rows {
                             let (id, p) = r?;
-                            if let Some(s2) = std::path::Path::new(&p).file_stem().and_then(|s| s.to_str()) {
-                                if s2.to_lowercase() == stem.to_lowercase() { found = Some(id); break; }
+                            if let Some(s2) = std::path::Path::new(&p)
+                                .file_stem()
+                                .and_then(|s| s.to_str())
+                            {
+                                if s2.to_lowercase() == stem.to_lowercase() {
+                                    found = Some(id);
+                                    break;
+                                }
                             }
                         }
                         found
-                    } else { None }
+                    } else {
+                        None
+                    }
                 };
                 let final_name = match resolve_name(dup_id.map(|_| ()), &a.name, &policy) {
                     Ok(Some(n)) => n,
-                    Ok(None) => { stats.apps_skipped += 1; continue; },
-                    Err(_) => { stats.apps_skipped += 1; continue; },
+                    Ok(None) => {
+                        stats.apps_skipped += 1;
+                        continue;
+                    }
+                    Err(_) => {
+                        stats.apps_skipped += 1;
+                        continue;
+                    }
                 };
                 if dup_id.is_some() {
                     match policy {
@@ -1744,7 +1882,7 @@ impl Db {
                                     &a.app_type, &a.app_subtype, a.use_count, a.last_used_at, a.deleted_at, id],
                             )?;
                             stats.apps_overwritten += 1;
-                        },
+                        }
                         ImportConflictPolicy::Merge => {
                             conn.execute(
                                 "INSERT INTO apps (name, path, icon_path, args, category_id, app_type, app_subtype, use_count, last_used_at, created_at, deleted_at)
@@ -1754,7 +1892,7 @@ impl Db {
                                     a.created_at, a.deleted_at],
                             )?;
                             stats.apps_merged += 1;
-                        },
+                        }
                         _ => unreachable!(),
                     }
                 } else {
@@ -1775,14 +1913,21 @@ impl Db {
                 let dup_id: Option<i64> = {
                     let mut stmt = conn.prepare(
                         "SELECT id FROM snippets
-                         WHERE title = ?1 AND language = ?2 AND deleted_at IS NULL LIMIT 1"
+                         WHERE title = ?1 AND language = ?2 AND deleted_at IS NULL LIMIT 1",
                     )?;
-                    stmt.query_row(params![&s.title, &s.language], |row| row.get::<_, i64>(0)).ok()
+                    stmt.query_row(params![&s.title, &s.language], |row| row.get::<_, i64>(0))
+                        .ok()
                 };
                 let final_name = match resolve_name(dup_id.map(|_| ()), &s.title, &policy) {
                     Ok(Some(n)) => n,
-                    Ok(None) => { stats.snippets_skipped += 1; continue; },
-                    Err(_) => { stats.snippets_skipped += 1; continue; },
+                    Ok(None) => {
+                        stats.snippets_skipped += 1;
+                        continue;
+                    }
+                    Err(_) => {
+                        stats.snippets_skipped += 1;
+                        continue;
+                    }
                 };
                 if dup_id.is_some() {
                     match policy {
@@ -1797,7 +1942,7 @@ impl Db {
                                     chrono::Utc::now().timestamp_millis(), s.deleted_at, id],
                             )?;
                             stats.snippets_overwritten += 1;
-                        },
+                        }
                         ImportConflictPolicy::Merge => {
                             conn.execute(
                                 "INSERT INTO snippets (title, content, language, tags, use_count, last_used_at, created_at, updated_at, deleted_at)
@@ -1807,7 +1952,7 @@ impl Db {
                                     s.created_at, chrono::Utc::now().timestamp_millis(), s.deleted_at],
                             )?;
                             stats.snippets_merged += 1;
-                        },
+                        }
                         _ => unreachable!(),
                     }
                 } else {
@@ -1828,14 +1973,21 @@ impl Db {
                 let dup_id: Option<i64> = {
                     let mut stmt = conn.prepare(
                         "SELECT id FROM temp_contents
-                         WHERE text = ?1 AND expires_at = ?2 AND deleted_at IS NULL LIMIT 1"
+                         WHERE text = ?1 AND expires_at = ?2 AND deleted_at IS NULL LIMIT 1",
                     )?;
-                    stmt.query_row(params![&t.text, t.expires_at], |row| row.get::<_, i64>(0)).ok()
+                    stmt.query_row(params![&t.text, t.expires_at], |row| row.get::<_, i64>(0))
+                        .ok()
                 };
                 let final_text = match resolve_name(dup_id.map(|_| ()), &t.text, &policy) {
                     Ok(Some(n)) => n,
-                    Ok(None) => { stats.temps_skipped += 1; continue; },
-                    Err(_) => { stats.temps_skipped += 1; continue; },
+                    Ok(None) => {
+                        stats.temps_skipped += 1;
+                        continue;
+                    }
+                    Err(_) => {
+                        stats.temps_skipped += 1;
+                        continue;
+                    }
                 };
                 if dup_id.is_some() {
                     match policy {
@@ -1847,7 +1999,7 @@ impl Db {
                                 params![&final_text, t.expires_at, t.deleted_at, id],
                             )?;
                             stats.temps_overwritten += 1;
-                        },
+                        }
                         ImportConflictPolicy::Merge => {
                             conn.execute(
                                 "INSERT INTO temp_contents (text, created_at, expires_at, deleted_at)
@@ -1855,7 +2007,7 @@ impl Db {
                                 params![&final_text, t.created_at, t.expires_at, t.deleted_at],
                             )?;
                             stats.temps_merged += 1;
-                        },
+                        }
                         _ => unreachable!(),
                     }
                 } else {
@@ -1875,11 +2027,11 @@ impl Db {
         match tx_result {
             Ok(_) => {
                 conn.execute("COMMIT", [])?;
-            },
+            }
             Err(e) => {
                 conn.execute("ROLLBACK", [])?;
                 stats.errors.push(format!("导入事务失败，已回滚：{}", e));
-            },
+            }
         }
 
         Ok(stats)
@@ -1894,8 +2046,13 @@ mod password_patch_tests {
     fn temp_db() -> (Db, PathBuf) {
         let dir = std::env::temp_dir().join(format!("drawer_box_test_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join(format!("pw_{}.db", std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()));
+        let path = dir.join(format!(
+            "pw_{}.db",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
         let _ = std::fs::remove_file(&path);
         (Db::open(&path).unwrap(), path)
     }
@@ -1911,16 +2068,32 @@ mod password_patch_tests {
         let cipher = "ciphertext-placeholder";
         let id = db.create_password("t", "u", cipher, "u0", "n0").unwrap();
 
-        db.update_password_metadata(id, "t2", "u", "u0", "n0").unwrap();
-        assert_eq!(db.get_password_encrypted(id).unwrap().unwrap().2, cipher, "改标题不得动密文");
+        db.update_password_metadata(id, "t2", "u", "u0", "n0")
+            .unwrap();
+        assert_eq!(
+            db.get_password_encrypted(id).unwrap().unwrap().2,
+            cipher,
+            "改标题不得动密文"
+        );
 
-        db.update_password_metadata(id, "t2", "u2", "u0", "n0").unwrap();
-        assert_eq!(db.get_password_encrypted(id).unwrap().unwrap().2, cipher, "改用户名不得动密文");
+        db.update_password_metadata(id, "t2", "u2", "u0", "n0")
+            .unwrap();
+        assert_eq!(
+            db.get_password_encrypted(id).unwrap().unwrap().2,
+            cipher,
+            "改用户名不得动密文"
+        );
 
-        db.update_password_metadata(id, "t2", "u2", "u2", "n0").unwrap();
-        assert_eq!(db.get_password_encrypted(id).unwrap().unwrap().2, cipher, "改URL不得动密文");
+        db.update_password_metadata(id, "t2", "u2", "u2", "n0")
+            .unwrap();
+        assert_eq!(
+            db.get_password_encrypted(id).unwrap().unwrap().2,
+            cipher,
+            "改URL不得动密文"
+        );
 
-        db.update_password_metadata(id, "t2", "u2", "u2", "n2").unwrap();
+        db.update_password_metadata(id, "t2", "u2", "u2", "n2")
+            .unwrap();
         let (_, _, encrypted, url, notes) = db.get_password_encrypted(id).unwrap().unwrap();
         assert_eq!(encrypted, cipher);
         assert_eq!(url, "u2");
@@ -1953,8 +2126,10 @@ mod password_patch_tests {
         let cipher = "real-cipher-bytes";
         let id = db.create_password("t", "u", cipher, "", "").unwrap();
         for sentinel in ["UNCHANGED", "（解密失败）"] {
-            db.update_password_metadata(id, sentinel, "u", "", "").unwrap();
-            let (title, _username, encrypted, _, _) = db.get_password_encrypted(id).unwrap().unwrap();
+            db.update_password_metadata(id, sentinel, "u", "", "")
+                .unwrap();
+            let (title, _username, encrypted, _, _) =
+                db.get_password_encrypted(id).unwrap().unwrap();
             assert_eq!(encrypted, cipher, "哨兵串不得进入密码位");
             assert_eq!(title, sentinel);
         }

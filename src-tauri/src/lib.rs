@@ -4,55 +4,67 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Emitter, Manager, State, WindowEvent,
 };
-use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 use tauri_plugin_clipboard_manager::ClipboardExt;
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 // P0-#PERF#NOCMD：Windows 上用 CommandExt 加 CREATE_NO_WINDOW flag 防止闪窗
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
-mod db;
-mod data_root;
 #[cfg(test)]
+mod apps_2d_tests;
+mod backup;
+mod backup_v2;
+mod commands;
+mod crypto;
+mod data_root;
 mod data_root_restore_tests;
+mod db;
+#[cfg(test)]
+mod legacy_migration_tests;
 pub mod migration;
 #[cfg(test)]
 mod phase2d;
 #[cfg(test)]
-mod legacy_migration_tests;
-#[cfg(test)]
 mod v2_verification_tests;
-mod crypto;
-mod backup;
-mod backup_v2;
 #[cfg(windows)]
 mod win_dock;
 #[cfg(windows)]
-mod win_launch;
-#[cfg(windows)]
 mod win_icon;
-mod commands;
+#[cfg(windows)]
+mod win_launch;
 // 把 commands 模块下所有命令 pub use 到 crate 根，generate_handler!() 不用改
 use commands::*;
 
-use std::path::{Path, PathBuf};
-use std::sync::Mutex;
-use zeroize::Zeroizing;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use rand::Rng;
 use sha2::{Digest, Sha256};
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use zeroize::Zeroizing;
 
 use db::Db;
 
 // ===== 应用状态 =====
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SecurityModel { Legacy, StableDekV2 }
+pub enum SecurityModel {
+    Legacy,
+    StableDekV2,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StartupMode { Legacy, ExistingV2, FreshV2, PendingV2 }
+pub enum StartupMode {
+    Legacy,
+    ExistingV2,
+    FreshV2,
+    PendingV2,
+}
 
-enum ActiveKey { Legacy(Zeroizing<Vec<u8>>), StableDek(Zeroizing<Vec<u8>>) }
+enum ActiveKey {
+    Legacy(Zeroizing<Vec<u8>>),
+    StableDek(Zeroizing<Vec<u8>>),
+}
 
 struct PendingV2Initialization {
     tmp_path: PathBuf,
@@ -99,7 +111,11 @@ impl PendingLegacyMigration {
         }
         let _ = std::fs::remove_file(&self.migration_lock_path);
         let _ = std::fs::remove_file(&self.tmp_path);
-        let parent = self.tmp_path.parent().map(Path::to_path_buf).unwrap_or_default();
+        let parent = self
+            .tmp_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_default();
         if let Some(name) = self.tmp_path.file_name() {
             for suffix in ["-wal", "-shm", "-journal"] {
                 let mut sidecar = name.to_os_string();
@@ -153,12 +169,17 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn is_unlocked(&self) -> bool { self.key.lock().unwrap().is_some() }
+    pub fn is_unlocked(&self) -> bool {
+        self.key.lock().unwrap().is_some()
+    }
     /// Phase 2C-3：普通 DB 命令统一入口（shared permit）。迁移冻结期间拒绝。
     /// 可审计性约定：所有 DB-touching 命令第一行必须是
     /// `let _data_gate = state.data_read()?;  // [data-gate:shared]`
     pub fn data_read(&self) -> Result<std::sync::RwLockReadGuard<'_, ()>, String> {
-        if self.migration_freeze.load(std::sync::atomic::Ordering::SeqCst) {
+        if self
+            .migration_freeze
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
             return Err("数据迁移正在进行，数据操作已暂停，请稍后（应用将自动重启）。".to_string());
         }
         self.data_op_gate
@@ -168,7 +189,10 @@ impl AppState {
     /// Phase 2C-3：多阶段破坏性操作统一入口（exclusive permit）。
     /// 拿不到立即失败（不排队、不卡 UI）。
     pub fn data_write(&self) -> Result<std::sync::RwLockWriteGuard<'_, ()>, String> {
-        if self.migration_freeze.load(std::sync::atomic::Ordering::SeqCst) {
+        if self
+            .migration_freeze
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
             return Err("数据迁移正在进行，数据操作已暂停。".to_string());
         }
         self.data_op_gate
@@ -192,8 +216,12 @@ impl AppState {
         *self.key.lock().unwrap() = None;
         *self.pending_recovery_rotation.lock().unwrap() = None;
     }
-    pub fn set_legacy_key(&self, key: Zeroizing<Vec<u8>>) { *self.key.lock().unwrap() = Some(ActiveKey::Legacy(key)); }
-    pub fn set_stable_dek(&self, dek: Zeroizing<Vec<u8>>) { *self.key.lock().unwrap() = Some(ActiveKey::StableDek(dek)); }
+    pub fn set_legacy_key(&self, key: Zeroizing<Vec<u8>>) {
+        *self.key.lock().unwrap() = Some(ActiveKey::Legacy(key));
+    }
+    pub fn set_stable_dek(&self, dek: Zeroizing<Vec<u8>>) {
+        *self.key.lock().unwrap() = Some(ActiveKey::StableDek(dek));
+    }
     pub(crate) fn lock_master_wrap_gate(&self) -> Result<std::sync::MutexGuard<'_, ()>, String> {
         self.master_wrap_gate
             .lock()
@@ -216,10 +244,7 @@ impl AppState {
             .conn
             .lock()
             .map_err(|_| "恢复临时数据库不可用".to_string())?;
-        let mut destination_conn = db
-            .conn
-            .lock()
-            .map_err(|_| "正式数据库不可用".to_string())?;
+        let mut destination_conn = db.conn.lock().map_err(|_| "正式数据库不可用".to_string())?;
         let backup = rusqlite::backup::Backup::new(&source_conn, &mut destination_conn)
             .map_err(|_| "无法切换恢复数据库".to_string())?;
         backup
@@ -230,10 +255,33 @@ impl AppState {
         *pending = None;
         Ok(())
     }
-    pub fn legacy_key(&self) -> Result<Zeroizing<Vec<u8>>, String> { match &*self.key.lock().unwrap() { Some(ActiveKey::Legacy(key)) => Ok(Zeroizing::new(key.to_vec())), _ => Err("应用已锁定或当前数据库需要 v2 密码记录实现".into()) } }
-    pub fn stable_dek(&self) -> Result<Zeroizing<Vec<u8>>, String> { match &*self.key.lock().unwrap() { Some(ActiveKey::StableDek(dek)) => Ok(Zeroizing::new(dek.to_vec())), _ => Err("应用尚未以 v2 Stable DEK 解锁".into()) } }
-    pub fn require_legacy_model(&self) -> Result<(), String> { if self.security_model() == SecurityModel::Legacy { Ok(()) } else { Err("该操作尚未接入 v2 安全格式".into()) } }
-    pub fn unlock_v2_and_store(&self, password: &str) -> Result<(), String> { let db = self.db.lock().map_err(|_| "安全状态不可用".to_string())?; let dek = migration::unlock_v2_core(&db, password).map_err(|_| "主密码不正确或安全数据损坏".to_string())?; drop(db); self.set_stable_dek(dek); Ok(()) }
+    pub fn legacy_key(&self) -> Result<Zeroizing<Vec<u8>>, String> {
+        match &*self.key.lock().unwrap() {
+            Some(ActiveKey::Legacy(key)) => Ok(Zeroizing::new(key.to_vec())),
+            _ => Err("应用已锁定或当前数据库需要 v2 密码记录实现".into()),
+        }
+    }
+    pub fn stable_dek(&self) -> Result<Zeroizing<Vec<u8>>, String> {
+        match &*self.key.lock().unwrap() {
+            Some(ActiveKey::StableDek(dek)) => Ok(Zeroizing::new(dek.to_vec())),
+            _ => Err("应用尚未以 v2 Stable DEK 解锁".into()),
+        }
+    }
+    pub fn require_legacy_model(&self) -> Result<(), String> {
+        if self.security_model() == SecurityModel::Legacy {
+            Ok(())
+        } else {
+            Err("该操作尚未接入 v2 安全格式".into())
+        }
+    }
+    pub fn unlock_v2_and_store(&self, password: &str) -> Result<(), String> {
+        let db = self.db.lock().map_err(|_| "安全状态不可用".to_string())?;
+        let dek = migration::unlock_v2_core(&db, password)
+            .map_err(|_| "主密码不正确或安全数据损坏".to_string())?;
+        drop(db);
+        self.set_stable_dek(dek);
+        Ok(())
+    }
     /// 普通解锁的 production 语义（unlock_app IPC 的唯一实现）。
     /// 硬安全边界：legacy 安全模型下永远 fail closed——legacy-only 启动态
     /// 不允许 ActiveKey::Legacy → 进入正常工作模式，唯一出路是两阶段升级。
@@ -245,14 +293,25 @@ impl AppState {
         Err("数据库需要先完成安全升级后再使用".to_string())
     }
     pub fn verify_v2_recovery_phrase(&self, recovery_phrase: &str) -> Result<(), String> {
-        let _gate = self.master_wrap_gate.lock().map_err(|_| "安全状态不可用".to_string())?;
+        let _gate = self
+            .master_wrap_gate
+            .lock()
+            .map_err(|_| "安全状态不可用".to_string())?;
         if self.security_model() != SecurityModel::StableDekV2
-            || *self.startup_mode.lock().map_err(|_| "安全状态不可用".to_string())?
+            || *self
+                .startup_mode
+                .lock()
+                .map_err(|_| "安全状态不可用".to_string())?
                 != StartupMode::ExistingV2
         {
             return Err("当前密码库不支持恢复短语".to_string());
         }
-        if self.key.lock().map_err(|_| "安全状态不可用".to_string())?.is_some() {
+        if self
+            .key
+            .lock()
+            .map_err(|_| "安全状态不可用".to_string())?
+            .is_some()
+        {
             return Err("当前状态不允许恢复主密码".to_string());
         }
         let db = self.db.lock().map_err(|_| "安全状态不可用".to_string())?;
@@ -265,9 +324,15 @@ impl AppState {
         recovery_phrase: &str,
         new_master_password: &str,
     ) -> Result<(), String> {
-        let _gate = self.master_wrap_gate.lock().map_err(|_| "安全状态不可用".to_string())?;
+        let _gate = self
+            .master_wrap_gate
+            .lock()
+            .map_err(|_| "安全状态不可用".to_string())?;
         if self.security_model() != SecurityModel::StableDekV2
-            || *self.startup_mode.lock().map_err(|_| "安全状态不可用".to_string())?
+            || *self
+                .startup_mode
+                .lock()
+                .map_err(|_| "安全状态不可用".to_string())?
                 != StartupMode::ExistingV2
         {
             return Err("当前密码库不支持恢复短语".to_string());
@@ -277,18 +342,14 @@ impl AppState {
         if key_slot.is_some() {
             return Err("当前状态不允许恢复主密码".to_string());
         }
-        let dek = migration::recover_v2_with_phrase(
-            &db,
-            recovery_phrase,
-            new_master_password,
-        )
-        .map_err(|error| {
-            if error == "新主密码长度至少 6 位" || error == "恢复短语无效" {
-                error
-            } else {
-                "无法设置新主密码，请重试".to_string()
-            }
-        })?;
+        let dek = migration::recover_v2_with_phrase(&db, recovery_phrase, new_master_password)
+            .map_err(|error| {
+                if error == "新主密码长度至少 6 位" || error == "恢复短语无效" {
+                    error
+                } else {
+                    "无法设置新主密码，请重试".to_string()
+                }
+            })?;
         // 只有 master metadata 事务 commit 成功后，才把同一个 Stable DEK 安装进运行态。
         *key_slot = Some(ActiveKey::StableDek(dek));
         Ok(())
@@ -298,9 +359,15 @@ impl AppState {
         current_password: &str,
         new_password: &str,
     ) -> Result<(), String> {
-        let _gate = self.master_wrap_gate.lock().map_err(|_| "安全状态不可用".to_string())?;
+        let _gate = self
+            .master_wrap_gate
+            .lock()
+            .map_err(|_| "安全状态不可用".to_string())?;
         if self.security_model() != SecurityModel::StableDekV2
-            || *self.startup_mode.lock().map_err(|_| "安全状态不可用".to_string())?
+            || *self
+                .startup_mode
+                .lock()
+                .map_err(|_| "安全状态不可用".to_string())?
                 != StartupMode::ExistingV2
         {
             return Err("当前密码库不支持此操作".to_string());
@@ -314,7 +381,9 @@ impl AppState {
             active_dek.as_slice(),
         )
         .map_err(|error| match error.as_str() {
-            "新主密码长度至少 6 位" | "新主密码必须与当前主密码不同" | "当前主密码错误" => error,
+            "新主密码长度至少 6 位" | "新主密码必须与当前主密码不同" | "当前主密码错误" => {
+                error
+            }
             _ => "无法修改主密码，请重试".to_string(),
         })
     }
@@ -332,9 +401,15 @@ impl AppState {
         &self,
         fail_at: Option<migration::RecoveryRotationFailPoint>,
     ) -> Result<RecoveryRotationPreparation, String> {
-        let _gate = self.master_wrap_gate.lock().map_err(|_| "安全状态不可用".to_string())?;
+        let _gate = self
+            .master_wrap_gate
+            .lock()
+            .map_err(|_| "安全状态不可用".to_string())?;
         if self.security_model() != SecurityModel::StableDekV2
-            || *self.startup_mode.lock().map_err(|_| "安全状态不可用".to_string())?
+            || *self
+                .startup_mode
+                .lock()
+                .map_err(|_| "安全状态不可用".to_string())?
                 != StartupMode::ExistingV2
         {
             return Err("当前密码库不支持更换恢复短语".to_string());
@@ -369,7 +444,9 @@ impl AppState {
         let confirmation_key = Zeroizing::new(crypto::generate_salt());
         let confirmation_hashes = indexes
             .iter()
-            .map(|index| Self::recovery_confirmation_hash(&confirmation_key, *index, &words[*index]))
+            .map(|index| {
+                Self::recovery_confirmation_hash(&confirmation_key, *index, &words[*index])
+            })
             .collect();
         let token = uuid::Uuid::new_v4().to_string();
         let dek_fingerprint = Sha256::digest(dek.as_slice()).into();
@@ -401,9 +478,15 @@ impl AppState {
         confirmation_words: &[String],
         fail_at: Option<migration::RecoveryRotationFailPoint>,
     ) -> Result<(), String> {
-        let _gate = self.master_wrap_gate.lock().map_err(|_| "安全状态不可用".to_string())?;
+        let _gate = self
+            .master_wrap_gate
+            .lock()
+            .map_err(|_| "安全状态不可用".to_string())?;
         if self.security_model() != SecurityModel::StableDekV2
-            || *self.startup_mode.lock().map_err(|_| "安全状态不可用".to_string())?
+            || *self
+                .startup_mode
+                .lock()
+                .map_err(|_| "安全状态不可用".to_string())?
                 != StartupMode::ExistingV2
         {
             return Err("当前密码库不支持更换恢复短语".to_string());
@@ -422,13 +505,16 @@ impl AppState {
         {
             return Err("恢复短语轮换状态无效".to_string());
         }
-        let matches = confirmation_words.iter().enumerate().all(|(input_index, word)| {
-            Self::recovery_confirmation_hash(
-                &prepared.confirmation_key,
-                prepared.confirmation_indexes[input_index],
-                word,
-            ) == prepared.confirmation_hashes[input_index]
-        });
+        let matches = confirmation_words
+            .iter()
+            .enumerate()
+            .all(|(input_index, word)| {
+                Self::recovery_confirmation_hash(
+                    &prepared.confirmation_key,
+                    prepared.confirmation_indexes[input_index],
+                    word,
+                ) == prepared.confirmation_hashes[input_index]
+            });
         if !matches {
             return Err("恢复词确认不匹配".to_string());
         }
@@ -445,7 +531,10 @@ impl AppState {
         Ok(())
     }
     pub fn cancel_v2_recovery_rotation(&self, rotation_token: &str) -> Result<(), String> {
-        let _gate = self.master_wrap_gate.lock().map_err(|_| "安全状态不可用".to_string())?;
+        let _gate = self
+            .master_wrap_gate
+            .lock()
+            .map_err(|_| "安全状态不可用".to_string())?;
         if self.security_model() != SecurityModel::StableDekV2 {
             return Err("当前密码库不支持更换恢复短语".to_string());
         }
@@ -470,7 +559,10 @@ impl AppState {
                 active: pending.is_some(),
                 migration_token: pending.as_ref().map(|p| p.token.clone()),
             },
-            Err(_) => LegacyMigrationStatus { active: false, migration_token: None },
+            Err(_) => LegacyMigrationStatus {
+                active: false,
+                migration_token: None,
+            },
         }
     }
 
@@ -523,69 +615,72 @@ impl AppState {
         }
         let setup_lock_path = app_dir.join(migration::V2_SETUP_LOCK_FILENAME);
         let mut owns_lock = false;
-        let result = (|| -> Result<(PendingLegacyMigration, LegacyMigrationPreparation), String> {
-            let mut lock_options = std::fs::OpenOptions::new();
-            lock_options.write(true).create_new(true);
-            #[cfg(windows)]
-            {
-                use std::os::windows::fs::OpenOptionsExt;
-                lock_options.share_mode(0);
-            }
-            let migration_lock = lock_options
-                .open(&setup_lock_path)
-                .map_err(|_| "安全升级正在进行或存在未完成状态".to_string())?;
-            owns_lock = true;
-            // 迁移核心（Phase 2D 已验收）在这里被正式产品路径复用；
-            // legacy 严格只读，正式 v2 与归档均不受影响。
-            let built = migration::build_migrated_v2_tmp(&app_dir, master_password, None)
-                .map_err(|error| match error {
-                    migration::MigrationError::Msg(message) => message,
-                    migration::MigrationError::Sql(_) => "原始数据库无法读取，升级中止".to_string(),
-                })?;
-            if built.mnemonic.len() != 12 {
-                return Err("无法生成恢复短语，请重试".to_string());
-            }
-            let mut indexes = Vec::with_capacity(3);
-            let mut rng = rand::thread_rng();
-            while indexes.len() < 3 {
-                let index = rng.gen_range(0..12);
-                if !indexes.contains(&index) {
-                    indexes.push(index);
+        let result =
+            (|| -> Result<(PendingLegacyMigration, LegacyMigrationPreparation), String> {
+                let mut lock_options = std::fs::OpenOptions::new();
+                lock_options.write(true).create_new(true);
+                #[cfg(windows)]
+                {
+                    use std::os::windows::fs::OpenOptionsExt;
+                    lock_options.share_mode(0);
                 }
-            }
-            indexes.sort_unstable();
-            let confirmation_key = Zeroizing::new(crypto::generate_salt());
-            let confirmation_hashes = indexes
-                .iter()
-                .map(|index| {
-                    Self::recovery_confirmation_hash(
-                        &confirmation_key,
-                        *index,
-                        &built.mnemonic[*index],
-                    )
-                })
-                .collect();
-            let token = uuid::Uuid::new_v4().to_string();
-            let preparation = LegacyMigrationPreparation {
-                migration_token: token.clone(),
-                recovery_words: built.mnemonic.clone(),
-                confirmation_indexes: indexes.clone(),
-            };
-            let pending = PendingLegacyMigration {
-                token,
-                tmp_path: built.tmp_path,
-                v2_path: built.v2_path,
-                legacy_path: built.legacy_path,
-                dek: built.dek,
-                source_fingerprint: built.source_fingerprint,
-                confirmation_indexes: indexes,
-                confirmation_hashes,
-                confirmation_key,
-                migration_lock: Some(migration_lock),
-                migration_lock_path: setup_lock_path.clone(),
-            };
-            Ok((pending, preparation))
-        })();
+                let migration_lock = lock_options
+                    .open(&setup_lock_path)
+                    .map_err(|_| "安全升级正在进行或存在未完成状态".to_string())?;
+                owns_lock = true;
+                // 迁移核心（Phase 2D 已验收）在这里被正式产品路径复用；
+                // legacy 严格只读，正式 v2 与归档均不受影响。
+                let built = migration::build_migrated_v2_tmp(&app_dir, master_password, None)
+                    .map_err(|error| match error {
+                        migration::MigrationError::Msg(message) => message,
+                        migration::MigrationError::Sql(_) => {
+                            "原始数据库无法读取，升级中止".to_string()
+                        }
+                    })?;
+                if built.mnemonic.len() != 12 {
+                    return Err("无法生成恢复短语，请重试".to_string());
+                }
+                let mut indexes = Vec::with_capacity(3);
+                let mut rng = rand::thread_rng();
+                while indexes.len() < 3 {
+                    let index = rng.gen_range(0..12);
+                    if !indexes.contains(&index) {
+                        indexes.push(index);
+                    }
+                }
+                indexes.sort_unstable();
+                let confirmation_key = Zeroizing::new(crypto::generate_salt());
+                let confirmation_hashes = indexes
+                    .iter()
+                    .map(|index| {
+                        Self::recovery_confirmation_hash(
+                            &confirmation_key,
+                            *index,
+                            &built.mnemonic[*index],
+                        )
+                    })
+                    .collect();
+                let token = uuid::Uuid::new_v4().to_string();
+                let preparation = LegacyMigrationPreparation {
+                    migration_token: token.clone(),
+                    recovery_words: built.mnemonic.clone(),
+                    confirmation_indexes: indexes.clone(),
+                };
+                let pending = PendingLegacyMigration {
+                    token,
+                    tmp_path: built.tmp_path,
+                    v2_path: built.v2_path,
+                    legacy_path: built.legacy_path,
+                    dek: built.dek,
+                    source_fingerprint: built.source_fingerprint,
+                    confirmation_indexes: indexes,
+                    confirmation_hashes,
+                    confirmation_key,
+                    migration_lock: Some(migration_lock),
+                    migration_lock_path: setup_lock_path.clone(),
+                };
+                Ok((pending, preparation))
+            })();
         match result {
             Ok((pending, preparation)) => {
                 *pending_slot = Some(pending);
@@ -640,13 +735,16 @@ impl AppState {
             {
                 return Err("安全升级状态无效".to_string());
             }
-            let matches = confirmation_words.iter().enumerate().all(|(input_index, word)| {
-                Self::recovery_confirmation_hash(
-                    &pending.confirmation_key,
-                    pending.confirmation_indexes[input_index],
-                    word,
-                ) == pending.confirmation_hashes[input_index]
-            });
+            let matches = confirmation_words
+                .iter()
+                .enumerate()
+                .all(|(input_index, word)| {
+                    Self::recovery_confirmation_hash(
+                        &pending.confirmation_key,
+                        pending.confirmation_indexes[input_index],
+                        word,
+                    ) == pending.confirmation_hashes[input_index]
+                });
             if !matches {
                 return Err("恢复词确认不匹配".to_string());
             }
@@ -715,7 +813,10 @@ impl AppState {
         // legacy 隔离归档：旧 legacy 连接已随 db_slot 替换释放后才 rename；
         // 归档失败不影响已完成的 v2（下次启动仲裁仍选择 v2）。
         if let Err(error) = migration::archive_legacy_source(&app_dir) {
-            eprintln!("[legacy-migration] legacy 归档失败（不影响已完成的 v2）: {}", error);
+            eprintln!(
+                "[legacy-migration] legacy 归档失败（不影响已完成的 v2）: {}",
+                error
+            );
         }
         // token 永久失效 + 释放/删除 setup lock（tmp 已 rename 走，仅清理 lock）。
         done.discard_files();
@@ -745,17 +846,26 @@ impl AppState {
     }
 
     pub fn prepare_v2_initialization(&self, password: &str) -> Result<Vec<String>, String> {
-        let mut startup_mode = self.startup_mode.lock().map_err(|_| "安全状态不可用".to_string())?;
+        let mut startup_mode = self
+            .startup_mode
+            .lock()
+            .map_err(|_| "安全状态不可用".to_string())?;
         // 注意：此处已持有 startup_mode 锁，不得再调 security_model()（会二次加锁死锁）。
         // FreshV2 ⇔ StableDekV2 是恒等映射，只查 startup_mode 即可。
         if *startup_mode != StartupMode::FreshV2 {
             return Err("当前状态不允许初始化安全数据库".to_string());
         }
-        let app_dir = self.db_path.parent().ok_or_else(|| "安全数据库路径无效".to_string())?;
+        let app_dir = self
+            .db_path
+            .parent()
+            .ok_or_else(|| "安全数据库路径无效".to_string())?;
         let output = migration::prepare_fresh_v2(app_dir, password)
             .map_err(|_| "安全数据库初始化失败".to_string())?;
         let words = output.mnemonic;
-        let mut pending = self.pending_v2.lock().map_err(|_| "安全状态不可用".to_string())?;
+        let mut pending = self
+            .pending_v2
+            .lock()
+            .map_err(|_| "安全状态不可用".to_string())?;
         *pending = Some(PendingV2Initialization {
             tmp_path: output.tmp_path,
             v2_path: output.v2_path,
@@ -767,15 +877,23 @@ impl AppState {
         Ok(words)
     }
     pub fn finalize_v2_initialization(&self) -> Result<(), String> {
-        let mut startup_mode = self.startup_mode.lock().map_err(|_| "安全状态不可用".to_string())?;
+        let mut startup_mode = self
+            .startup_mode
+            .lock()
+            .map_err(|_| "安全状态不可用".to_string())?;
         if *startup_mode == StartupMode::ExistingV2 && self.is_unlocked() {
             return Ok(());
         }
         if *startup_mode != StartupMode::PendingV2 {
             return Err("当前状态不允许完成安全数据库初始化".to_string());
         }
-        let mut pending = self.pending_v2.lock().map_err(|_| "安全状态不可用".to_string())?;
-        let prepared = pending.as_ref().ok_or_else(|| "安全初始化状态缺失".to_string())?;
+        let mut pending = self
+            .pending_v2
+            .lock()
+            .map_err(|_| "安全状态不可用".to_string())?;
+        let prepared = pending
+            .as_ref()
+            .ok_or_else(|| "安全初始化状态缺失".to_string())?;
         // 在正式 rename 前先取得所有运行态锁，避免 rename 后因锁中毒留下半更新 AppState。
         let mut db_slot = self.db.lock().map_err(|_| "安全状态不可用".to_string())?;
         let mut key_slot = self.key.lock().map_err(|_| "安全状态不可用".to_string())?;
@@ -783,7 +901,9 @@ impl AppState {
             .map_err(|_| "安全数据库初始化失败".to_string())?;
         let completed_db = migration::open_existing_v2_db(&prepared.v2_path)
             .map_err(|_| "安全数据库初始化失败".to_string())?;
-        let prepared = pending.take().ok_or_else(|| "安全初始化状态缺失".to_string())?;
+        let prepared = pending
+            .take()
+            .ok_or_else(|| "安全初始化状态缺失".to_string())?;
         *db_slot = completed_db;
         *key_slot = Some(ActiveKey::StableDek(prepared.dek));
         *startup_mode = StartupMode::ExistingV2;
@@ -818,7 +938,10 @@ impl AppState {
 /// 只挂 BlockedState 供前端 `get_data_root_block` 读取并渲染阻断页。
 fn enter_blocked_mode(app: &tauri::App, reason: data_root::BlockedReason, config_root: PathBuf) {
     eprintln!("[data-root] 启动阻断: {:?}", reason);
-    app.manage(data_root::BlockedState { reason, config_root });
+    app.manage(data_root::BlockedState {
+        reason,
+        config_root,
+    });
     if let Some(win) = app.get_webview_window("main") {
         let _ = win.show();
         let _ = win.set_focus();
@@ -954,7 +1077,10 @@ fn finalize_pending_migration(
             .target_fingerprint
             .clone()
             .ok_or_else(|| "迁移记录缺少已验证的目标指纹".to_string())?;
-        let conn = verify_db.conn.lock().map_err(|_| "连接不可用".to_string())?;
+        let conn = verify_db
+            .conn
+            .lock()
+            .map_err(|_| "连接不可用".to_string())?;
         let fp = data_root::semantic_fingerprint(&conn)?;
         drop(conn);
         if fp != recorded {
@@ -970,13 +1096,19 @@ fn finalize_pending_migration(
     let current = data_root::load_state(config_root);
     if let data_root::StateLoad::Loaded(st) = &current {
         // 写 retiring_source
-        let _ = data_root::save_state(config_root, &data_root::state_with_migration_phase(st, "retiring_source"));
+        let _ = data_root::save_state(
+            config_root,
+            &data_root::state_with_migration_phase(st, "retiring_source"),
+        );
     }
     data_root::retire_source_db(&source, &op.op_id)?;
 
     // 4) guard 切换（先建新 G2 并 durable，再删旧 guard；期间允许并存）
     if let data_root::StateLoad::Loaded(st) = &current {
-        let _ = data_root::save_state(config_root, &data_root::state_with_migration_phase(st, "switching_guard"));
+        let _ = data_root::save_state(
+            config_root,
+            &data_root::state_with_migration_phase(st, "switching_guard"),
+        );
     }
     data_root::switch_guard_to_g2(config_root, &op.op_id, &target)?;
 
@@ -1047,15 +1179,12 @@ pub(crate) fn try_complete_pending_migration(
                     let current = match data_root::load_state(config_root) {
                         data_root::StateLoad::Loaded(s) => s,
                         _ => {
-                            return MigrationResume::Failed(
-                                "迁移回滚时读取 state 失败".to_string(),
-                            )
+                            return MigrationResume::Failed("迁移回滚时读取 state 失败".to_string())
                         }
                     };
-                    let kind = data_root::SourceKind::from_str(
-                        op.source_kind.as_deref().unwrap_or(""),
-                    )
-                    .unwrap_or(data_root::SourceKind::DefaultConfigRoot);
+                    let kind =
+                        data_root::SourceKind::from_str(op.source_kind.as_deref().unwrap_or(""))
+                            .unwrap_or(data_root::SourceKind::DefaultConfigRoot);
                     let mut restored = data_root::state_pending_migration(
                         &source,
                         &target,
@@ -1104,7 +1233,10 @@ fn finalize_pending_restore_default(
             .target_fingerprint
             .clone()
             .ok_or_else(|| "恢复记录缺少已验证的目标指纹".to_string())?;
-        let conn = verify_db.conn.lock().map_err(|_| "连接不可用".to_string())?;
+        let conn = verify_db
+            .conn
+            .lock()
+            .map_err(|_| "连接不可用".to_string())?;
         let fp = data_root::semantic_fingerprint(&conn)?;
         drop(conn);
         if fp != recorded {
@@ -1141,7 +1273,10 @@ fn finalize_pending_restore_default(
     // 4) guard 清理（§十五：先 G2 后 G1）。此时数据迁移已成功；清理残留
     //    属兼容性问题而非数据问题——记录日志，下次启动结构化 recovery。
     if let Err(e) = data_root::cleanup_guards_after_restore(config_root, &op.op_id) {
-        eprintln!("[data-root] restore-default guard 清理残留（下次启动对账）: {}", e);
+        eprintln!(
+            "[data-root] restore-default guard 清理残留（下次启动对账）: {}",
+            e
+        );
     }
     Ok(config_root.to_path_buf())
 }
@@ -1240,14 +1375,25 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_clipboard_manager::init())
+        // Phase 2E：官方签名更新体系（端点/公钥在 tauri.conf.json plugins.updater）
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             // 初始化数据库（或在启动前先执行 factory_reset，100% 避开 Windows SQLite 文件锁）
             // Phase 2C-1：config_root（= app_data_dir，state/guard 的家）与 effective_root
             // （真正的 Data Root，DB 的家）从此分离。默认两者相同 → 老用户零行为漂移。
-            let config_root = app
-                .path()
-                .app_data_dir()
-                .expect("failed to get app data dir");
+            // Release-Train §0 永久测试隔离纪律：destructive Runtime 不得触碰真实日用
+            // Config Root。测试/CI 通过显式设置 DRAWER_CONFIG_DIR 把 Config Root 重定向到
+            // 完全隔离的目录（测试脚本须以该变量启动全部测试实例）。普通用户不设置该变量，
+            // 走标准 app_data_dir，行为与历史版本零差异。
+            let config_root = match std::env::var("DRAWER_CONFIG_DIR") {
+                Ok(dir) if !dir.trim().is_empty() => {
+                    let dir = std::path::PathBuf::from(dir);
+                    eprintln!("[data-root] DRAWER_CONFIG_DIR override -> {:?}", dir);
+                    dir
+                }
+                _ => app.path().app_data_dir().expect("failed to get app data dir"),
+            };
             std::fs::create_dir_all(&config_root).expect("failed to create app data dir");
             // Phase 2C-2：两个 managed 状态必须在任何早期返回（setup/blocked 模式）之前就位
             app.manage(data_root::SetupState::default());
@@ -1748,6 +1894,8 @@ pub fn run() {
             read_icon_as_data_url,
             // P0-#ICON#NUCLEAR#ALL#IN#ONE：一次拿所有 app + 所有 icon
             list_apps_with_icons,
+            relink_app,
+            open_app_location,
             // P0-#LOCK#POLLING#FALLBACK：查询 lock 状态 + build 时间戳
             get_app_status,
             // 通用：前端日志通道

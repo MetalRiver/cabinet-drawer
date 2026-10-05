@@ -4,7 +4,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useAppStore } from "../stores/app";
 import { useSoftwareStore } from "../stores/software";
-import { type ScannedApp } from "../api";
+import { type ScannedApp, relinkApp, openAppLocation, pickPath } from "../api";
 
 // P0-#Y#FIX#ICON#FOLDER：folder/url/document 没真实图标时显示内置 SVG（Windows 风格）
 // 之前：emoji 📁 / 🔗 / 📄（不真实，看起来像字符而不是图标）
@@ -989,6 +989,32 @@ async function submitAdd() {
 }
 
 // 启动
+// ===== Phase 2D：应用生命周期失效治理 =====
+const relinkingId = ref<number | null>(null);
+
+async function relinkMissing(item: any) {
+  relinkingId.value = item.id;
+  try {
+    const picked = await pickPath({ mode: "file", title: `重新关联「${item.name}」` });
+    if (!picked) return;
+    await relinkApp(item.id, picked);
+    appStore.showClipToast("success", `已重新关联「${item.name}」`);
+    await softwareStore.loadItems();
+  } catch (e) {
+    appStore.showClipToast("info", "重新关联失败：" + String(e));
+  } finally {
+    relinkingId.value = null;
+  }
+}
+
+async function openLocation(item: any) {
+  try {
+    await openAppLocation(item.id);
+  } catch (e) {
+    appStore.showClipToast("info", String(e));
+  }
+}
+
 async function launchApp(id: number) {
   // P0-#F：根据软件类型 + 启动结果给精确 toast
   const item = softwareStore.items.find((it) => it.id === id);
@@ -1072,7 +1098,7 @@ async function confirmDeleteApp(id: number | null) {
   deletingId.value = id;
   try {
     await softwareStore.remove(id);
-    appStore.showClipToast("success", "已删除");
+    appStore.showClipToast("success", "已从抽屉柜移除");
   } catch (e) {
     appStore.showClipToast("info", "删除失败：" + String(e));
   } finally {
@@ -1216,7 +1242,8 @@ async function confirmDeleteApp(id: number | null) {
             class="app-cell stagger-item"
             :class="{
               'app-cell-editing': editingId === item.id,
-              'app-cell-confirming': confirmingDeleteId === item.id
+              'app-cell-confirming': confirmingDeleteId === item.id,
+              'app-cell-missing': item.available === false && (item.app_type || 'app') !== 'url'
             }"
             :data-type="item.app_type || 'app'"
             :style="{ '--delay': `${index * 0.03}s` }"
@@ -1286,9 +1313,18 @@ async function confirmDeleteApp(id: number | null) {
                 {{ subtypeLabel(item.app_subtype) || typeLabel(item.app_type) }}
               </div>
               <div v-if="item.use_count > 0" class="app-badge">🔥 {{ item.use_count }}</div>
+              <!-- Phase 2D：路径失效状态角标（不自动删除，仅标示） -->
+              <div v-if="item.available === false && (item.app_type || 'app') !== 'url'" class="app-badge app-badge-missing" title="路径失效 / 应用不可用">⚠️ 路径失效</div>
               <div class="app-actions" @click.stop>
-                <button class="app-action-btn" title="编辑" @click.stop="startEdit(item)">✏️</button>
-                <button class="app-action-btn" title="删除" @click.stop="askDeleteApp(item.id, item.name)">🗑️</button>
+                <template v-if="item.available === false && (item.app_type || 'app') !== 'url'">
+                  <button class="app-action-btn" title="重新关联程序" @click.stop="relinkMissing(item)">🔗</button>
+                  <button class="app-action-btn" title="打开原位置" @click.stop="openLocation(item)">📂</button>
+                  <button class="app-action-btn" title="从抽屉柜移除" @click.stop="askDeleteApp(item.id, item.name)">🗑️</button>
+                </template>
+                <template v-else>
+                  <button class="app-action-btn" title="编辑" @click.stop="startEdit(item)">✏️</button>
+                  <button class="app-action-btn" title="从抽屉柜移除" @click.stop="askDeleteApp(item.id, item.name)">🗑️</button>
+                </template>
               </div>
             </template>
           </div>
@@ -2942,4 +2978,20 @@ async function confirmDeleteApp(id: number | null) {
 }
 .drop-fade-enter-active, .drop-fade-leave-active { transition: opacity 0.18s; }
 .drop-fade-enter-from, .drop-fade-leave-to { opacity: 0; }
+/* ===== Phase 2D：失效应用状态 ===== */
+.app-cell-missing .app-icon-img,
+.app-cell-missing .app-icon-text {
+  filter: grayscale(1);
+  opacity: 0.45;
+}
+.app-cell-missing .app-name {
+  opacity: 0.6;
+}
+.app-badge-missing {
+  background: rgba(239, 68, 68, 0.16);
+  color: #f87171;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 999px;
+}
 </style>
