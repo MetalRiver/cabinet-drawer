@@ -79,7 +79,8 @@
         "type": "embedBootstrapper",
         "silent": false
       }
-    }
+    },
+    "createUpdaterArtifacts": true
   },
   "plugins": {
     "shell": {
@@ -90,7 +91,7 @@
       "endpoints": [
         "https://github.com/MetalRiver/cabinet-drawer/releases/latest/download/latest.json"
       ],
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IHJlbGVhc2UgcGxhY2Vob2xkZXI="
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDEyNEEwQkY1RjkyNzAwQkYKUldTL0FDZjU5UXRLRXU2dlRqMUE5SUlmbTFLaVR3ak5vZUZsbGE5S2VhcWlZdy9jTjRhb2FEYWEK"
     }
   }
 }
