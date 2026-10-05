@@ -22,7 +22,9 @@ fn verify_master_password_inner(
     master_password: &str,
 ) -> Result<Zeroizing<Vec<u8>>, String> {
     state.require_legacy_model()?;
-    if let Ok(k) = state.legacy_key() { return Ok(k); }
+    if let Ok(k) = state.legacy_key() {
+        return Ok(k);
+    }
     let db = state.db.lock().unwrap();
     // 注意：key 是 master_password_hash / master_password_salt（不是 master_salt！不是 hex！是 BASE64！）
     let hash = db
@@ -54,10 +56,7 @@ pub fn factory_reset(state: State<AppState>, app: AppHandle) -> Result<(), Strin
 
     let app_clone = app.clone();
     use tauri::Manager;
-    let config_dir = app_clone
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("无法获取配置目录: {}", e))?;
+    let config_dir = crate::data_root::effective_config_root(&app_clone)?;
     let pending = config_dir.join(".factory_reset_pending");
     if let Some(parent) = pending.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -85,7 +84,8 @@ pub fn factory_reset(state: State<AppState>, app: AppHandle) -> Result<(), Strin
         use std::io::Write;
         f.write_all(serde_json::to_string(&intent).unwrap().as_bytes())
             .map_err(|e| format!("写 pending 失败: {}", e))?;
-        f.sync_all().map_err(|e| format!("sync pending 失败: {}", e))?;
+        f.sync_all()
+            .map_err(|e| format!("sync pending 失败: {}", e))?;
     } else {
         state.require_legacy_model()?;
         std::fs::write(&pending, "reset\n").map_err(|e| format!("写 pending 失败: {}", e))?;
@@ -138,10 +138,7 @@ pub fn export_encrypted_backup(
 
     // 1. 弹窗选保存路径
     let now = chrono::Local::now();
-    let default_name = format!(
-        "drawerbox-backup-{}.drawerbox",
-        now.format("%Y%m%d-%H%M%S")
-    );
+    let default_name = format!("drawerbox-backup-{}.drawerbox", now.format("%Y%m%d-%H%M%S"));
     let save_path = rfd::FileDialog::new()
         .set_title("保存加密备份到...")
         .set_file_name(&default_name)
@@ -192,13 +189,17 @@ pub fn export_encrypted_backup(
     // 2b. ✨ 关键修复：先解密所有密码成明文存到 password_plaintext！
     // 🔴 【风险2修复】不再跳过回收站密码！回收站的也必须解密成明文，否则换电脑导入后还原解密失败！
     {
-        let key = state.legacy_key().map_err(|_| "应用未锁定状态异常（缺少主密钥）".to_string())?;
+        let key = state
+            .legacy_key()
+            .map_err(|_| "应用未锁定状态异常（缺少主密钥）".to_string())?;
         let mut decrypted_ok = 0usize;
         let mut decrypted_failed = 0usize;
         let mut trash_count = 0usize;
         for pw in data.passwords.iter_mut() {
             let is_trash = pw.deleted_at.is_some();
-            if is_trash { trash_count += 1; }
+            if is_trash {
+                trash_count += 1;
+            }
             // 先用当前 key 解密 encrypted_password（数据库里的密文）
             match crypto::decrypt(&pw.encrypted_password, &key) {
                 Ok(plaintext) => {
@@ -305,29 +306,30 @@ pub fn import_encrypted_backup(
     }
 
     // 1. 校验文件头（快速判断是不是备份文件）
-    let header_magic_yes = {
-        match std::fs::File::open(&file_path) {
-            Ok(mut f) => {
-                use std::io::Read;
-                let mut buf = vec![0u8; 16];
-                let read = f.read(&mut buf).unwrap_or(0);
-                if read < backup::MAGIC.len() {
-                    false
-                } else {
-                    let ok = &buf[0..backup::MAGIC.len()] == backup::MAGIC;
-                    eprintln!(
+    let header_magic_yes =
+        {
+            match std::fs::File::open(&file_path) {
+                Ok(mut f) => {
+                    use std::io::Read;
+                    let mut buf = vec![0u8; 16];
+                    let read = f.read(&mut buf).unwrap_or(0);
+                    if read < backup::MAGIC.len() {
+                        false
+                    } else {
+                        let ok = &buf[0..backup::MAGIC.len()] == backup::MAGIC;
+                        eprintln!(
                         "[import_encrypted_backup] 读取 header {} 字节，MAGIC(前10B={:?}) 匹配={}",
                         read, &buf[0..backup::MAGIC.len()], ok
                     );
-                    ok
+                        ok
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[import_encrypted_backup] 打开文件失败: {}", e);
+                    return Err(format!("打开文件失败: {}", e));
                 }
             }
-            Err(e) => {
-                eprintln!("[import_encrypted_backup] 打开文件失败: {}", e);
-                return Err(format!("打开文件失败: {}", e));
-            }
-        }
-    };
+        };
     if !header_magic_yes {
         return Err(
             "这不是抽屉柜的备份文件（缺少 MAGIC 头）。请选择 .drawerbox 文件。".to_string(),
@@ -335,12 +337,8 @@ pub fn import_encrypted_backup(
     }
 
     // 2. 读整个文件
-    let bytes =
-        std::fs::read(&file_path).map_err(|e| format!("读取文件失败: {}", e))?;
-    eprintln!(
-        "[import_encrypted_backup] 读取 {} 字节成功",
-        bytes.len()
-    );
+    let bytes = std::fs::read(&file_path).map_err(|e| format!("读取文件失败: {}", e))?;
+    eprintln!("[import_encrypted_backup] 读取 {} 字节成功", bytes.len());
 
     // 3. 解密
     let json_bytes = backup::decrypt_backup(&bytes, master_password.as_str())?;
@@ -367,7 +365,9 @@ pub fn import_encrypted_backup(
                 serde_json::Value::Number(_) => "Number",
                 serde_json::Value::String(_) => "String",
                 serde_json::Value::Array(a) => &format!("Array(len={})", a.len())[..],
-                serde_json::Value::Object(o) => &format!("Object(keys={:?})", o.keys().collect::<Vec<_>>())[..],
+                serde_json::Value::Object(o) => {
+                    &format!("Object(keys={:?})", o.keys().collect::<Vec<_>>())[..]
+                }
             };
             eprintln!("  · {:?} → {}", k, t);
         }
@@ -387,22 +387,28 @@ pub fn import_encrypted_backup(
     // 优先级 2：V2 新备份有 export_master_password_salt_b64 → 旧salt+备份密码派生出旧key解密 → 新key重加密
     // 优先级 3：只有旧格式 encrypted_password 密文 → 直接保留（仅同电脑同salt同主密码可用，否则需救援功能）
     {
-        let key = state.legacy_key().map_err(|_| "应用未锁定状态异常（缺少主密钥）".to_string())?;
+        let key = state
+            .legacy_key()
+            .map_err(|_| "应用未锁定状态异常（缺少主密钥）".to_string())?;
 
         // 提前计算优先级 2 需要的旧 key（如果备份有存旧salt）
-        let old_key_from_backup_salt: Option<Zeroizing<Vec<u8>>> = match data.export_master_password_salt_b64.as_ref() {
-            Some(old_salt_b64) => {
-                use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
-                match B64.decode(old_salt_b64) {
-                    Ok(old_salt) if old_salt.len() >= 8 => {
-                        // 备份密码 = 导出时用户设的主密码（常规操作习惯）
-                        Some(Zeroizing::new(crypto::derive_key(master_password.as_str(), &old_salt)))
+        let old_key_from_backup_salt: Option<Zeroizing<Vec<u8>>> =
+            match data.export_master_password_salt_b64.as_ref() {
+                Some(old_salt_b64) => {
+                    use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+                    match B64.decode(old_salt_b64) {
+                        Ok(old_salt) if old_salt.len() >= 8 => {
+                            // 备份密码 = 导出时用户设的主密码（常规操作习惯）
+                            Some(Zeroizing::new(crypto::derive_key(
+                                master_password.as_str(),
+                                &old_salt,
+                            )))
+                        }
+                        _ => None,
                     }
-                    _ => None,
                 }
-            }
-            None => None,
-        };
+                None => None,
+            };
         if old_key_from_backup_salt.is_some() {
             eprintln!("[import_encrypted_backup] ✨ 检测到备份内有旧 master_password_salt，启用「旧key解密重加密」模式");
         }
@@ -414,7 +420,9 @@ pub fn import_encrypted_backup(
         let mut trash_count = 0usize;
         for pw in data.passwords.iter_mut() {
             // 🔴 【风险3修复】不再跳过回收站密码！回收站的也必须重加密，否则换电脑导入后还原解密失败！
-            if pw.deleted_at.is_some() { trash_count += 1; }
+            if pw.deleted_at.is_some() {
+                trash_count += 1;
+            }
             // ========== 优先级 1：新格式明文 ==========
             if let Some(plain) = pw.password_plaintext.as_ref() {
                 if !plain.is_empty() {
@@ -429,7 +437,8 @@ pub fn import_encrypted_backup(
                 if let Some(old_key) = old_key_from_backup_salt.as_ref() {
                     if let Ok(plaintext) = crypto::decrypt(&pw.encrypted_password, old_key) {
                         // 旧key解密成功 → 用新key重加密
-                        let encrypted_new = crypto::encrypt(&plaintext, &key).map_err(|e| e.to_string())?;
+                        let encrypted_new =
+                            crypto::encrypt(&plaintext, &key).map_err(|e| e.to_string())?;
                         pw.encrypted_password = encrypted_new;
                         reencrypted_backup_salt += 1;
                         continue;
@@ -457,7 +466,8 @@ pub fn import_encrypted_backup(
     // 5. 导入（事务内，失败自动回滚）
     let mut stats = {
         let db = state.db.lock().unwrap();
-        db.import_all_data(&data, policy.clone()).map_err(|e| e.to_string())?
+        db.import_all_data(&data, policy.clone())
+            .map_err(|e| e.to_string())?
     };
     stats.backup_version = 1;
     stats.security_model = "legacy".to_string();

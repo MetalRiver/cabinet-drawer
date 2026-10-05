@@ -23,9 +23,7 @@ use crate::migration;
 use crate::{AppState, StartupMode};
 
 fn config_root(app: &AppHandle) -> Result<PathBuf, String> {
-    app.path()
-        .app_data_dir()
-        .map_err(|e| format!("无法获取配置目录: {}", e))
+    crate::data_root::effective_config_root(app)
 }
 
 fn build_fresh_app_state(app: &AppHandle, db_path: PathBuf) -> Result<(), String> {

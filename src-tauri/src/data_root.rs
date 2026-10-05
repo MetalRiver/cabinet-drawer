@@ -3322,3 +3322,17 @@ mod tests {
         );
     }
 }
+
+/// Release-Train §0 测试隔离：DRAWER_CONFIG_DIR 显式重定向 Config Root。
+/// 仅测试/CI 设置该变量；普通用户走标准 app_data_dir，行为零差异。
+pub fn effective_config_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    use tauri::Manager;
+    if let Ok(dir) = std::env::var("DRAWER_CONFIG_DIR") {
+        if !dir.trim().is_empty() {
+            return Ok(PathBuf::from(dir));
+        }
+    }
+    app.path()
+        .app_data_dir()
+        .map_err(|e| format!("无法获取配置目录: {}", e))
+}

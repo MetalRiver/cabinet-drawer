@@ -21,9 +21,7 @@ use crate::migration;
 use crate::AppState;
 
 fn config_root(app: &AppHandle) -> Result<PathBuf, String> {
-    app.path()
-        .app_data_dir()
-        .map_err(|e| format!("无法获取配置目录: {}", e))
+    crate::data_root::effective_config_root(app)
 }
 
 /// External → Default 恢复（D→C）。流程：preflight → G2 一致性 → exclusive gate →
@@ -316,7 +314,11 @@ pub fn setup_restore_backup_begin(
         // 回滚：staging 清理 + External 的 guard/state 回退（正式库一旦出现绝不回滚）
         let _ = std::fs::remove_file(&staging);
         for suffix in ["-wal", "-shm", "-journal"] {
-            let _ = std::fs::remove_file(PathBuf::from(format!("{}{}", staging.to_string_lossy(), suffix)));
+            let _ = std::fs::remove_file(PathBuf::from(format!(
+                "{}{}",
+                staging.to_string_lossy(),
+                suffix
+            )));
         }
         if !target_path.join(migration::V2_DB_FILENAME).exists() {
             if !is_default {
@@ -325,7 +327,10 @@ pub fn setup_restore_backup_begin(
             }
             return Err(e);
         }
-        return Err(format!("{}；但目标正式库已就位，请重启抽屉柜以完成收尾。", e));
+        return Err(format!(
+            "{}；但目标正式库已就位，请重启抽屉柜以完成收尾。",
+            e
+        ));
     }
 
     // default 目标：清除启动期的 Choose setup mode（否则 webview 重载后仍显示选择页）

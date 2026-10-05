@@ -1,9 +1,9 @@
 //! ===== 命令分组 ①：🔒 安全/锁定/主密码/二次验证密码 =====
 //! 包含：首次启动判断、设置主密码、解锁/锁定、改主密码（全量重加密）、改二次验证密码、密码区二次校验
 
-use tauri::State;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use sha2::{Digest, Sha256};
+use tauri::State;
 
 use crate::crypto;
 use crate::{
@@ -13,12 +13,24 @@ use crate::{
 use zeroize::Zeroizing;
 
 #[derive(serde::Serialize)]
-pub struct SecurityStatus { security_model: &'static str, migration_required: bool, write_allowed: bool }
+pub struct SecurityStatus {
+    security_model: &'static str,
+    migration_required: bool,
+    write_allowed: bool,
+}
 #[tauri::command]
 pub fn get_security_status(state: State<AppState>) -> SecurityStatus {
     match state.security_model() {
-        SecurityModel::Legacy => SecurityStatus { security_model: "legacy_security_model", migration_required: true, write_allowed: true },
-        SecurityModel::StableDekV2 => SecurityStatus { security_model: "stable_dek_v2", migration_required: false, write_allowed: true },
+        SecurityModel::Legacy => SecurityStatus {
+            security_model: "legacy_security_model",
+            migration_required: true,
+            write_allowed: true,
+        },
+        SecurityModel::StableDekV2 => SecurityStatus {
+            security_model: "stable_dek_v2",
+            migration_required: false,
+            write_allowed: true,
+        },
     }
 }
 
@@ -31,7 +43,12 @@ pub fn get_security_status(state: State<AppState>) -> SecurityStatus {
 /// legacy-only 启动态硬闸：任何绕过升级流程直接使用/改写 legacy 库的
 /// production IPC 一律 fail closed。
 pub(crate) fn ensure_not_legacy_startup(state: &AppState) -> Result<(), String> {
-    if *state.startup_mode.lock().map_err(|_| "安全状态不可用".to_string())? == StartupMode::Legacy {
+    if *state
+        .startup_mode
+        .lock()
+        .map_err(|_| "安全状态不可用".to_string())?
+        == StartupMode::Legacy
+    {
         return Err("数据库需要先完成安全升级后再使用".to_string());
     }
     Ok(())
@@ -123,10 +140,7 @@ pub fn finalize_v2_security(
     // Phase 2C-2：自定义 Data Root 时，finalize 前先落 recovery_confirmed
     // （此刻起崩溃都可由启动收尾安全接管；恢复词从未写入任何持久化位置）
     let ctx = init_ctx.get();
-    let config_root = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("无法获取配置目录: {}", e))?;
+    let config_root = crate::data_root::effective_config_root(&app)?;
     if let Some(c) = &ctx {
         crate::data_root::save_state(
             &config_root,
@@ -177,10 +191,7 @@ pub fn recover_v2_with_phrase(
 
     let recovery_phrase = Zeroizing::new(recovery_phrase);
     let new_master_password = Zeroizing::new(new_master_password);
-    state.recover_v2_with_phrase_and_store(
-        recovery_phrase.as_str(),
-        new_master_password.as_str(),
-    )
+    state.recover_v2_with_phrase_and_store(recovery_phrase.as_str(), new_master_password.as_str())
 }
 
 // ============================================================
@@ -266,9 +277,12 @@ pub fn setup_master_password(
     let recovery_encrypted = crypto::encrypt(&recovery_json, &key).map_err(|e| e.to_string())?;
 
     let db = state.db.lock().unwrap();
-    db.set_setting("master_password_hash", &hash).map_err(|e| e.to_string())?;
-    db.set_setting("master_password_salt", &salt_b64).map_err(|e| e.to_string())?;
-    db.set_setting("recovery_phrase_encrypted", &recovery_encrypted).map_err(|e| e.to_string())?;
+    db.set_setting("master_password_hash", &hash)
+        .map_err(|e| e.to_string())?;
+    db.set_setting("master_password_salt", &salt_b64)
+        .map_err(|e| e.to_string())?;
+    db.set_setting("recovery_phrase_encrypted", &recovery_encrypted)
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -333,9 +347,7 @@ pub fn change_master_password(
     let old_key = Zeroizing::new(crypto::derive_key(&current_password, &old_salt));
 
     // 3. 读所有密码 + 恢复短语
-    let passwords = db
-        .list_passwords_full()
-        .map_err(|e| e.to_string())?;
+    let passwords = db.list_passwords_full().map_err(|e| e.to_string())?;
     let recovery_enc = db
         .get_setting("recovery_phrase_encrypted")
         .map_err(|e| e.to_string())?
@@ -379,8 +391,7 @@ pub fn change_master_password(
             }
         };
         // 用新 key 重加密
-        let encrypted_new =
-            crypto::encrypt(&plaintext, &new_key).map_err(|e| e.to_string())?;
+        let encrypted_new = crypto::encrypt(&plaintext, &new_key).map_err(|e| e.to_string())?;
         db.update_password_encrypted(pw.id, &encrypted_new)
             .map_err(|e| e.to_string())?;
         reencrypted_passwords += 1;
@@ -421,15 +432,25 @@ pub fn lock_app(state: State<AppState>) {
 #[tauri::command]
 pub fn has_second_password(state: State<AppState>) -> bool {
     // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
-    let _data_gate = match state.data_read() { Ok(g) => g, Err(_) => return false }; // gate 不可用=fail closed
+    let _data_gate = match state.data_read() {
+        Ok(g) => g,
+        Err(_) => return false,
+    }; // gate 不可用=fail closed
 
     has_second_password_core(&state)
 }
 
 pub(crate) fn has_second_password_core(state: &AppState) -> bool {
-    if state.security_model() != SecurityModel::Legacy { return false; }
-    let legacy_startup = matches!(state.startup_mode.lock().as_deref(), Ok(StartupMode::Legacy));
-    if legacy_startup { return false; }
+    if state.security_model() != SecurityModel::Legacy {
+        return false;
+    }
+    let legacy_startup = matches!(
+        state.startup_mode.lock().as_deref(),
+        Ok(StartupMode::Legacy)
+    );
+    if legacy_startup {
+        return false;
+    }
     let db = match state.db.lock() {
         Ok(g) => g,
         Err(_) => return false,
@@ -457,10 +478,12 @@ pub fn change_second_password(
     // 1) 身份校验（旧密码）
     if has_2nd {
         // 已启用独立密码 → 只接受旧二次验证密码（不接受主密码）
-        let old_hash = db.get_setting("pw2nd_hash")
+        let old_hash = db
+            .get_setting("pw2nd_hash")
             .map_err(|e| e.to_string())?
             .ok_or_else(|| "二次验证密码缺失".to_string())?;
-        let old_salt_b64 = db.get_setting("pw2nd_salt")
+        let old_salt_b64 = db
+            .get_setting("pw2nd_salt")
             .map_err(|e| e.to_string())?
             .ok_or_else(|| "二次验证密码 salt 缺失".to_string())?;
         let old_salt = BASE64.decode(&old_salt_b64).map_err(|e| e.to_string())?;
@@ -469,10 +492,12 @@ pub fn change_second_password(
         }
     } else {
         // 未启用 → 接受主密码作为校验（防陌生人离开时顺手开独立密码锁）
-        let mp_hash = db.get_setting("master_password_hash")
+        let mp_hash = db
+            .get_setting("master_password_hash")
             .map_err(|e| e.to_string())?
             .ok_or_else(|| "未设置主密码".to_string())?;
-        let mp_salt_b64 = db.get_setting("master_password_salt")
+        let mp_salt_b64 = db
+            .get_setting("master_password_salt")
             .map_err(|e| e.to_string())?
             .ok_or_else(|| "未设置主密码".to_string())?;
         let mp_salt = BASE64.decode(&mp_salt_b64).map_err(|e| e.to_string())?;
@@ -487,18 +512,22 @@ pub fn change_second_password(
         .unwrap_or_default();
     if new_pw_norm.is_empty() {
         // 清空：回退到跟随主密码
-        db.set_setting("pw2nd_hash", "").map_err(|e| e.to_string())?;
-        db.set_setting("pw2nd_salt", "").map_err(|e| e.to_string())?;
+        db.set_setting("pw2nd_hash", "")
+            .map_err(|e| e.to_string())?;
+        db.set_setting("pw2nd_salt", "")
+            .map_err(|e| e.to_string())?;
         return Ok(());
     }
     if new_pw_norm.len() < 6 {
         return Err("二次验证密码长度至少 6 位".to_string());
     }
     // 安全：新独立密码必须 ≠ 主密码（否则两次验证形同虚设）
-    let mp_hash = db.get_setting("master_password_hash")
+    let mp_hash = db
+        .get_setting("master_password_hash")
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "未设置主密码".to_string())?;
-    let mp_salt_b64 = db.get_setting("master_password_salt")
+    let mp_salt_b64 = db
+        .get_setting("master_password_salt")
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "未设置主密码".to_string())?;
     let mp_salt = BASE64.decode(&mp_salt_b64).map_err(|e| e.to_string())?;
@@ -510,8 +539,10 @@ pub fn change_second_password(
     let new_salt = crypto::generate_salt();
     let new_hash = crypto::hash_password(&new_pw_norm, &new_salt);
     let new_salt_b64 = BASE64.encode(&new_salt);
-    db.set_setting("pw2nd_hash", &new_hash).map_err(|e| e.to_string())?;
-    db.set_setting("pw2nd_salt", &new_salt_b64).map_err(|e| e.to_string())?;
+    db.set_setting("pw2nd_hash", &new_hash)
+        .map_err(|e| e.to_string())?;
+    db.set_setting("pw2nd_salt", &new_salt_b64)
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -525,7 +556,10 @@ pub fn change_second_password(
 #[tauri::command]
 pub fn verify_password_for_pw_view(state: State<AppState>, input_password: String) -> bool {
     // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
-    let _data_gate = match state.data_read() { Ok(g) => g, Err(_) => return false }; // gate 不可用=fail closed
+    let _data_gate = match state.data_read() {
+        Ok(g) => g,
+        Err(_) => return false,
+    }; // gate 不可用=fail closed
 
     let input_password = Zeroizing::new(input_password);
     verify_password_for_pw_view_core(&state, input_password.as_str())
@@ -538,8 +572,13 @@ pub(crate) fn verify_password_for_pw_view_core(state: &AppState, input_password:
         SecurityModel::StableDekV2 => verify_v2_master_password(state, input_password),
         SecurityModel::Legacy => {
             // legacy-only 启动态 fail closed（0.3.0 硬边界：升级前不开放任何 legacy 工作态）
-            let legacy_startup = matches!(state.startup_mode.lock().as_deref(), Ok(StartupMode::Legacy));
-            if legacy_startup { return false; }
+            let legacy_startup = matches!(
+                state.startup_mode.lock().as_deref(),
+                Ok(StartupMode::Legacy)
+            );
+            if legacy_startup {
+                return false;
+            }
             let db = match state.db.lock() {
                 Ok(g) => g,
                 Err(_) => return false,
@@ -593,7 +632,9 @@ fn constant_time_digest_eq(a: &[u8], b: &[u8]) -> bool {
 /// v2 主密码纯验证：正确 → true，错误/未解锁/状态异常 → false。
 /// 无任何持久化副作用（不写 DB、不 rewrap、不改 AppState key）。
 fn verify_v2_master_password(state: &AppState, input_password: &str) -> bool {
-    let Ok(active_dek) = state.stable_dek() else { return false; };
+    let Ok(active_dek) = state.stable_dek() else {
+        return false;
+    };
     let db = match state.db.lock() {
         Ok(g) => g,
         Err(_) => return false,
@@ -645,7 +686,9 @@ pub fn rescue_passwords_with_master(
     let old_key = Zeroizing::new(crypto::derive_key(&old_master_password, &mp_salt));
 
     // 3. 当前 legacy key（v2 Stable DEK 无法进入此分支）
-    let new_key = state.legacy_key().map_err(|_| "应用未解锁，请先解锁主界面再救援".to_string())?;
+    let new_key = state
+        .legacy_key()
+        .map_err(|_| "应用未解锁，请先解锁主界面再救援".to_string())?;
 
     // 4. 读所有密码密文
     let passwords = db.list_passwords_full().map_err(|e| e.to_string())?;
@@ -667,18 +710,28 @@ pub fn rescue_passwords_with_master(
             Err(_) => {
                 // 也可能之前就是用 new_key 加密的（救不救都没事），尝试下
                 match crypto::decrypt(&pw.encrypted_password, &new_key) {
-                    Ok(_) => { continue; } // 本来就能解，不算救援也不算失败
-                    Err(_) => { failed += 1; continue; }
+                    Ok(_) => {
+                        continue;
+                    } // 本来就能解，不算救援也不算失败
+                    Err(_) => {
+                        failed += 1;
+                        continue;
+                    }
                 }
             }
         };
         // 4b. 用 NEW_KEY 重加密写回
         let encrypted_new = crypto::encrypt(&plaintext, &new_key).map_err(|e| e.to_string())?;
-        db.update_password_encrypted(pw.id, &encrypted_new).map_err(|e| e.to_string())?;
+        db.update_password_encrypted(pw.id, &encrypted_new)
+            .map_err(|e| e.to_string())?;
         rescued += 1;
     }
 
-    Ok(RescueStats { tried, rescued, failed })
+    Ok(RescueStats {
+        tried,
+        rescued,
+        failed,
+    })
 }
 
 // ============================================================
