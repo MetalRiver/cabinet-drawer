@@ -1306,6 +1306,9 @@ onMounted(() => {
         <div class="danger-warn">
           🔥 工厂还原会<b>永久删除</b>：全部密码 / 软件 / 代码段 / 便签 / 回收站 / 图标缓存 / 全局设置 / 二次验证密码。删除后<b>无法恢复</b>，等价于抽屉柜第一次安装的状态！
         </div>
+        <div class="danger-warn" style="margin-top: 6px;">
+          ℹ️ 重置只影响<b>当前使用的数据位置</b>（含其中的全部数据与数据位置设置）。之前迁移保留的<b>旧数据副本不会被自动删除</b>，重置后如需清理可手动处理。
+        </div>
         <label class="danger-check tap" data-interactive>
           <input type="checkbox" v-model="resetConfirmed" />
           <span>第 1 步：我已确认 → 此操作会<b>永久删除所有数据且不可恢复</b>，我已做好充分备份（如已导出 .drawerbox）</span>

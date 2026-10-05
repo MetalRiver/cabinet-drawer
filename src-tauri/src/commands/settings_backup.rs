@@ -52,8 +52,6 @@ pub fn factory_reset(state: State<AppState>, app: AppHandle) -> Result<(), Strin
     // [data-gate:exclusive] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
     let _data_gate = state.data_write()?;
 
-    state.require_legacy_model()?;
-    let _ = state;
     let app_clone = app.clone();
     use tauri::Manager;
     let config_dir = app_clone
@@ -64,7 +62,34 @@ pub fn factory_reset(state: State<AppState>, app: AppHandle) -> Result<(), Strin
     if let Some(parent) = pending.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    std::fs::write(&pending, "reset\n").map_err(|e| format!("写 pending 失败: {}", e))?;
+    // Phase 2C-5：v2 安全模型 → durable JSON intent，携带当前 canonical root，
+    // 启动 finalization 据此清理 canonical 数据 + Data Root state/guards；
+    // retained archives（迁移安全副本）绝不在清理白名单内。
+    if state.security_model() == crate::SecurityModel::StableDekV2 {
+        let canonical = state
+            .db_path
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let intent = serde_json::json!({
+            "v2": true,
+            "active_root": canonical,
+            "generated_at": chrono::Local::now().to_rfc3339(),
+        });
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&pending)
+            .map_err(|e| format!("写 pending 失败: {}", e))?;
+        use std::io::Write;
+        f.write_all(serde_json::to_string(&intent).unwrap().as_bytes())
+            .map_err(|e| format!("写 pending 失败: {}", e))?;
+        f.sync_all().map_err(|e| format!("sync pending 失败: {}", e))?;
+    } else {
+        state.require_legacy_model()?;
+        std::fs::write(&pending, "reset\n").map_err(|e| format!("写 pending 失败: {}", e))?;
+    }
     let exe = std::env::current_exe().map_err(|e| format!("获取 exe 路径失败: {}", e))?;
     use std::process::Command;
     #[cfg(windows)]

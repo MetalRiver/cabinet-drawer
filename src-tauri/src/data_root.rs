@@ -42,7 +42,13 @@ pub const GUARD_G2_PREFIX: &str = "drawer_box.db.stray-data-root-";
 
 /// 2C-1 已知 pending operation 类型集合（versioned + extensible）。
 /// 未来新增类型（如 restore_backup_to_root）→ 旧版遇到一律 Blocked，绝不忽略后继续启动。
-const KNOWN_OPERATION_TYPES: &[&str] = &["migration", "init", "attach_existing", "restore_default"];
+const KNOWN_OPERATION_TYPES: &[&str] = &[
+    "migration",
+    "init",
+    "attach_existing",
+    "restore_default",
+    "restore_backup",
+];
 
 // ============================================================
 // 状态 Schema（唯一权威）
@@ -1354,6 +1360,11 @@ fn atomic_rename_no_replace(tmp: &Path, dest: &Path) -> Result<(), String> {
     fs::rename(tmp, dest).map_err(|e| format!("rename 失败: {}", e))
 }
 
+/// Phase 2C-5：staging → 正式库原子激活（公开别名；仅 WRITE_THROUGH 无 REPLACE）
+pub fn activate_staging_no_replace(staging: &Path, formal: &Path) -> Result<(), String> {
+    activate_target_tmp(staging, formal)
+}
+
 /// SOURCE RETIREMENT（幂等）：db→.migrated-<op_id>；wal/journal→同名归档；
 /// shm→删除（可重建瞬态）。归档 identity 冲突一律报错，绝不猜。
 pub fn retire_source_db(source_dir: &Path, op_id: &str) -> Result<(), String> {
@@ -1881,6 +1892,71 @@ pub fn retained_availability(state: &DataRootState) -> Vec<(RetainedSource, bool
         .iter()
         .map(|r| (r.clone(), r.status == "retained" && r.archive_path.exists()))
         .collect()
+}
+
+/// Phase 2C-5：Factory Reset v2 finalization（幂等，任意崩溃点后可重做）。
+/// 按 durable intent（JSON v2=true + active_root）清理：
+///   canonical DB 白名单（drawer-v2.db/-wal/-shm + icons/icon_cache）
+///   + Config Root 的 Data Root state/bak + 全部 compatibility guard。
+/// retained archives（迁移安全副本）绝不在清理白名单内；
+/// intent 文件最后删除（删除失败则保留，下次启动重做）。
+/// 返回清理项数。intent 不存在或非 v2 → Ok(0)。
+pub fn run_v2_factory_reset_finalization(
+    config_root: &Path,
+    flag_path: &Path,
+) -> Result<usize, String> {
+    let text = match std::fs::read_to_string(flag_path) {
+        Ok(t) => t,
+        Err(_) => return Ok(0),
+    };
+    let intent: serde_json::Value = match serde_json::from_str(text.trim()) {
+        Ok(v) => v,
+        Err(_) => return Ok(0),
+    };
+    if intent.get("v2").and_then(|v| v.as_bool()) != Some(true) {
+        return Ok(0);
+    }
+    let canonical = intent
+        .get("active_root")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let canonical_root = if canonical.is_empty() {
+        config_root.to_path_buf()
+    } else {
+        PathBuf::from(canonical)
+    };
+    let mut removed = 0usize;
+    for name in [
+        crate::migration::V2_DB_FILENAME.to_string(),
+        format!("{}-wal", crate::migration::V2_DB_FILENAME),
+        format!("{}-shm", crate::migration::V2_DB_FILENAME),
+    ] {
+        let p = canonical_root.join(&name);
+        if p.exists() {
+            fs::remove_file(&p).map_err(|e| format!("删除 {} 失败: {}", name, e))?;
+            removed += 1;
+        }
+    }
+    for dir_name in ["icons", "icon_cache"] {
+        let d = canonical_root.join(dir_name);
+        if d.exists() {
+            fs::remove_dir_all(&d).map_err(|e| format!("删除 {} 失败: {}", dir_name, e))?;
+            removed += 1;
+        }
+    }
+    for name in [STATE_FILENAME, BAK_FILENAME] {
+        let p = config_root.join(name);
+        if p.exists() {
+            fs::remove_file(&p).map_err(|e| format!("删除 {} 失败: {}", name, e))?;
+            removed += 1;
+        }
+    }
+    for g in recognize_guards(config_root) {
+        fs::remove_file(&g.path).map_err(|e| format!("删除 guard 失败: {}", e))?;
+        removed += 1;
+    }
+    fs::remove_file(flag_path).map_err(|e| format!("删除 reset intent 失败: {}", e))?;
+    Ok(removed)
 }
 
 /// Upgrade Compatibility Gate（2C-3 → 2C-4，§七）：

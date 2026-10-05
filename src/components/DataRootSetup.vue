@@ -18,6 +18,7 @@ import {
   setupCheckCustomRoot,
   setupChooseDefault,
   setupResumeCustomInit,
+  setupRestoreBackupBegin,
 } from "../api";
 import type { SetupModeInfo } from "../api";
 
@@ -116,6 +117,60 @@ async function onResume() {
   }
 }
 
+// ===== Phase 2C-5：从加密备份恢复（第四入口）=====
+const showBackupRestore = ref(false);
+const backupFilePath = ref("");
+const backupPassword = ref("");
+const restoreTargetMode = ref<"default" | "custom">("default");
+const restoreCustomPath = ref("");
+
+async function onPickBackupFile() {
+  const p = await pickPath({
+    mode: "file",
+    title: "选择 .drawerbox 加密备份文件",
+  });
+  if (p) backupFilePath.value = p;
+}
+
+async function onPickRestoreCustom() {
+  const p = await pickPath({ mode: "folder", title: "选择恢复数据保存位置" });
+  if (p) restoreCustomPath.value = p;
+}
+
+async function onBeginBackupRestore() {
+  if (busy.value) return;
+  if (!backupFilePath.value.trim()) {
+    error.value = "请先选择 .drawerbox 备份文件";
+    return;
+  }
+  if (!backupPassword.value) {
+    error.value = "请输入备份时使用的主密码";
+    return;
+  }
+  const target = restoreTargetMode.value === "custom" ? restoreCustomPath.value.trim() : null;
+  if (restoreTargetMode.value === "custom" && !target) {
+    error.value = "请先选择自定义数据保存位置";
+    return;
+  }
+  busy.value = true;
+  error.value = "";
+  notice.value = "正在验证并恢复备份…";
+  try {
+    await setupRestoreBackupBegin(backupFilePath.value.trim(), backupPassword.value, target);
+    notice.value = "恢复完成，正在启动抽屉柜…";
+    // 必须整进程重启：default 目标要重新走 setup（管理 AppState → 锁屏），
+    // external 目标要在 Rust 启动路径中提交 active_root。webview reload 不够。
+    setTimeout(async () => {
+      const { restartApp } = await import("../api");
+      await restartApp();
+    }, 800);
+  } catch (e) {
+    error.value = String(e);
+    notice.value = "";
+    busy.value = false;
+  }
+}
+
 async function onAbandon() {
   if (busy.value) return;
   busy.value = true;
@@ -168,6 +223,44 @@ async function onAbandon() {
             {{ busy ? "处理中…" : "连接该目录" }}
           </button>
         </div>
+
+        <!-- Phase 2C-5：从加密备份恢复（第四入口） -->
+        <div class="dr-card" :class="{ disabled: busy }" @click="showBackupRestore = !showBackupRestore">
+          <div class="dr-card-head"><span class="dr-card-icon">🗄️</span><span class="dr-card-title">从加密备份恢复</span></div>
+          <p class="dr-card-desc">适合更换电脑或丢失数据后，用之前导出的 .drawerbox 备份文件恢复。</p>
+          <div v-if="showBackupRestore" class="dr-backup-panel" @click.stop>
+            <div class="dr-row">
+              <input v-model="backupFilePath" class="dr-input" placeholder="选择 .drawerbox 备份文件" :disabled="busy" readonly />
+              <button class="dr-mini" :disabled="busy" @click="onPickBackupFile">选择文件</button>
+            </div>
+            <input
+              v-model="backupPassword"
+              type="password"
+              class="dr-input"
+              placeholder="备份时使用的主密码"
+              :disabled="busy"
+              style="margin-top: 8px"
+            />
+            <div class="dr-restore-loc">
+              <label class="dr-radio">
+                <input type="radio" value="default" v-model="restoreTargetMode" :disabled="busy" />
+                恢复到推荐位置（本机用户目录）
+              </label>
+              <label class="dr-radio">
+                <input type="radio" value="custom" v-model="restoreTargetMode" :disabled="busy" />
+                恢复到自定义位置
+              </label>
+              <div v-if="restoreTargetMode === 'custom'" class="dr-row">
+                <input v-model="restoreCustomPath" class="dr-input" placeholder="例如 D:\抽屉柜数据" :disabled="busy" />
+                <button class="dr-mini" :disabled="busy" @click="onPickRestoreCustom">选择位置</button>
+              </div>
+            </div>
+            <button class="dr-btn primary" :disabled="busy || !backupFilePath.trim() || !backupPassword" @click="onBeginBackupRestore">
+              {{ busy ? "恢复中…" : "从备份恢复" }}
+            </button>
+            <p class="dr-hint">恢复使用备份自身的主密码与恢复短语；数据将恢复到你选择的上述位置，与备份原来的位置无关。</p>
+          </div>
+        </div>
       </div>
 
       <p v-if="notice" class="dr-notice">{{ notice }}</p>
@@ -207,6 +300,15 @@ async function onAbandon() {
 .dr-title { margin: 0 0 8px; font-size: 17px; }
 .dr-sub { margin: 0 0 16px; font-size: 12px; line-height: 1.7; color: #9aa5bd; }
 .dr-cards { display: flex; flex-direction: column; gap: 12px; }
+.dr-backup-panel {
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid #2c3550;
+  border-radius: 8px;
+  background: #101624;
+}
+.dr-restore-loc { margin: 10px 0; display: flex; flex-direction: column; gap: 6px; }
+.dr-radio { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #c6cede; cursor: pointer; }
 .dr-card {
   border: 1px solid #2c3550;
   background: #161c2c;

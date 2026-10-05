@@ -588,6 +588,16 @@ export interface RetainedSourceInfo {
 /** External → Default：把当前外部位置的完整数据迁移回默认位置（成功后自动重启） */
 export const setupBeginRestoreDefault = () =>
   invoke<void>("setup_begin_restore_default");
+/** 首次启动：从加密备份恢复（第四入口；目标 None=默认位置 / Some=自定义位置） */
+export const setupRestoreBackupBegin = (
+  backupPath: string,
+  masterPassword: string,
+  target?: string | null,
+) =>
+  invoke<{ op_id: string; target: string; is_default: boolean }>(
+    "setup_restore_backup_begin",
+    { backupPath, masterPassword, target: target ?? null },
+  );
 /** 删除旧数据副本（不可逆；只允许删除已登记的白名单归档及其 sidecar） */
 export const deleteRetainedSource = (opId: string) =>
   invoke<void>("delete_retained_source", { opId });

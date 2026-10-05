@@ -478,6 +478,54 @@ pub fn restore_v2_from_path(
     restore_v2_from_path_inject(state, backup_path, master_password, None)
 }
 
+/// Phase 2C-5：首次启动从加密备份恢复 —— 把备份内的数据库快照写入
+/// staging 文件（create_new + fsync）并完成全部既有验证（容器认证 /
+/// envelope 完整性 / schema / 安全元数据 / 主密码可解锁 / 密码行可解密）。
+/// staging 由调用方负责激活（atomic rename，绝不覆盖已有正式库）。
+/// 该路径不依赖任何 AppState：用于空环境首次初始化（尚无活动密码库）。
+pub fn prepare_restored_staging(
+    backup_path: &Path,
+    master_password: &str,
+    staging_path: &Path,
+) -> Result<V2BackupStats, String> {
+    let metadata = std::fs::metadata(backup_path).map_err(|_| "备份文件不存在".to_string())?;
+    if metadata.len() > MAX_BACKUP_BYTES {
+        return Err("备份文件过大".to_string());
+    }
+    let backup_bytes = std::fs::read(backup_path).map_err(|_| "无法读取备份文件".to_string())?;
+    let envelope = decode_envelope(&backup_bytes, master_password)?;
+    let database = BASE64
+        .decode(&envelope.database_b64)
+        .map_err(|_| "v2 数据库快照损坏".to_string())?;
+    if database.len() as u64 != envelope.database_size
+        || crypto::b64_encode(&Sha256::digest(&database)) != envelope.database_sha256
+    {
+        return Err("v2 数据库快照校验失败".to_string());
+    }
+    if staging_path.exists() {
+        return Err("恢复临时文件已存在，拒绝覆盖".to_string());
+    }
+    let mut temp_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(staging_path)
+        .map_err(|_| "无法创建恢复临时库".to_string())?;
+    temp_file
+        .write_all(&database)
+        .and_then(|_| temp_file.sync_all())
+        .map_err(|_| "无法写入恢复临时库".to_string())?;
+    drop(temp_file);
+    let restored = migration::open_existing_v2_db(staging_path)
+        .map_err(|_| "恢复数据库完整性或 schema 无效".to_string())?;
+    validate_snapshot(&restored, &envelope.table_counts)?;
+    let restored_dek = migration::unlock_v2_core(&restored, master_password)
+        .map_err(|_| "主密码错误，或备份安全数据损坏".to_string())?;
+    validate_password_rows(&restored, restored_dek.as_slice())?;
+    let trash = trash_password_count(&restored)?;
+    drop(restored);
+    Ok(stats_from_counts(&envelope.table_counts, database.len(), trash))
+}
+
 pub fn restore_v2_from_path_inject(
     state: &AppState,
     backup_path: &Path,

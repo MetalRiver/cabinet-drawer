@@ -1259,6 +1259,20 @@ pub fn run() {
                 eprintln!("[data-root] 清理中断迁移的 G1 孤儿: {:?}", g1);
                 let _ = std::fs::remove_file(&g1);
             }
+            // Phase 2C-5：Factory Reset v2 finalization（在 Data Root 解析之前；
+            // durable intent 存在即幂等执行，任意崩溃点后下次启动重做；
+            // retained archives 绝不在清理白名单内）。
+            match data_root::run_v2_factory_reset_finalization(
+                &config_root,
+                &config_root.join(".factory_reset_pending"),
+            ) {
+                Ok(n) if n > 0 => eprintln!(
+                    "[factory-reset-v2] finalization 完成（清理 {} 项）→ 进入首次位置选择",
+                    n
+                ),
+                Ok(_) => {}
+                Err(e) => eprintln!("[factory-reset-v2] finalization 失败（intent 保留，下次重做）: {}", e),
+            }
             // Data Root 解析必须在任何 SQLite 打开之前完成（2C-0 设计硬约束）。
             let effective_root = match data_root::resolve_data_root(&config_root) {
                 data_root::Resolution::UseDefault(root) => root,
@@ -1333,6 +1347,23 @@ pub fn run() {
                                 data_root::BlockedReason::PendingOperationNeedsRecovery(format!(
                                     "restore_default / {} / {}",
                                     op.op_id, reason
+                                )),
+                                config_root.clone(),
+                            );
+                            return Ok(());
+                        }
+                    },
+                    // Phase 2C-5：首次启动从加密备份恢复（external 目标）。
+                    // staging 已在 begin 时验证并激活 → 与 init 相同的收尾：
+                    // 打开 target 正式库 → 提交 active_root → 确保 G2。
+                    "restore_backup" => match try_complete_pending_init(&config_root, &op) {
+                        Some(root) => root,
+                        None => {
+                            enter_blocked_mode(
+                                app,
+                                data_root::BlockedReason::PendingOperationNeedsRecovery(format!(
+                                    "restore_backup / {} / {}",
+                                    op.op_id, op.phase
                                 )),
                                 config_root.clone(),
                             );
@@ -1812,6 +1843,7 @@ pub fn run() {
             get_data_root_summary,
             // Phase 2C-4：External → Default 恢复 + retained source 管理
             setup_begin_restore_default,
+            setup_restore_backup_begin,
             delete_retained_source,
             open_retained_source_folder,
             // P0-#Y#FIX#PICK：原生文件 / 文件夹选择对话框
