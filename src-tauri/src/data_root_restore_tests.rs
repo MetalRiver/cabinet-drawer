@@ -281,20 +281,24 @@ fn t56_rollback_restore_default() {
     assert!(cr2.join(V2_TMP_FILENAME).exists());
 }
 
-// 57. reconcile：文件已删但记录未更新 → 启动对账修正
+// 57. Offline Safety Gate（修订）：文件缺失/位置离线 绝不自动标 removed；
+//     可用性为运行时派生；对缺失条目的删除一律 fail closed
 #[test]
-fn t57_reconcile_retained_sources() {
+fn t57_retained_offline_safety() {
     let cr = temp_root("t57");
+    let offline_dir = temp_target("t57-offline-root");
     let mut st = DataRootState::new(None);
+    // 条目 a：所在目录模拟离线（目录整体改名后 archive_path 不可达）
     st.retained_sources.push(RetainedSource {
         op_id: "op-57a".to_string(),
-        archive_path: cr.join("drawer-v2.db.migrated-op-57a"),
-        original_root: cr.clone(),
-        migrated_to: temp_target("t57x"),
+        archive_path: offline_dir.join("drawer-v2.db.migrated-op-57a"),
+        original_root: offline_dir.clone(),
+        migrated_to: cr.clone(),
         created_at: chrono::Local::now().to_rfc3339(),
         status: "retained".to_string(),
         deleted_at: None,
     });
+    // 条目 b：文件在（可用）
     st.retained_sources.push(RetainedSource {
         op_id: "op-57b".to_string(),
         archive_path: cr.join("drawer-v2.db.migrated-op-57b"),
@@ -304,26 +308,71 @@ fn t57_reconcile_retained_sources() {
         status: "retained".to_string(),
         deleted_at: None,
     });
+    fs::write(
+        offline_dir.join("drawer-v2.db.migrated-op-57a"),
+        b"offline copy",
+    )
+    .unwrap();
     fs::write(cr.join("drawer-v2.db.migrated-op-57b"), b"alive").unwrap();
     put_state(&cr, &st);
-    let n = reconcile_retained_sources(&cr).unwrap();
-    assert_eq!(n, 1, "只有文件缺失的条目被修正");
-    let s = load(&cr);
-    let a = s
-        .retained_sources
-        .iter()
-        .find(|r| r.op_id == "op-57a")
-        .unwrap();
-    assert_eq!(a.status, "removed");
-    assert!(a.deleted_at.is_some());
-    let b = s
-        .retained_sources
-        .iter()
-        .find(|r| r.op_id == "op-57b")
-        .unwrap();
-    assert_eq!(b.status, "retained");
-    // 再跑一次：无变更
-    assert_eq!(reconcile_retained_sources(&cr).unwrap(), 0);
+
+    // 可用性派生（不持久化）：在位=true
+    let avail = retained_availability(&st);
+    assert_eq!(avail[0].1, true, "目录在位时应派生为可用");
+    assert_eq!(avail[1].1, true);
+
+    // ---- 模拟离线：目录改名 → archive_path 不可达 ----
+    let renamed = offline_dir.with_extension("__OFFLINE__");
+    fs::rename(&offline_dir, &renamed).unwrap();
+    let avail_off = retained_availability(&load(&cr));
+    assert_eq!(avail_off[0].1, false, "离线条目必须派生为不可用");
+
+    // 状态文件必须原样保留（无任何启动路径会把它写成 removed）
+    assert_eq!(
+        load(&cr).retained_sources[0].status,
+        "retained",
+        "离线绝不等同于已删除"
+    );
+    assert_eq!(load(&cr).retained_sources[0].deleted_at, None);
+
+    // 离线条目删除 → fail closed，metadata 保留
+    let err = delete_retained_source_checked(&cr, "op-57a").unwrap_err();
+    assert!(err.contains("不可访问"), "失败原因必须是不可访问: {}", err);
+    assert_eq!(
+        load(&cr).retained_sources[0].status,
+        "retained",
+        "删除失败后 metadata 必须保留"
+    );
+    assert!(
+        renamed.join("drawer-v2.db.migrated-op-57a").exists(),
+        "离线文件不得被触碰"
+    );
+
+    // ---- 恢复在线：同名目录回来 → 可用性自动恢复，无需重新登记 ----
+    fs::rename(&renamed, &offline_dir).unwrap();
+    let avail2 = retained_availability(&load(&cr));
+    assert_eq!(avail2[0].1, true, "文件重新出现后必须恢复可用");
+    // 显式删除现在可以成功（用户重新发起）
+    delete_retained_source_checked(&cr, "op-57a").unwrap();
+    assert_eq!(load(&cr).retained_sources[0].status, "removed");
+    assert!(!offline_dir.join("drawer-v2.db.migrated-op-57a").exists());
+
+    // ---- out-of-band 删除（用户资源管理器手工删）：保持 retained，不自动 removed ----
+    fs::remove_file(cr.join("drawer-v2.db.migrated-op-57b")).unwrap();
+    assert_eq!(
+        load(&cr).retained_sources[1].status,
+        "retained",
+        "手工删除不得被解释为应用完成的删除"
+    );
+    assert!(
+        delete_retained_source_checked(&cr, "op-57b").is_err(),
+        "对已消失文件的删除必须 fail closed"
+    );
+    assert_eq!(
+        load(&cr).retained_sources[1].status,
+        "retained",
+        "fail closed 后 metadata 仍保留"
+    );
 }
 
 // 58. 白名单删除：只删登记目标 + sidecars；路径/身份不匹配一律 fail closed
@@ -806,16 +855,26 @@ fn t65_upgrade_from_2c3_last_migration_preserves_retained_archive() {
             "completed_at": chrono::Local::now().to_rfc3339(),
         }
     });
-    fs::write(cr.join(STATE_FILENAME), serde_json::to_string(&legacy).unwrap()).unwrap();
+    fs::write(
+        cr.join(STATE_FILENAME),
+        serde_json::to_string(&legacy).unwrap(),
+    )
+    .unwrap();
 
     // 1) 旧 state 可正常解析（retained_sources serde default = 空）
     let st = load(&cr);
     assert_eq!(st.active_root.as_deref(), Some(d_root.as_path()));
     assert!(st.pending_operation.is_none());
-    assert!(st.retained_sources.is_empty(), "2C-3 state 无该字段 → default 空");
+    assert!(
+        st.retained_sources.is_empty(),
+        "2C-3 state 无该字段 → default 空"
+    );
     assert_eq!(st.last_migration.as_ref().unwrap().op_id, "op-c2d-old");
     // resolver 正常 = UseExternal（不因升级而 Blocked）
-    assert_eq!(resolve_data_root(&cr), Resolution::UseExternal(d_root.clone()));
+    assert_eq!(
+        resolve_data_root(&cr),
+        Resolution::UseExternal(d_root.clone())
+    );
 
     // 2/3) 已有 archive 不被误判 Unknown Archive：known 列表从可信 last_migration 构建
     let known = vec!["drawer-v2.db.migrated-old-op".to_string()];
@@ -844,7 +903,15 @@ fn t65_upgrade_from_2c3_last_migration_preserves_retained_archive() {
     write_compat_guard_g1(&cr, "op-d2c").unwrap();
     put_state(
         &cr,
-        &state_pending_restore_default(&d_root, &cr, "op-d2c", "transferring", Some(&fp), None, &st),
+        &state_pending_restore_default(
+            &d_root,
+            &cr,
+            "op-d2c",
+            "transferring",
+            Some(&fp),
+            None,
+            &st,
+        ),
     );
     let tmp = restore_staging_path(&cr, "op-d2c");
     {
@@ -854,7 +921,15 @@ fn t65_upgrade_from_2c3_last_migration_preserves_retained_archive() {
     let tfp = verify_migration_target(&tmp, &fp).unwrap();
     put_state(
         &cr,
-        &state_pending_restore_default(&d_root, &cr, "op-d2c", "target_verified", Some(&fp), Some(&tfp), &st),
+        &state_pending_restore_default(
+            &d_root,
+            &cr,
+            "op-d2c",
+            "target_verified",
+            Some(&fp),
+            Some(&tfp),
+            &st,
+        ),
     );
     drop(src);
     activate_target_tmp(&tmp, &cr.join(V2_DB_FILENAME)).unwrap();
@@ -866,21 +941,43 @@ fn t65_upgrade_from_2c3_last_migration_preserves_retained_archive() {
 
     // 5) 完成后：旧 C archive 仍 retained；新 D archive 也 retained；两代都可管理
     assert!(old_archive.exists(), "旧 C archive 不得被覆盖/激活/删除");
-    assert!(d_root.join("drawer-v2.db.migrated-op-d2c").exists(), "D 侧归档必须 retained");
+    assert!(
+        d_root.join("drawer-v2.db.migrated-op-d2c").exists(),
+        "D 侧归档必须 retained"
+    );
     assert!(!d_root.join(V2_DB_FILENAME).exists());
-    assert_eq!(snippet_count_by_title(&cr, "batch-1"), 1, "C 正式库 = 最新 D 快照");
+    assert_eq!(
+        snippet_count_by_title(&cr, "batch-1"),
+        1,
+        "C 正式库 = 最新 D 快照"
+    );
     let s2 = load(&cr);
     assert!(s2.active_root.is_none());
     assert!(s2.pending_operation.is_none());
-    assert_eq!(s2.retained_sources.len(), 2, "两代 archive 都必须进入 retained 管理");
-    let ids: Vec<&str> = s2.retained_sources.iter().map(|r| r.op_id.as_str()).collect();
-    assert!(ids.contains(&"op-c2d-old"), "旧 C archive 从 last_migration 折算登记");
+    assert_eq!(
+        s2.retained_sources.len(),
+        2,
+        "两代 archive 都必须进入 retained 管理"
+    );
+    let ids: Vec<&str> = s2
+        .retained_sources
+        .iter()
+        .map(|r| r.op_id.as_str())
+        .collect();
+    assert!(
+        ids.contains(&"op-c2d-old"),
+        "旧 C archive 从 last_migration 折算登记"
+    );
     assert!(ids.contains(&"op-d2c"), "新 D archive 登记");
     for r in &s2.retained_sources {
         assert_eq!(r.status, "retained");
     }
     // 管理可用性：删除校验路径对两代登记均能定位（以旧 archive 为例做白名单校验前置判定）
-    assert!(old_archive.file_name().unwrap().to_string_lossy().starts_with("drawer-v2.db.migrated-"));
+    assert!(old_archive
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .starts_with("drawer-v2.db.migrated-"));
     // 6) 无 guard，resolver = UseDefault
     assert!(recognize_guards(&cr).is_empty());
     assert_eq!(resolve_data_root(&cr), Resolution::UseDefault(cr.clone()));

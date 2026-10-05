@@ -582,6 +582,8 @@ export interface RetainedSourceInfo {
   created_at: string;
   status: string;
   deleted_at?: string | null;
+  /** Offline Safety Gate：运行时派生（archive 当前是否存在），不持久化 */
+  available?: boolean;
 }
 /** External → Default：把当前外部位置的完整数据迁移回默认位置（成功后自动重启） */
 export const setupBeginRestoreDefault = () =>

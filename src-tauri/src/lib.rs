@@ -1398,15 +1398,6 @@ pub fn run() {
                     }
                 }
             };
-            // Phase 2C-4：retained sources 启动对账（"文件已删除但记录未更新"的修正点）
-            match data_root::reconcile_retained_sources(&config_root) {
-                Ok(n) if n > 0 => eprintln!(
-                    "[data-root] retained sources 对账：{} 条记录已修正为 removed",
-                    n
-                ),
-                Ok(_) => {}
-                Err(e) => eprintln!("[data-root] retained sources 对账失败: {}", e),
-            }
             migration::discard_abandoned_fresh_initialization(&effective_root)
                 .map_err(|reason| std::io::Error::new(std::io::ErrorKind::Other, reason))?;
             // 两阶段 legacy 升级的 orphan tmp 清理：legacy 存在且无正式 v2 时，

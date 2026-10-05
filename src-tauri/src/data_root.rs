@@ -1472,10 +1472,11 @@ pub fn state_after_migration_commit(
     if !retained.iter().any(|r| r.op_id == op.op_id) {
         retained.push(RetainedSource {
             op_id: op.op_id.clone(),
-            archive_path: op.source.clone().unwrap_or_default().join(format!(
-                "{}{}",
-                MIGRATED_ARCHIVE_PREFIX, op.op_id
-            )),
+            archive_path: op
+                .source
+                .clone()
+                .unwrap_or_default()
+                .join(format!("{}{}", MIGRATED_ARCHIVE_PREFIX, op.op_id)),
             original_root: op.source.clone().unwrap_or_default(),
             migrated_to: target.clone(),
             created_at: chrono::Local::now().to_rfc3339(),
@@ -1633,12 +1634,16 @@ pub fn preflight_restore_default(
         for base in [V2_DB_FILENAME, LEGACY_DB_FILENAME] {
             let p = config_root.join(format!("{}{}", base, side));
             if p.exists() {
-                return Err(PreflightError::ConfigRootOccupied(p.to_string_lossy().to_string()));
+                return Err(PreflightError::ConfigRootOccupied(
+                    p.to_string_lossy().to_string(),
+                ));
             }
         }
     }
     if config_root.join(V2_SETUP_LOCK_FILENAME).exists() {
-        return Err(PreflightError::ConfigRootOccupied(V2_SETUP_LOCK_FILENAME.to_string()));
+        return Err(PreflightError::ConfigRootOccupied(
+            V2_SETUP_LOCK_FILENAME.to_string(),
+        ));
     }
     // 未知中间态（真实迁移 tmp / setup lock / .migration- 文件）。注意：
     // registered retained archive 名为 `drawer-v2.db.migrated-<id>`，不含
@@ -1722,7 +1727,10 @@ pub fn rollback_restore_default(config_root: &Path, op: &PendingOperation) -> Re
             fs::remove_file(&tmp).map_err(|e| format!("清理恢复临时库失败: {}", e))?;
         }
         for suffix in ["-wal", "-shm", "-journal"] {
-            let sidecar = target.join(format!("{}{}.tmp{}", MIGRATION_TMP_PREFIX, op.op_id, suffix));
+            let sidecar = target.join(format!(
+                "{}{}.tmp{}",
+                MIGRATION_TMP_PREFIX, op.op_id, suffix
+            ));
             if sidecar.exists() {
                 let _ = fs::remove_file(&sidecar);
             }
@@ -1854,35 +1862,32 @@ pub fn restore_guard_residual_candidate(config_root: &Path) -> Option<Vec<PathBu
     Some(guards.into_iter().map(|g| g.path).collect())
 }
 
-/// 启动对账（§二十一）：retained 条目声称 retained 但归档文件已不存在 →
-/// 修正为 removed（"文件已删除但记录未更新"的中断场景）。返回修正条数。
-pub fn reconcile_retained_sources(config_root: &Path) -> Result<usize, String> {
-    let st = match load_state(config_root) {
-        StateLoad::Loaded(s) => s,
-        _ => return Ok(0),
-    };
-    let mut changed = 0;
-    let mut s = st;
-    for r in s.retained_sources.iter_mut() {
-        if r.status == "retained" && !r.archive_path.exists() {
-            r.status = "removed".to_string();
-            r.deleted_at = Some(chrono::Local::now().to_rfc3339());
-            changed += 1;
-        }
-    }
-    if changed > 0 {
-        save_state(config_root, &s)?;
-    }
-    Ok(changed)
+/// Retained Offline Safety Gate（2C-4 补充）：
+/// retained 条目的可用性是**运行时派生值**（archive_path 当前是否存在），
+/// 绝不写回 status ——「不存在 / 当前不可访问」无法区分以下情形：
+///   A. 用户经应用明确删除成功（此时 delete 流程自身已提交 removed）
+///   B. 用户在资源管理器手工删除
+///   C. 原位置目录被改名（如离线模拟）
+///   D. 盘符/设备暂时不存在
+///   E. 权限暂时不足
+///   F. 网络路径暂时不可用
+/// 只有 B–F 皆不可证明为 A，因此 status=removed 只允许在
+/// delete_retained_source_checked 内「文件真实存在且删除成功」后提交；
+/// 文件后来重新出现时可用性自动恢复（无需任何登记动作）。
+/// 本函数仅做只读快照（available 派生），不修改任何持久状态。
+pub fn retained_availability(state: &DataRootState) -> Vec<(RetainedSource, bool)> {
+    state
+        .retained_sources
+        .iter()
+        .map(|r| (r.clone(), r.status == "retained" && r.archive_path.exists()))
+        .collect()
 }
 
 /// Upgrade Compatibility Gate（2C-3 → 2C-4，§七）：
 /// 可信 metadata（last_migration / retained status=retained）与磁盘实际归档的一致性校验。
 /// 登记的归档文件缺失且无 removed 记录可解释 → Fail Closed（拒绝继续 Restore Default）。
 /// 注意：不依赖文件名猜身份——只校验登记路径指向的文件是否真实存在。
-pub fn verify_retained_metadata_consistency(
-    state: &DataRootState,
-) -> Result<(), String> {
+pub fn verify_retained_metadata_consistency(state: &DataRootState) -> Result<(), String> {
     if let Some(lm) = &state.last_migration {
         let p = lm.source.join(&lm.archive);
         if !p.exists() {
@@ -1956,6 +1961,15 @@ pub fn delete_retained_source_checked(config_root: &Path, op_id: &str) -> Result
         if normalized_lower(&archive_path) == normalized_lower(&active.join(V2_DB_FILENAME)) {
             return Err("目标指向当前数据文件，拒绝删除（fail closed）".to_string());
         }
+    }
+    // Offline Safety Gate：archive 当前不可访问/不存在时拒绝删除。
+    // 「文件不存在」无法区分「用户已删」与「磁盘暂时离线」，
+    // 绝不能在此时提交 status=removed；retained 记录原样保留。
+    if !archive_path.exists() {
+        return Err(
+            "旧数据副本当前不可访问（文件不存在或所在位置离线），无法执行删除；记录保持不变。"
+                .to_string(),
+        );
     }
     // 白名单：本体 + sidecars
     let mut targets = vec![archive_path.clone()];

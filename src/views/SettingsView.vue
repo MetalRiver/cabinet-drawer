@@ -164,8 +164,13 @@ async function restoreStart() {
   }
 }
 async function openRetained(opId: string) {
-  try { await openRetainedSourceFolder(opId); }
-  catch (e) { alert(String(e)); }
+  try {
+    deleteError.value = "";
+    await openRetainedSourceFolder(opId);
+  } catch (e) {
+    // fail visible（Tauri webview 中 alert 无效，必须内联显示）
+    deleteError.value = String(e);
+  }
 }
 // 不可逆操作：两段内联确认（Tauri webview 无原生 confirm，必须用应用内组件）
 const pendingDeleteOp = ref<string | null>(null);
@@ -1175,7 +1180,7 @@ onMounted(() => {
           <div class="retained-row" v-for="r in retainedSources" :key="r.op_id">
             <div class="retained-info">
               <div>{{ r.created_at.slice(0, 10) }}｜原位置：<code>{{ r.original_root }}</code></div>
-              <div class="hint-left">状态：已停止使用</div>
+              <div class="hint-left">状态：已停止使用{{ r.available === false ? "｜⚠️ 当前不可访问" : "" }}</div>
             </div>
             <div class="action-row" v-if="pendingDeleteOp !== r.op_id">
               <button class="btn-mini tap" @click="openRetained(r.op_id)" data-interactive>📂 打开所在文件夹</button>

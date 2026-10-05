@@ -211,6 +211,12 @@ pub fn open_retained_source_folder(app: AppHandle, op_id: String) -> Result<(), 
         .find(|r| r.op_id == op_id && r.status == "retained")
         .ok_or("旧数据副本不存在或已删除")?;
     let dir = r.archive_path.parent().ok_or("归档路径无效")?.to_path_buf();
+    // Offline Safety Gate：fail visible —— 原位置离线/已移除时绝不假成功
+    if !dir.exists() {
+        return Err(
+            "旧数据副本当前不可访问（原位置离线或已被移除），无法打开所在文件夹。".to_string(),
+        );
+    }
     use tauri_plugin_shell::ShellExt;
     app.shell()
         .open(dir.to_string_lossy().to_string(), None)

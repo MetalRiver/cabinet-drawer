@@ -347,12 +347,31 @@ pub fn get_data_root_summary(app: AppHandle) -> serde_json::Value {
     let cr = config_root(&app).unwrap_or_default();
     let loaded = data_root::load_state(&cr);
     match loaded {
-        StateLoad::Loaded(s) => serde_json::json!({
-            "config_root": cr.to_string_lossy(),
-            "active_root": s.active_root.as_ref().map(|p| p.to_string_lossy().to_string()),
-            "last_migration": s.last_migration,
-            "retained_sources": s.retained_sources,
-        }),
+        StateLoad::Loaded(s) => {
+            // Offline Safety Gate：available 为运行时派生值，不持久化
+            let retained: Vec<serde_json::Value> = s
+                .retained_sources
+                .iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "op_id": r.op_id,
+                        "archive_path": r.archive_path,
+                        "original_root": r.original_root,
+                        "migrated_to": r.migrated_to,
+                        "created_at": r.created_at,
+                        "status": r.status,
+                        "deleted_at": r.deleted_at,
+                        "available": r.archive_path.exists(),
+                    })
+                })
+                .collect();
+            serde_json::json!({
+                "config_root": cr.to_string_lossy(),
+                "active_root": s.active_root.as_ref().map(|p| p.to_string_lossy().to_string()),
+                "last_migration": s.last_migration,
+                "retained_sources": retained,
+            })
+        }
         _ => serde_json::json!({
             "config_root": cr.to_string_lossy(),
             "active_root": null,
