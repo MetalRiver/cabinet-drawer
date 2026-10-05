@@ -72,6 +72,25 @@ pub struct PendingOperation {
     pub updated_at: String,
 }
 
+/// Phase 2C-4：retained source 归档登记（旧数据副本）。
+/// 每次成功迁移都把 source 归档登记在此（versioned list）——绝不允许只有单个
+/// last_migration 导致更老 retained archive 失联。不记录任何秘密。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RetainedSource {
+    pub op_id: String,
+    /// 归档完整路径（drawer-v2.db.migrated-<op_id>）
+    pub archive_path: PathBuf,
+    /// 迁移前的原数据位置
+    pub original_root: PathBuf,
+    /// 数据迁移去向
+    pub migrated_to: PathBuf,
+    pub created_at: String,
+    /// retained = 仍保留的安全副本；removed = 用户已明确删除（记录留档）
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DataRootState {
     pub version: u32,
@@ -82,6 +101,10 @@ pub struct DataRootState {
     /// 最近一次成功迁移的保留信息（非秘密；供设置页展示与后续清理阶段使用）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_migration: Option<LastMigration>,
+    /// Phase 2C-4：全部 retained source 归档登记。
+    /// serde default = 2C-3 及更早的 state 解析零破坏（向后兼容）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub retained_sources: Vec<RetainedSource>,
     pub updated_at: String,
 }
 
@@ -102,6 +125,7 @@ impl DataRootState {
             active_root,
             pending_operation: None,
             last_migration: None,
+            retained_sources: Vec::new(),
             updated_at: chrono::Local::now().to_rfc3339(),
         }
     }
@@ -676,6 +700,10 @@ pub enum PreflightError {
     NoSpace(String),
     SameAsSource(String),
     NestedWithSource(String),
+    /// Phase 2C-4：Config Root 已被正式库/未知中间态占用
+    ConfigRootOccupied(String),
+    /// Phase 2C-4：存在无法证明来源的 retained archive（fail closed，不得随便忽略）
+    UnknownRetainedArchive(String),
 }
 
 impl PreflightError {
@@ -710,6 +738,14 @@ impl PreflightError {
             PreflightError::NestedWithSource(_) => {
                 "新位置与当前数据位置互相嵌套，请选择其他位置。".to_string()
             }
+            PreflightError::ConfigRootOccupied(p) => format!(
+                "配置目录中存在意外的数据库文件（{}），为保护数据已停止恢复默认位置。",
+                p
+            ),
+            PreflightError::UnknownRetainedArchive(name) => format!(
+                "配置目录中存在无法确认来源的旧数据归档（{}），为保护数据已停止恢复默认位置。",
+                name
+            ),
         }
     }
 }
@@ -916,6 +952,7 @@ pub fn state_pending(op_type: &str, op_id: &str, phase: &str, target: &Path) -> 
         version: STATE_VERSION,
         active_root: None,
         last_migration: None,
+        retained_sources: Vec::new(),
         pending_operation: Some(PendingOperation {
             op_type: op_type.to_string(),
             op_id: op_id.to_string(),
@@ -937,6 +974,7 @@ pub fn state_active_external(target: &Path) -> DataRootState {
         version: STATE_VERSION,
         active_root: Some(target.to_path_buf()),
         last_migration: None,
+        retained_sources: Vec::new(),
         pending_operation: None,
         updated_at: chrono::Local::now().to_rfc3339(),
     }
@@ -1406,6 +1444,7 @@ pub fn state_pending_migration(
             updated_at: now,
         }),
         last_migration: keep_last_migration,
+        retained_sources: Vec::new(),
         updated_at: chrono::Local::now().to_rfc3339(),
     }
 }
@@ -1422,11 +1461,28 @@ pub fn state_with_migration_phase(state: &DataRootState, phase: &str) -> DataRoo
 }
 
 /// 迁移最终提交：active_root=target、pending=null、记录 last_migration。
+/// Phase 2C-4：同时把 source 归档登记进 retained_sources（幂等，按 op_id 去重），
+/// 既有登记原样保留——多级迁移（C→D→E→…）的每一代归档都可追踪。
 pub fn state_after_migration_commit(
     previous: &DataRootState,
     op: &PendingOperation,
 ) -> DataRootState {
     let target = op.target.clone().unwrap_or_default();
+    let mut retained = previous.retained_sources.clone();
+    if !retained.iter().any(|r| r.op_id == op.op_id) {
+        retained.push(RetainedSource {
+            op_id: op.op_id.clone(),
+            archive_path: op.source.clone().unwrap_or_default().join(format!(
+                "{}{}",
+                MIGRATED_ARCHIVE_PREFIX, op.op_id
+            )),
+            original_root: op.source.clone().unwrap_or_default(),
+            migrated_to: target.clone(),
+            created_at: chrono::Local::now().to_rfc3339(),
+            status: "retained".to_string(),
+            deleted_at: None,
+        });
+    }
     DataRootState {
         version: STATE_VERSION,
         active_root: Some(target.clone()),
@@ -1438,6 +1494,7 @@ pub fn state_after_migration_commit(
             op_id: op.op_id.clone(),
             completed_at: chrono::Local::now().to_rfc3339(),
         }),
+        retained_sources: retained,
         updated_at: chrono::Local::now().to_rfc3339(),
     }
 }
@@ -1519,6 +1576,424 @@ pub fn g1_orphan_cleanup_candidate(config_root: &Path) -> Option<PathBuf> {
     let g1_path = config_root.join(V2_TMP_FILENAME);
     let guard = parse_guard_file(&g1_path)?;
     Some(g1_path).filter(|_| guard.op_id != "")
+}
+
+// ============================================================
+// Phase 2C-4：External → Default 恢复（restore_default）+ retained source 生命周期
+// ============================================================
+
+/// restore-default 的 target staging 与 G1 的隔离约束（P0，§四）：
+/// staging 复用迁移引擎的 `drawer-v2.db.migration-<op_id>.tmp`，
+/// G1 是 `drawer-v2.db.tmp` —— 两者永远不同文件。单元测试钉死此不变量。
+pub fn restore_staging_path(config_root: &Path, op_id: &str) -> PathBuf {
+    let staging = migration_tmp_path(config_root, op_id);
+    debug_assert!(
+        staging != config_root.join(V2_TMP_FILENAME),
+        "restore staging 不得与 G1 guard 共用文件名"
+    );
+    staging
+}
+
+/// 稳定 external 态下 G1 残留清理判定（restore-default 开始前调用）：
+/// 只有「G1 是本产品的 Magic guard（绝非旧版真实升级 tmp）+ state 无 pending +
+/// active_root 为 external」时，才能证明它是上次中断 restore-begin 的孤儿
+/// ——旧版会被这个多余 tmp 阻断，必须清掉。其余一切情形返回 None（preflight 兜底拒绝）。
+pub fn stale_g1_on_stable_external(config_root: &Path) -> Option<PathBuf> {
+    let st = match load_state(config_root) {
+        StateLoad::Loaded(s) => s,
+        _ => return None,
+    };
+    if st.pending_operation.is_some() || st.active_root.is_none() {
+        return None;
+    }
+    let g1 = config_root.join(V2_TMP_FILENAME);
+    if !g1.exists() {
+        return None;
+    }
+    parse_guard_file(&g1)?;
+    Some(g1)
+}
+
+/// restore-default preflight（§六）：target 固定为 Config Root。
+/// - 正式库 / legacy 库 / 正式库 sidecar / setup lock / 未知中间态 → 拒绝
+/// - `drawer-v2.db.migrated-*` 归档：已登记（last_migration / retained_sources）→ 允许；
+///   无法在 metadata 中证明来源 → Fail Closed
+/// - 可写 + 固定盘 + 空间检查
+/// G2 与 active_root 的一致性由命令层用 `external_guard_consistent` 单独校验。
+pub fn preflight_restore_default(
+    config_root: &Path,
+    required_bytes: u64,
+    known_archive_names: &[String],
+) -> Result<(), PreflightError> {
+    let cr_s = normalized_lower(config_root);
+    if has_formal_db(config_root) || has_legacy_db(config_root) {
+        return Err(PreflightError::ConfigRootOccupied(cr_s));
+    }
+    for side in ["-wal", "-shm", "-journal"] {
+        for base in [V2_DB_FILENAME, LEGACY_DB_FILENAME] {
+            let p = config_root.join(format!("{}{}", base, side));
+            if p.exists() {
+                return Err(PreflightError::ConfigRootOccupied(p.to_string_lossy().to_string()));
+            }
+        }
+    }
+    if config_root.join(V2_SETUP_LOCK_FILENAME).exists() {
+        return Err(PreflightError::ConfigRootOccupied(V2_SETUP_LOCK_FILENAME.to_string()));
+    }
+    // 未知中间态（真实迁移 tmp / setup lock / .migration- 文件）。注意：
+    // registered retained archive 名为 `drawer-v2.db.migrated-<id>`，不含
+    // MIGRATION_TMP_MARKER（".migration-"），不会被此处误伤。
+    if let Some(names) = has_migration_artifacts(config_root) {
+        return Err(PreflightError::ConfigRootOccupied(names));
+    }
+    // retained archive 白名单：不在登记内的 migrated-* 一律 fail closed
+    if let Ok(entries) = fs::read_dir(config_root) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with(MIGRATED_ARCHIVE_PREFIX) && !known_archive_names.contains(&name) {
+                return Err(PreflightError::UnknownRetainedArchive(name));
+            }
+        }
+    }
+    writable_probe(config_root).map_err(PreflightError::NotWritable)?;
+    if !drive_is_fixed(config_root) {
+        return Err(PreflightError::NetworkOrRemovable(cr_s));
+    }
+    if let Some(free) = free_space_bytes(config_root) {
+        if free < required_bytes {
+            return Err(PreflightError::NoSpace(cr_s));
+        }
+    }
+    Ok(())
+}
+
+/// G2 与 external source 的一致性校验（返回旧 G2 op_id 供审计）。
+pub fn external_guard_consistent(config_root: &Path, source: &Path) -> Result<String, String> {
+    recognize_guards(config_root)
+        .into_iter()
+        .find(|g| g.kind == GuardKind::G2Stray && g.target.as_deref() == Some(source))
+        .map(|g| g.op_id)
+        .ok_or_else(|| {
+            "Config Root 缺少与当前数据位置一致的兼容保护标记（fail closed）".to_string()
+        })
+}
+
+/// restore-default pending state（§七）：active_root 保持 source（D）——
+/// 整个迁移提交前 canonical 绝不换位；既有 last_migration / retained_sources 原样保留。
+#[allow(clippy::too_many_arguments)]
+pub fn state_pending_restore_default(
+    source: &Path,
+    config_root: &Path,
+    op_id: &str,
+    phase: &str,
+    source_fingerprint: Option<&str>,
+    target_fingerprint: Option<&str>,
+    previous: &DataRootState,
+) -> DataRootState {
+    let now = chrono::Local::now().to_rfc3339();
+    DataRootState {
+        version: STATE_VERSION,
+        active_root: Some(source.to_path_buf()),
+        pending_operation: Some(PendingOperation {
+            op_type: "restore_default".to_string(),
+            op_id: op_id.to_string(),
+            phase: phase.to_string(),
+            source: Some(source.to_path_buf()),
+            target: Some(config_root.to_path_buf()),
+            source_kind: Some(SourceKind::External.as_str().to_string()),
+            source_fingerprint: source_fingerprint.map(|s| s.to_string()),
+            target_fingerprint: target_fingerprint.map(|s| s.to_string()),
+            started_at: Some(now.clone()),
+            updated_at: now,
+        }),
+        last_migration: previous.last_migration.clone(),
+        retained_sources: previous.retained_sources.clone(),
+        updated_at: chrono::Local::now().to_rfc3339(),
+    }
+}
+
+/// restore-default 回滚（仅限 target 激活前，§二十八 A 语义）：
+/// 删除本 operation 的 staging tmp 及 sidecars、移除本 operation 的 G1；
+/// 旧 G2 与 source 数据永不触碰。
+pub fn rollback_restore_default(config_root: &Path, op: &PendingOperation) -> Result<(), String> {
+    if let Some(target) = &op.target {
+        let tmp = migration_tmp_path(target, &op.op_id);
+        if tmp.exists() {
+            fs::remove_file(&tmp).map_err(|e| format!("清理恢复临时库失败: {}", e))?;
+        }
+        for suffix in ["-wal", "-shm", "-journal"] {
+            let sidecar = target.join(format!("{}{}.tmp{}", MIGRATION_TMP_PREFIX, op.op_id, suffix));
+            if sidecar.exists() {
+                let _ = fs::remove_file(&sidecar);
+            }
+        }
+    }
+    let g1 = config_root.join(V2_TMP_FILENAME);
+    if g1.exists() {
+        match parse_guard_file(&g1) {
+            Some(g) if g.op_id == op.op_id && g.kind == GuardKind::G1Tmp => {
+                fs::remove_file(&g1).map_err(|e| format!("移除 G1 失败: {}", e))?;
+            }
+            _ => return Err("G1 与本操作不匹配，拒绝清理（fail closed）".to_string()),
+        }
+    }
+    Ok(())
+}
+
+/// D→C 最终提交（§十四）：active_root=null、pending=null、last_migration 更新为本次
+/// restore；retained_sources = 既有登记 + 旧 last_migration 折算（向后兼容 2C-3 state）
+/// + 本次 D 侧归档。幂等（按 op_id 去重）。
+pub fn state_after_restore_commit(
+    previous: &DataRootState,
+    op: &PendingOperation,
+) -> DataRootState {
+    let source = op.source.clone().unwrap_or_default();
+    let target = op.target.clone().unwrap_or_default();
+    let mut retained = previous.retained_sources.clone();
+    // 1) 旧 last_migration（如 2C-3 时代 C→D 留下、尚未进 retained_sources）折算登记
+    if let Some(lm) = &previous.last_migration {
+        if lm.op_id != op.op_id && !retained.iter().any(|r| r.op_id == lm.op_id) {
+            retained.push(RetainedSource {
+                op_id: lm.op_id.clone(),
+                archive_path: lm.source.join(&lm.archive),
+                original_root: lm.source.clone(),
+                migrated_to: lm.target.clone(),
+                created_at: lm.completed_at.clone(),
+                status: "retained".to_string(),
+                deleted_at: None,
+            });
+        }
+    }
+    // 2) 本次 D→C 的 D 侧归档
+    if !retained.iter().any(|r| r.op_id == op.op_id) {
+        retained.push(RetainedSource {
+            op_id: op.op_id.clone(),
+            archive_path: source.join(format!("{}{}", MIGRATED_ARCHIVE_PREFIX, op.op_id)),
+            original_root: source.clone(),
+            migrated_to: target.clone(),
+            created_at: chrono::Local::now().to_rfc3339(),
+            status: "retained".to_string(),
+            deleted_at: None,
+        });
+    }
+    DataRootState {
+        version: STATE_VERSION,
+        active_root: None,
+        pending_operation: None,
+        last_migration: Some(LastMigration {
+            source,
+            target,
+            op_id: op.op_id.clone(),
+            archive: format!("{}{}", MIGRATED_ARCHIVE_PREFIX, op.op_id),
+            completed_at: chrono::Local::now().to_rfc3339(),
+        }),
+        retained_sources: retained,
+        updated_at: chrono::Local::now().to_rfc3339(),
+    }
+}
+
+/// Guard 清理（§十五，state 已翻转 active_root=null 后调用）：
+/// 先删 G2 → 确认本 operation 的 G1 仍在 → 删 G1。
+/// 返回 Err = 清理残留（数据迁移本身已成功；启动侧由 restore_guard_residual_candidate
+/// 结构化 recovery 兜底），调用方不得掩盖也不得当作迁移失败。
+pub fn cleanup_guards_after_restore(config_root: &Path, restore_op_id: &str) -> Result<(), String> {
+    let mut residual: Vec<String> = Vec::new();
+    // 1) 先删全部 G2（删除期间 G1 仍阻止旧版）
+    for g in recognize_guards(config_root) {
+        if g.kind == GuardKind::G2Stray {
+            if let Err(e) = fs::remove_file(&g.path) {
+                residual.push(format!("G2({}): {}", g.op_id, e));
+            }
+        }
+    }
+    // 2) 确认 G1 是本 operation 的 Magic guard 才允许删
+    let g1 = config_root.join(V2_TMP_FILENAME);
+    let g1_ours = parse_guard_file(&g1)
+        .map(|g| g.op_id == restore_op_id && g.kind == GuardKind::G1Tmp)
+        .unwrap_or(false);
+    if g1_ours {
+        if let Err(e) = fs::remove_file(&g1) {
+            residual.push(format!("G1: {}", e));
+        }
+    } else if g1.exists() {
+        residual.push("G1 与本操作不匹配，已保留（fail closed）".to_string());
+    }
+    if residual.is_empty() {
+        Ok(())
+    } else {
+        Err(residual.join("; "))
+    }
+}
+
+/// 恢复默认完成但 guard 清理中断的启动侧结构化 recovery（§十五）：
+/// 判定条件（全部满足才可证明）——state Loaded + active_root=None + pending=None +
+/// Config Root 有正式库 + 每个 recognized guard 的 op_id 都能在 state 的
+/// last_migration / retained_sources 中找到归属。返回可删除的 guard 路径列表。
+pub fn restore_guard_residual_candidate(config_root: &Path) -> Option<Vec<PathBuf>> {
+    let st = match load_state(config_root) {
+        StateLoad::Loaded(s) => s,
+        _ => return None,
+    };
+    if st.active_root.is_some() || st.pending_operation.is_some() {
+        return None;
+    }
+    let lm = st.last_migration.as_ref()?;
+    if !has_formal_db(config_root) {
+        return None;
+    }
+    let guards = recognize_guards(config_root);
+    if guards.is_empty() {
+        return None;
+    }
+    for g in &guards {
+        let known = g.op_id == lm.op_id || st.retained_sources.iter().any(|r| r.op_id == g.op_id);
+        if !known {
+            return None;
+        }
+    }
+    Some(guards.into_iter().map(|g| g.path).collect())
+}
+
+/// 启动对账（§二十一）：retained 条目声称 retained 但归档文件已不存在 →
+/// 修正为 removed（"文件已删除但记录未更新"的中断场景）。返回修正条数。
+pub fn reconcile_retained_sources(config_root: &Path) -> Result<usize, String> {
+    let st = match load_state(config_root) {
+        StateLoad::Loaded(s) => s,
+        _ => return Ok(0),
+    };
+    let mut changed = 0;
+    let mut s = st;
+    for r in s.retained_sources.iter_mut() {
+        if r.status == "retained" && !r.archive_path.exists() {
+            r.status = "removed".to_string();
+            r.deleted_at = Some(chrono::Local::now().to_rfc3339());
+            changed += 1;
+        }
+    }
+    if changed > 0 {
+        save_state(config_root, &s)?;
+    }
+    Ok(changed)
+}
+
+/// Upgrade Compatibility Gate（2C-3 → 2C-4，§七）：
+/// 可信 metadata（last_migration / retained status=retained）与磁盘实际归档的一致性校验。
+/// 登记的归档文件缺失且无 removed 记录可解释 → Fail Closed（拒绝继续 Restore Default）。
+/// 注意：不依赖文件名猜身份——只校验登记路径指向的文件是否真实存在。
+pub fn verify_retained_metadata_consistency(
+    state: &DataRootState,
+) -> Result<(), String> {
+    if let Some(lm) = &state.last_migration {
+        let p = lm.source.join(&lm.archive);
+        if !p.exists() {
+            let explained = state
+                .retained_sources
+                .iter()
+                .any(|r| r.op_id == lm.op_id && r.status == "removed");
+            if !explained {
+                return Err(format!(
+                    "last_migration 登记的归档不存在（{}）：metadata 与磁盘不一致，fail closed",
+                    p.display()
+                ));
+            }
+        }
+    }
+    for r in &state.retained_sources {
+        if r.status == "retained" && !r.archive_path.exists() {
+            return Err(format!(
+                "retained 登记的归档不存在（{}）：metadata 与磁盘不一致，fail closed",
+                r.archive_path.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// §二十：白名单删除 retained archive（本体 + 明确对应的 -wal/-shm/-journal）。
+/// 硬校验：op_id 必须登记且 status=retained；archive 文件名必须匹配 op_id；
+/// archive 必须位于登记的 original_root；不得等于任何 canonical DB。
+/// 顺序：文件删除成功 → 验证不存在 → 才更新 state metadata（§二十一）。
+pub fn delete_retained_source_checked(config_root: &Path, op_id: &str) -> Result<(), String> {
+    let mut st = match load_state(config_root) {
+        StateLoad::Loaded(s) => s,
+        _ => return Err("状态文件不可用，拒绝删除".to_string()),
+    };
+    if st.pending_operation.is_some() {
+        return Err("存在未完成的数据位置操作，拒绝删除旧数据副本".to_string());
+    }
+    let idx = st
+        .retained_sources
+        .iter()
+        .position(|r| r.op_id == op_id && r.status == "retained")
+        .ok_or("旧数据副本不存在或已删除")?;
+    let (archive_path, original_root) = {
+        let r = &st.retained_sources[idx];
+        (r.archive_path.clone(), r.original_root.clone())
+    };
+    // 文件名必须与 op_id 精确匹配（防串号）
+    let expected_name = format!("{}{}", MIGRATED_ARCHIVE_PREFIX, op_id);
+    if archive_path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .as_deref()
+        != Some(expected_name.as_str())
+    {
+        return Err("归档文件名与登记信息不匹配（fail closed）".to_string());
+    }
+    // 必须仍在登记的原位置目录下
+    if !archive_path
+        .parent()
+        .map(|p| normalized_lower(p) == normalized_lower(&original_root))
+        .unwrap_or(false)
+    {
+        return Err("归档路径与登记的原位置不匹配（fail closed）".to_string());
+    }
+    // 不得是任何 canonical DB（Config Root / active external root）
+    if normalized_lower(&archive_path) == normalized_lower(&config_root.join(V2_DB_FILENAME)) {
+        return Err("目标指向当前数据文件，拒绝删除（fail closed）".to_string());
+    }
+    if let Some(active) = &st.active_root {
+        if normalized_lower(&archive_path) == normalized_lower(&active.join(V2_DB_FILENAME)) {
+            return Err("目标指向当前数据文件，拒绝删除（fail closed）".to_string());
+        }
+    }
+    // 白名单：本体 + sidecars
+    let mut targets = vec![archive_path.clone()];
+    for suffix in ["-wal", "-shm", "-journal"] {
+        targets.push(PathBuf::from(format!(
+            "{}{}",
+            archive_path.to_string_lossy(),
+            suffix
+        )));
+    }
+    for t in &targets {
+        if t.exists() {
+            fs::remove_file(t).map_err(|e| {
+                format!(
+                    "删除 {} 失败：{}（未变更任何记录，可稍后重试）",
+                    t.file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default(),
+                    e
+                )
+            })?;
+        }
+        if t.exists() {
+            return Err(format!("删除后文件仍存在: {}", t.display()));
+        }
+    }
+    // 文件全部删除成功后才更新 metadata
+    st.retained_sources[idx].status = "removed".to_string();
+    st.retained_sources[idx].deleted_at = Some(chrono::Local::now().to_rfc3339());
+    st.updated_at = chrono::Local::now().to_rfc3339();
+    if let Err(e) = save_state(config_root, &st) {
+        // 不静默撒谎：文件已删但记录未更新 → 下次启动 reconcile 修正
+        return Err(format!(
+            "旧数据副本文件已删除，但记录更新失败（{}）。将在下次启动自动对账。",
+            e
+        ));
+    }
+    Ok(())
 }
 
 // ============================================================

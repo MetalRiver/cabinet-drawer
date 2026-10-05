@@ -247,20 +247,19 @@ pub fn setup_begin_migration(
         data_root::semantic_fingerprint(&conn)?
     };
 
-    // 8) state(transferring)：active_root 保持 source
-    data_root::save_state(
-        &cr,
-        &data_root::state_pending_migration(
-            &source,
-            &target,
-            &op_id,
-            "transferring",
-            kind,
-            Some(&source_fp),
-            None,
-            loaded.last_migration.clone(),
-        ),
-    )?;
+    // 8) state(transferring)：active_root 保持 source（2C-4：retained 登记随行透传）
+    let mut pending_state = data_root::state_pending_migration(
+        &source,
+        &target,
+        &op_id,
+        "transferring",
+        kind,
+        Some(&source_fp),
+        None,
+        loaded.last_migration.clone(),
+    );
+    pending_state.retained_sources = loaded.retained_sources.clone();
+    data_root::save_state(&cr, &pending_state)?;
 
     // 9) 快照 → 验证 → 激活（任一失败：回滚到 source，§二十八 A）
     let run = (|| -> Result<(), String> {
@@ -275,11 +274,7 @@ pub fn setup_begin_migration(
             StateLoad::Loaded(s) => s,
             _ => return Err("迁移过程中 state 丢失".to_string()),
         };
-        data_root::save_state(
-            &cr,
-            &data_root::state_with_migration_phase(&st, "target_verified"),
-        )?;
-        let st = data_root::state_pending_migration(
+        let mut verified_state = data_root::state_pending_migration(
             &source,
             &target,
             &op_id,
@@ -289,10 +284,11 @@ pub fn setup_begin_migration(
             Some(&target_fp),
             loaded.last_migration.clone(),
         );
-        data_root::save_state(&cr, &st)?;
+        verified_state.retained_sources = st.retained_sources.clone();
+        data_root::save_state(&cr, &verified_state)?;
         data_root::activate_target_tmp(&tmp, &target.join(migration::V2_DB_FILENAME))?;
-        let st = data_root::state_with_migration_phase(&st, "target_activated");
-        data_root::save_state(&cr, &st)?;
+        let st2 = data_root::state_with_migration_phase(&verified_state, "target_activated");
+        data_root::save_state(&cr, &st2)?;
         Ok(())
     })();
     if let Err(e) = run {
@@ -345,16 +341,23 @@ pub fn setup_begin_migration(
     crate::commands::restart_app(app)
 }
 
-/// 数据位置摘要（设置页展示：canonical root + last_migration 保留信息）
+/// 数据位置摘要（设置页展示：canonical root + last_migration + retained sources）
 #[tauri::command]
 pub fn get_data_root_summary(app: AppHandle) -> serde_json::Value {
     let cr = config_root(&app).unwrap_or_default();
     let loaded = data_root::load_state(&cr);
     match loaded {
         StateLoad::Loaded(s) => serde_json::json!({
+            "config_root": cr.to_string_lossy(),
             "active_root": s.active_root.as_ref().map(|p| p.to_string_lossy().to_string()),
             "last_migration": s.last_migration,
+            "retained_sources": s.retained_sources,
         }),
-        _ => serde_json::json!({ "active_root": null, "last_migration": null }),
+        _ => serde_json::json!({
+            "config_root": cr.to_string_lossy(),
+            "active_root": null,
+            "last_migration": null,
+            "retained_sources": [],
+        }),
     }
 }

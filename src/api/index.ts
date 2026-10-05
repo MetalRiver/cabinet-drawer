@@ -566,9 +566,32 @@ export interface LastMigrationInfo {
   completed_at: string;
 }
 export const getDataRootSummary = () =>
-  invoke<{ active_root: string | null; last_migration: LastMigrationInfo | null }>(
-    "get_data_root_summary",
-  );
+  invoke<{
+    config_root: string;
+    active_root: string | null;
+    last_migration: LastMigrationInfo | null;
+    retained_sources: RetainedSourceInfo[];
+  }>("get_data_root_summary");
+
+/* ===== Phase 2C-4：恢复默认位置 + 旧数据副本管理 ===== */
+export interface RetainedSourceInfo {
+  op_id: string;
+  archive_path: string;
+  original_root: string;
+  migrated_to: string;
+  created_at: string;
+  status: string;
+  deleted_at?: string | null;
+}
+/** External → Default：把当前外部位置的完整数据迁移回默认位置（成功后自动重启） */
+export const setupBeginRestoreDefault = () =>
+  invoke<void>("setup_begin_restore_default");
+/** 删除旧数据副本（不可逆；只允许删除已登记的白名单归档及其 sidecar） */
+export const deleteRetainedSource = (opId: string) =>
+  invoke<void>("delete_retained_source", { opId });
+/** 打开旧数据副本所在文件夹（绝不打开归档本身） */
+export const openRetainedSourceFolder = (opId: string) =>
+  invoke<void>("open_retained_source_folder", { opId });
 
 // ============ B1+B3：导入导出备份 + 重置数据 ============
 

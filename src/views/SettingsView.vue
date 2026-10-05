@@ -31,10 +31,15 @@ import {
   exportEncryptedBackup,
   importEncryptedBackup,
   factoryReset,
+  setupBeginRestoreDefault,
+  deleteRetainedSource,
+  openRetainedSourceFolder,
   type ConflictPolicy,
   type ImportStats,
   type ExportResult,
+  type RetainedSourceInfo,
 } from "../api";
+import ConfirmInline from "../components/ConfirmInline.vue";
 
 const widgetStore = useWidgetStore();
 const softwareStore = useSoftwareStore();
@@ -120,6 +125,71 @@ async function migrationStart() {
     migrationBusy.value = false;
     alert(String(e));
   }
+}
+
+// ========== Phase 2C-4：恢复默认位置 + 旧数据副本管理 ==========
+const restoreConfirmOpen = ref(false);
+const restoreBusy = ref(false);
+const restoreRunning = ref(false);
+const defaultDir = ref<string>("");
+const retainedSources = ref<RetainedSourceInfo[]>([]);
+const canRestoreDefault = computed(() => {
+  // dataDir 与 config_root 均来自 Rust PathBuf 字符串，大小写归一即可比较
+  const norm = (p: string) => p.trim().toLowerCase();
+  return (
+    defaultDir.value !== "" &&
+    dataDir.value !== "加载中..." &&
+    norm(dataDir.value) !== norm(defaultDir.value)
+  );
+});
+async function loadRestoreInfo() {
+  try {
+    const s = await getDataRootSummary();
+    defaultDir.value = s.config_root ?? "";
+    retainedSources.value = (s.retained_sources ?? []).filter((r) => r.status === "retained");
+  } catch { /* 摘要不可用时静默 */ }
+}
+onMounted(loadRestoreInfo);
+async function restoreStart() {
+  if (restoreBusy.value) return;
+  restoreBusy.value = true;
+  restoreRunning.value = true;
+  try {
+    // 成功后后端会自行重启应用（恢复收尾在新进程 setup 内完成）
+    await setupBeginRestoreDefault();
+  } catch (e) {
+    restoreRunning.value = false;
+    restoreBusy.value = false;
+    alert(String(e));
+  }
+}
+async function openRetained(opId: string) {
+  try { await openRetainedSourceFolder(opId); }
+  catch (e) { alert(String(e)); }
+}
+// 不可逆操作：两段内联确认（Tauri webview 无原生 confirm，必须用应用内组件）
+const pendingDeleteOp = ref<string | null>(null);
+const deleteStage = ref<1 | 2>(1);
+const deleteError = ref<string>("");
+function removeRetained(opId: string) {
+  pendingDeleteOp.value = opId;
+  deleteStage.value = 1;
+  deleteError.value = "";
+}
+function cancelDelete() {
+  pendingDeleteOp.value = null;
+  deleteStage.value = 1;
+}
+async function confirmDelete(opId: string) {
+  if (deleteStage.value === 1) { deleteStage.value = 2; return; }
+  try {
+    await deleteRetainedSource(opId);
+  } catch (e) {
+    deleteError.value = String(e);
+  }
+  pendingDeleteOp.value = null;
+  deleteStage.value = 1;
+  await loadRestoreInfo();
 }
 
 // ========== 行为（自动锁定 / 临时内容 / 剪贴板）==========
@@ -1034,8 +1104,10 @@ onMounted(() => {
           建议定期使用加密备份，并将重要备份保存在非系统盘。
         </p>
 
-        <!-- Phase 2C-3：更改数据存储位置（事务式迁移 C→D / D→E） -->
-        <div class="migration-block" v-if="!migrationRunning && !migrationDone">
+        <!-- Phase 2C-3：更改数据存储位置（事务式迁移 C→D / D→E）。
+             2C-4：移除 !migrationDone 门控——多级迁移/恢复默认（每级产生 retained archive）
+             是 Data Root 生命周期的正式能力，横幅仍一次性展示。 -->
+        <div class="migration-block" v-if="!migrationRunning">
           <button class="btn-mini tap" @click="migrationPick" data-interactive :disabled="migrationBusy">
             🚚 更改数据存储位置
           </button>
@@ -1068,6 +1140,57 @@ onMounted(() => {
         <div class="migration-done" v-if="migrationDone">
           <p>✅ 数据存储位置已更改：{{ migrationDone.target }}<br />
           原位置数据（{{ migrationDone.source }}）已停止使用，并保留作为安全副本（{{ migrationDone.archive }}）。</p>
+        </div>
+
+        <!-- Phase 2C-4：恢复到默认位置（仅 external 时显示） -->
+        <div class="migration-block" v-if="canRestoreDefault && !restoreRunning">
+          <button class="btn-mini tap" @click="restoreConfirmOpen = true" data-interactive :disabled="restoreBusy">
+            ↩️ 恢复到默认位置
+          </button>
+        </div>
+        <div class="migration-confirm" v-if="restoreConfirmOpen && !restoreRunning">
+          <p><b>当前位置：</b><code>{{ dataDir }}</code></p>
+          <p><b>默认位置：</b><code>{{ defaultDir }}</code></p>
+          <p class="hint-left">
+            抽屉柜会把当前完整数据复制到默认位置。<br />
+            验证完成前不会删除当前数据。<br />
+            迁移完成后应用会重新启动。
+          </p>
+          <div class="action-row">
+            <button class="btn-mini tap" @click="restoreConfirmOpen = false" data-interactive>取消</button>
+            <button class="btn-primary" @click="restoreStart" data-interactive :disabled="restoreBusy">
+              恢复到默认位置
+            </button>
+          </div>
+        </div>
+        <div class="migration-running" v-if="restoreRunning">
+          <p>⏳ 正在恢复到默认位置：复制数据 → 验证数据一致性 → 完成后自动重启。<br />请勿关闭抽屉柜。</p>
+        </div>
+
+        <!-- Phase 2C-4：旧数据副本（retained sources）管理 -->
+        <div class="retained-block" v-if="retainedSources.length">
+          <h4 class="retained-title">🗄️ 旧数据副本</h4>
+          <p class="hint-left">这是迁移前保留的安全副本。当前抽屉柜不会再向它写入数据。</p>
+          <p class="retained-error" v-if="deleteError">⚠️ {{ deleteError }}</p>
+          <div class="retained-row" v-for="r in retainedSources" :key="r.op_id">
+            <div class="retained-info">
+              <div>{{ r.created_at.slice(0, 10) }}｜原位置：<code>{{ r.original_root }}</code></div>
+              <div class="hint-left">状态：已停止使用</div>
+            </div>
+            <div class="action-row" v-if="pendingDeleteOp !== r.op_id">
+              <button class="btn-mini tap" @click="openRetained(r.op_id)" data-interactive>📂 打开所在文件夹</button>
+              <button class="btn-mini tap" @click="removeRetained(r.op_id)" data-interactive>🗑️ 删除旧数据副本</button>
+            </div>
+            <ConfirmInline
+              v-else
+              :title="deleteStage === 1
+                ? '删除后将无法再通过这个旧数据副本恢复迁移前状态。确认删除？'
+                : '再次确认：这个操作不可撤销，删除旧数据副本吗？'"
+              confirm-text="删除旧数据副本"
+              @cancel="cancelDelete"
+              @confirm="confirmDelete(r.op_id)"
+            />
+          </div>
         </div>
       </div>
 
@@ -1256,6 +1379,41 @@ onMounted(() => {
 </template>
 
 <style scoped>
+/* Phase 2C-4：旧数据副本 */
+.retained-block {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border-color, rgba(255, 255, 255, 0.12));
+}
+.retained-title {
+  margin: 4px 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.retained-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  margin-bottom: 6px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+}
+.retained-info {
+  min-width: 0;
+  font-size: 12px;
+  overflow: hidden;
+}
+.retained-info code {
+  font-size: 11px;
+  word-break: break-all;
+}
+.retained-error {
+  margin: 6px 0;
+  font-size: 12px;
+  color: #f87171;
+}
 .view { padding-bottom: 20px; }
 
 /* ========== 顶部 sticky tabs ========== */

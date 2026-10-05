@@ -14,6 +14,7 @@ pub mod trash;
 pub mod apps;
 pub mod settings_backup;
 pub mod data_root_setup;
+pub mod data_root_restore;
 
 // 把所有领域的命令 pub use 到 commands 模块作用域
 pub use auth::*;
@@ -25,3 +26,4 @@ pub use trash::*;
 pub use apps::*;
 pub use settings_backup::*;
 pub use data_root_setup::*;
+pub use data_root_restore::*;

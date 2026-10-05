@@ -13,6 +13,8 @@ use std::os::windows::process::CommandExt;
 
 mod db;
 mod data_root;
+#[cfg(test)]
+mod data_root_restore_tests;
 pub mod migration;
 #[cfg(test)]
 mod phase2d;
@@ -1040,24 +1042,34 @@ pub(crate) fn try_complete_pending_migration(
             // transferring 半成 → 自动回滚（§二十八 A：source 从未失位）
             match data_root::rollback_migration(config_root, op) {
                 Ok(()) => {
-                    // 恢复 pending 清空后的稳定 state（active_root=source）
-                    let restored = data_root::state_pending_migration(
+                    // 恢复 pending 清空后的稳定 state：active_root 按 source_kind 回位；
+                    // last_migration / retained 登记随磁盘现状保留，不得清零（2C-4）
+                    let current = match data_root::load_state(config_root) {
+                        data_root::StateLoad::Loaded(s) => s,
+                        _ => {
+                            return MigrationResume::Failed(
+                                "迁移回滚时读取 state 失败".to_string(),
+                            )
+                        }
+                    };
+                    let kind = data_root::SourceKind::from_str(
+                        op.source_kind.as_deref().unwrap_or(""),
+                    )
+                    .unwrap_or(data_root::SourceKind::DefaultConfigRoot);
+                    let mut restored = data_root::state_pending_migration(
                         &source,
                         &target,
                         &op.op_id,
                         "rolled_back",
-                        data_root::SourceKind::from_str(
-                            op.source_kind.as_deref().unwrap_or(""),
-                        )
-                        .unwrap_or(data_root::SourceKind::DefaultConfigRoot),
+                        kind,
                         None,
                         None,
                         None,
                     );
-                    let restored = data_root::DataRootState {
-                        pending_operation: None,
-                        ..restored
-                    };
+                    restored.pending_operation = None;
+                    restored.last_migration = current.last_migration.clone();
+                    restored.retained_sources = current.retained_sources.clone();
+                    restored.updated_at = chrono::Local::now().to_rfc3339();
                     let _ = data_root::save_state(config_root, &restored);
                     MigrationResume::SourceCanonical
                 }
@@ -1071,6 +1083,140 @@ pub(crate) fn try_complete_pending_migration(
             Err(e) => MigrationResume::Failed(e),
         },
         other => MigrationResume::Failed(format!("未知迁移阶段: {}", other)),
+    }
+}
+
+/// Phase 2C-4：restore-default 启动收尾（新进程 setup 内、UI 开放之前）。
+/// 验证 Config Root 正式库与指纹 → source D retirement（幂等，retained）→
+/// retained 登记 + state 翻转 active_root=null（单一提交点）→ guard 清理（G2→G1，
+/// 残留不阻断启动、由 restore_guard_residual_candidate 结构化 recovery 兜底）。
+fn finalize_pending_restore_default(
+    config_root: &Path,
+    op: &data_root::PendingOperation,
+) -> Result<PathBuf, String> {
+    let target_db = config_root.join(migration::V2_DB_FILENAME);
+
+    // 1) C 正式库必须可打开 + 指纹与恢复记录一致（§十二）
+    {
+        let verify_db = migration::open_existing_v2_db(&target_db)
+            .map_err(|e| format!("默认位置正式库验证失败: {}", e))?;
+        let recorded = op
+            .target_fingerprint
+            .clone()
+            .ok_or_else(|| "恢复记录缺少已验证的目标指纹".to_string())?;
+        let conn = verify_db.conn.lock().map_err(|_| "连接不可用".to_string())?;
+        let fp = data_root::semantic_fingerprint(&conn)?;
+        drop(conn);
+        if fp != recorded {
+            return Err("目标库指纹与恢复记录不一致（fail closed）".to_string());
+        }
+    }
+
+    // 2) source D retirement（幂等；归档保留在 D，绝不删除）
+    let source = op
+        .source
+        .clone()
+        .ok_or_else(|| "恢复记录缺少 source".to_string())?;
+    let current = data_root::load_state(config_root);
+    if let data_root::StateLoad::Loaded(st) = &current {
+        let _ = data_root::save_state(
+            config_root,
+            &data_root::state_with_migration_phase(st, "retiring_source"),
+        );
+    }
+    data_root::retire_source_db(&source, &op.op_id)?;
+
+    // 3) retained 登记 + state 翻转（active_root=null，最终提交点，§十四）
+    let st = match data_root::load_state(config_root) {
+        data_root::StateLoad::Loaded(st) => st,
+        _ => return Err("恢复收尾读取 state 失败".to_string()),
+    };
+    let _ = data_root::save_state(
+        config_root,
+        &data_root::state_with_migration_phase(&st, "committing"),
+    );
+    let committed = data_root::state_after_restore_commit(&st, op);
+    data_root::save_state(config_root, &committed)?;
+
+    // 4) guard 清理（§十五：先 G2 后 G1）。此时数据迁移已成功；清理残留
+    //    属兼容性问题而非数据问题——记录日志，下次启动结构化 recovery。
+    if let Err(e) = data_root::cleanup_guards_after_restore(config_root, &op.op_id) {
+        eprintln!("[data-root] restore-default guard 清理残留（下次启动对账）: {}", e);
+    }
+    Ok(config_root.to_path_buf())
+}
+
+/// restore-default 中断恢复决策（§十六 崩溃矩阵的启动侧）。
+pub(crate) fn try_complete_pending_restore_default(
+    config_root: &Path,
+    op: &data_root::PendingOperation,
+) -> MigrationResume {
+    let source = match &op.source {
+        Some(s) => s.clone(),
+        None => return MigrationResume::Failed("恢复记录缺少 source".to_string()),
+    };
+    if op.target.as_deref() != Some(config_root) {
+        return MigrationResume::Failed(
+            "restore_default 记录的 target 不是配置目录（fail closed）".to_string(),
+        );
+    }
+    let target_db = config_root.join(migration::V2_DB_FILENAME);
+    let tmp = data_root::restore_staging_path(config_root, &op.op_id);
+
+    match op.phase.as_str() {
+        // ---- target 激活前：D 仍 canonical ----
+        "preparing" | "transferring" | "target_verified" => {
+            if tmp.exists() && target_db.exists() {
+                return MigrationResume::Failed(
+                    "配置目录同时存在恢复临时库与正式库（fail closed）".to_string(),
+                );
+            }
+            if target_db.exists() {
+                // rename 已完成、后续 state 写入前中断（仅 target_verified 之后合法）
+                if op.phase != "target_verified" {
+                    return MigrationResume::Failed(
+                        "transferring 阶段不应出现正式目标库（fail closed）".to_string(),
+                    );
+                }
+                return match finalize_pending_restore_default(config_root, op) {
+                    Ok(t) => MigrationResume::Completed(t),
+                    Err(e) => MigrationResume::Failed(e),
+                };
+            }
+            if tmp.exists() && op.phase == "target_verified" {
+                // 验证已通过、rename 前中断 → 继续激活并收尾
+                return match data_root::activate_target_tmp(&tmp, &target_db)
+                    .and_then(|_| finalize_pending_restore_default(config_root, op))
+                {
+                    Ok(t) => MigrationResume::Completed(t),
+                    Err(e) => MigrationResume::Failed(e),
+                };
+            }
+            // transferring 半成 → 自动回滚（D 从未失位）
+            match data_root::rollback_restore_default(config_root, op) {
+                Ok(()) => {
+                    // 恢复 pending 清空后的稳定 state（active_root=source），保留登记
+                    let mut restored = match data_root::load_state(config_root) {
+                        data_root::StateLoad::Loaded(s) => s,
+                        _ => return MigrationResume::Failed("回滚时读取 state 失败".to_string()),
+                    };
+                    restored.pending_operation = None;
+                    restored.active_root = Some(source);
+                    restored.updated_at = chrono::Local::now().to_rfc3339();
+                    let _ = data_root::save_state(config_root, &restored);
+                    MigrationResume::SourceCanonical
+                }
+                Err(e) => MigrationResume::Failed(format!("恢复默认回滚失败: {}", e)),
+            }
+        }
+        // ---- target 激活后：默认优先完成 commit（§二十八 B）----
+        "target_activated" | "restart_required" | "retiring_source" | "committing" => {
+            match finalize_pending_restore_default(config_root, op) {
+                Ok(t) => MigrationResume::Completed(t),
+                Err(e) => MigrationResume::Failed(e),
+            }
+        }
+        other => MigrationResume::Failed(format!("未知恢复阶段: {}", other)),
     }
 }
 
@@ -1173,7 +1319,27 @@ pub fn run() {
                             return Ok(());
                         }
                     },
-                    // migration / restore_default 等：2C-2 无恢复流程 → fail closed
+                    // Phase 2C-4：External → Default 恢复。target 激活前失败→自动回滚回 D；
+                    // target 激活后→UI 开放前完成 retirement / retained 登记 / state 翻转 / guard 清理。
+                    "restore_default" => match try_complete_pending_restore_default(&config_root, &op) {
+                        crate::MigrationResume::Completed(root) => root,
+                        crate::MigrationResume::SourceCanonical => op
+                            .source
+                            .clone()
+                            .unwrap_or_else(|| config_root.clone()),
+                        crate::MigrationResume::Failed(reason) => {
+                            enter_blocked_mode(
+                                app,
+                                data_root::BlockedReason::PendingOperationNeedsRecovery(format!(
+                                    "restore_default / {} / {}",
+                                    op.op_id, reason
+                                )),
+                                config_root.clone(),
+                            );
+                            return Ok(());
+                        }
+                    },
+                    // 其余 pending 类型：无恢复流程 → fail closed
                     other => {
                         enter_blocked_mode(
                             app,
@@ -1187,28 +1353,60 @@ pub fn run() {
                     }
                 },
                 data_root::Resolution::Blocked(reason) => {
-                    // 特判：G2 guard 存在但 state 缺失，且 Config Root 无任何真实数据
-                    // → 可证明是"external init 在 state 落盘前中断"，给恢复入口（不自动删 guard）
+                    // 特判 ①：restore-default 已提交（active_root=null）但 guard 清理中断
+                    // → 能用 state metadata 完整证明归属时清理残留 guard，按默认启动（§十五）
                     if matches!(reason, data_root::BlockedReason::OrphanCompatibilityGuard(_)) {
-                        if let Some(cand) = data_root::orphan_init_candidate(&config_root) {
-                            enter_setup_mode(
-                                app,
-                                data_root::SetupModeInfo::OrphanInitRecover {
-                                    op_id: cand.op_id.clone(),
-                                    target: cand
-                                        .target
-                                        .as_ref()
-                                        .map(|p| p.to_string_lossy().to_string()),
-                                },
-                                config_root.clone(),
+                        if let Some(paths) = data_root::restore_guard_residual_candidate(&config_root) {
+                            for p in &paths {
+                                let _ = std::fs::remove_file(p);
+                            }
+                            eprintln!(
+                                "[data-root] 清理 restore-default 残留 guard（{} 个）",
+                                paths.len()
                             );
+                            match data_root::resolve_data_root(&config_root) {
+                                data_root::Resolution::UseDefault(root)
+                                | data_root::Resolution::UseExternal(root) => root,
+                                _ => {
+                                    enter_blocked_mode(app, reason, config_root.clone());
+                                    return Ok(());
+                                }
+                            }
+                        } else {
+                            // 特判 ②：G2 guard 存在但 state 缺失，且 Config Root 无任何真实数据
+                            // → 可证明是"external init 在 state 落盘前中断"，给恢复入口（不自动删 guard）
+                            if let Some(cand) = data_root::orphan_init_candidate(&config_root) {
+                                enter_setup_mode(
+                                    app,
+                                    data_root::SetupModeInfo::OrphanInitRecover {
+                                        op_id: cand.op_id.clone(),
+                                        target: cand
+                                            .target
+                                            .as_ref()
+                                            .map(|p| p.to_string_lossy().to_string()),
+                                    },
+                                    config_root.clone(),
+                                );
+                                return Ok(());
+                            }
+                            enter_blocked_mode(app, reason, config_root.clone());
                             return Ok(());
                         }
+                    } else {
+                        enter_blocked_mode(app, reason, config_root.clone());
+                        return Ok(());
                     }
-                    enter_blocked_mode(app, reason, config_root.clone());
-                    return Ok(());
                 }
             };
+            // Phase 2C-4：retained sources 启动对账（"文件已删除但记录未更新"的修正点）
+            match data_root::reconcile_retained_sources(&config_root) {
+                Ok(n) if n > 0 => eprintln!(
+                    "[data-root] retained sources 对账：{} 条记录已修正为 removed",
+                    n
+                ),
+                Ok(_) => {}
+                Err(e) => eprintln!("[data-root] retained sources 对账失败: {}", e),
+            }
             migration::discard_abandoned_fresh_initialization(&effective_root)
                 .map_err(|reason| std::io::Error::new(std::io::ErrorKind::Other, reason))?;
             // 两阶段 legacy 升级的 orphan tmp 清理：legacy 存在且无正式 v2 时，
@@ -1621,6 +1819,10 @@ pub fn run() {
             // Phase 2C-3：既有数据迁移
             setup_begin_migration,
             get_data_root_summary,
+            // Phase 2C-4：External → Default 恢复 + retained source 管理
+            setup_begin_restore_default,
+            delete_retained_source,
+            open_retained_source_folder,
             // P0-#Y#FIX#PICK：原生文件 / 文件夹选择对话框
             pick_path,
             // B1：导入/导出加密备份
