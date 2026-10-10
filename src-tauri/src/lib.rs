@@ -26,6 +26,8 @@ pub mod migration;
 #[cfg(test)]
 mod phase2d;
 #[cfg(test)]
+mod trash_retention_tests;
+#[cfg(test)]
 mod v2_verification_tests;
 #[cfg(windows)]
 mod win_dock;
@@ -1754,28 +1756,16 @@ pub fn run() {
                 }
             });
 
-            // P0-#T：启动时自动清理过期 trash（根据 settings 中的 trash_retention_days，默认 30 天）
-            let state_ref = app.state::<AppState>();
-            let db_guard = state_ref.db.lock().unwrap();
-            let retention_days: i64 = match db_guard.get_setting("trash_retention_days") {
-                Ok(Some(v)) => v.parse::<i64>().unwrap_or(30).max(1),
-                _ => 30,
-            };
-            let retention_ms: i64 = retention_days * 24 * 60 * 60 * 1000;
-            eprintln!("[trash] 保留天数: {} 天 ({} ms)", retention_days, retention_ms);
-            match db_guard.cleanup_expired_trash(retention_ms) {
-                Ok(results) => {
-                    let total: usize = results.iter().map(|(_, n)| n).sum();
-                    if total > 0 {
-                        eprintln!("[trash] 自动清理 {} 项过期内容", total);
-                        for (table, n) in results {
-                            eprintln!("[trash]   {} 清理 {} 项", table, n);
-                        }
-                    }
-                }
-                Err(e) => eprintln!("[trash] 自动清理失败: {}", e),
+            // P0-#T：启动时自动清理过期 trash。
+            // v0.4.1 修复：trash_retention_days=0 表示永久保留（绝不清理）；
+            // 旧实现 .max(1) 会把 0 变 1 天，重启即误删回收站内容（用户反馈 P0）。
+            // 读取/守卫/清理语义统一收敛在 trash::startup_auto_cleanup（含单测）。
+            {
+                let state_ref = app.state::<AppState>();
+                let db_guard = state_ref.db.lock().unwrap();
+                commands::trash::startup_auto_cleanup(&db_guard);
+                drop(db_guard);
             }
-            drop(db_guard);
 
             // 全局快捷键
             let shortcut_plugin = app.global_shortcut();

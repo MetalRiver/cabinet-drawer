@@ -169,7 +169,11 @@ function cancelConfirm() {
 onMounted(async () => {
   try {
     const days = await getSetting("trash_retention_days");
-    if (days) retentionDays.value = parseInt(days, 10) || 30;
+    // v0.4.1：0（永久保留）是合法值，必须原样显示；仅缺失/非法/负数回退默认 30
+    if (days !== null && days !== undefined && days.trim() !== "") {
+      const n = Number(days.trim());
+      retentionDays.value = Number.isFinite(n) && n >= 0 ? Math.round(n) : 30;
+    }
   } catch {}
   await load();
 });
@@ -185,7 +189,7 @@ onMounted(async () => {
           <h2>回收站</h2>
           <span class="trash-count">{{ counts.all }} 项</span>
         </div>
-        <div class="trash-subtitle">{{ retentionDays }} 天后自动清理 · 永久删除前请三思</div>
+        <div class="trash-subtitle">{{ retentionDays === 0 ? "永久保留（不自动清理）" : `${retentionDays} 天后自动清理` }} · 永久删除前请三思</div>
         <button class="trash-close" @click="emit('close')" title="关闭">×</button>
       </div>
 

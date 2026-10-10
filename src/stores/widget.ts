@@ -11,8 +11,25 @@ import {
   getWindowSize,
   isDockHidden,
 } from "../api";
+import { useAppStore } from "./app";
 
 export type DockSide = "top" | "bottom" | "left" | "right";
+
+/**
+ * v0.4.1 修复（用户反馈 P0）：设置值解析统一入口。
+ * - 0 是合法设置值（永不锁定 / 永不过期 / 永久保留），必须原样保留；
+ *   旧实现 `Math.max(1, parseInt(v) || 默认)` 把 0 当 falsy 改写成默认值，
+ *   导致"行为偏好修改后重启恢复原设定"。
+ * - 缺失 / 非数字 / 负数 → 回退默认值。
+ */
+function parseSetting(raw: string | null | undefined, fallback: number): number {
+  if (raw === null || raw === undefined) return fallback;
+  const trimmed = raw.trim();
+  if (trimmed === "") return fallback;
+  const n = Number(trimmed);
+  if (!Number.isFinite(n) || n < 0) return fallback;
+  return Math.round(n);
+}
 
 export const useWidgetStore = defineStore("widget", () => {
   // ===== 状态 =====
@@ -36,19 +53,26 @@ export const useWidgetStore = defineStore("widget", () => {
       autoHide.value = false;
 
       const top = await loadWidgetConfig("always_on_top");
-      if (top === "false") {
-        alwaysOnTop.value = false;
-        await setAlwaysOnTop(false);
+      // v0.4.1 修复：双向同步。旧实现只在存值 "false" 时同步，
+      // 置顶=true 时 UI 停在默认 false → 重启后实际置顶生效但界面显示"不置顶"，
+      // 用户误以为设置没有保存。
+      if (top !== null && top !== undefined) {
+        alwaysOnTop.value = top === "true";
+        await setAlwaysOnTop(alwaysOnTop.value);
       }
 
       const lock = await loadWidgetConfig("auto_lock_minutes");
-      if (lock) autoLockMinutes.value = Math.max(1, parseInt(lock) || 5);
+      // 0 = 永不锁定，是合法值，必须保留（v0.4.1）
+      autoLockMinutes.value = parseSetting(lock, 5);
 
       const clip = await loadWidgetConfig("clipboard_clear_seconds");
-      if (clip) clipboardClearSeconds.value = Math.max(5, parseInt(clip) || 15);
+      // 剪贴板清除无 0（永不）选项；0/非法值回退默认 15，其余下限 5 秒
+      const clipParsed = parseSetting(clip, 15);
+      clipboardClearSeconds.value = clipParsed === 0 ? 15 : Math.max(5, clipParsed);
 
       const temp = await loadWidgetConfig("temp_expire_days");
-      if (temp) tempExpireDays.value = Math.max(1, parseInt(temp) || 3);
+      // 0 = 永不过期，是合法值，必须保留（v0.4.1）
+      tempExpireDays.value = parseSetting(temp, 3);
 
       // 修复 P0：不再持久化 mini_mode 跨启动
       // 原因：用户用 Alt+Q 弹窗时希望看到完整版抽屉柜，而不是上次遗留的迷你模式
@@ -151,6 +175,19 @@ export const useWidgetStore = defineStore("widget", () => {
   }
 
   // ===== 修改并持久化 =====
+  /**
+   * v0.4.1 修复：保存失败必须可见（用户反馈"不能假装保存成功"）。
+   * 旧实现保存异常被静默吞掉，用户以为保存成功。
+   */
+  function reportSaveError(context: string, e: unknown) {
+    console.error(`[widgetStore] 保存设置失败（${context}）`, e);
+    try {
+      useAppStore().showClipToast("info", `⚠ 设置保存失败（${context}）：${e}`);
+    } catch {
+      /* toast 通道不可用时至少 console 有记录 */
+    }
+  }
+
   /** 已停用：贴边自动收起 Win32 钩子存在卡死问题，此函数保留仅作向后兼容空操作 */
   async function setAutoHide(_v: boolean) {
     console.warn("[widgetStore] setAutoHide 已停用，功能 v2.0 重写后回归");
@@ -162,24 +199,44 @@ export const useWidgetStore = defineStore("widget", () => {
   }
 
   async function toggleAlwaysOnTop() {
-    alwaysOnTop.value = !alwaysOnTop.value;
-    await setAlwaysOnTop(alwaysOnTop.value);
-    await saveWidgetConfig("always_on_top", String(alwaysOnTop.value));
+    const next = !alwaysOnTop.value;
+    alwaysOnTop.value = next;
+    try {
+      await setAlwaysOnTop(next);
+      await saveWidgetConfig("always_on_top", String(next));
+    } catch (e) {
+      // 回滚 UI 与窗口实际状态，不假装成功
+      alwaysOnTop.value = !next;
+      try { await setAlwaysOnTop(!next); } catch { /* 回滚失败仅留日志 */ }
+      reportSaveError("窗口置顶", e);
+    }
   }
 
   async function setAutoLockMinutes(m: number) {
     autoLockMinutes.value = m;
-    await saveWidgetConfig("auto_lock_minutes", String(m));
+    try {
+      await saveWidgetConfig("auto_lock_minutes", String(m));
+    } catch (e) {
+      reportSaveError("闲置自动锁定", e);
+    }
   }
 
   async function setClipboardClearSeconds(s: number) {
     clipboardClearSeconds.value = s;
-    await saveWidgetConfig("clipboard_clear_seconds", String(s));
+    try {
+      await saveWidgetConfig("clipboard_clear_seconds", String(s));
+    } catch (e) {
+      reportSaveError("剪贴板自动清除", e);
+    }
   }
 
   async function setTempExpireDays(d: number) {
     tempExpireDays.value = d;
-    await saveWidgetConfig("temp_expire_days", String(d));
+    try {
+      await saveWidgetConfig("temp_expire_days", String(d));
+    } catch (e) {
+      reportSaveError("便签默认过期", e);
+    }
   }
 
   /**

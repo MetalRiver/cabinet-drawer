@@ -211,7 +211,12 @@ watch(clipboardSeconds, async (v) => { await widgetStore.setClipboardClearSecond
 // ========== 回收站 ==========
 const trashRetentionDays = ref<number>(30);
 watch(trashRetentionDays, async (v) => {
-  try { await setSetting("trash_retention_days", String(v)); } catch {}
+  try {
+    await setSetting("trash_retention_days", String(v));
+  } catch (e) {
+    // v0.4.1：保存失败必须可见，不能假装成功
+    appStore.showClipToast("info", `⚠ 回收站保留天数保存失败：${e}`);
+  }
 });
 async function onOpenTrash() {
   router.push("/");
@@ -698,7 +703,11 @@ async function onResetAllData() {
 onMounted(async () => {
   try {
     const days = await getSetting("trash_retention_days");
-    if (days) trashRetentionDays.value = parseInt(days, 10) || 30;
+    // v0.4.1：0（永久保留）是合法值，必须原样显示；仅缺失/非法/负数回退默认 30
+    if (days !== null && days !== undefined && days.trim() !== "") {
+      const n = Number(days.trim());
+      trashRetentionDays.value = Number.isFinite(n) && n >= 0 ? Math.round(n) : 30;
+    }
   } catch {}
 });
 
@@ -1118,7 +1127,7 @@ onMounted(() => {
           <button class="preset-btn tap" data-interactive @click="widgetStore.applyPresetPosition('remember')" title="记忆当前位置">💾</button>
           <button class="preset-btn tap" data-interactive @click="widgetStore.applyPresetPosition('bottom-right')" title="右下角">↘</button>
         </div>
-        <p class="hint">点击预设格子 → 抽屉柜会动画滑动到对应位置</p>
+        <p class="hint">点击预设格子 → 抽屉柜会立即移动到对应位置（拖动窗口边缘 20px 内可吸附）</p>
       </div>
     </section>
 
@@ -1406,7 +1415,7 @@ onMounted(() => {
           <span class="section-badge section-badge-purple">v{{ versionInfo || "…" }}</span>
         </div>
         <p class="section-hint section-hint-purple">
-          当前版本：<code>{{ versionInfo || "加载中" }}</code>。自动更新服务将在后续版本接入 GitHub Releases API。
+          当前版本：<code>{{ versionInfo || "加载中" }}</code>。检查更新通过 GitHub Releases 进行，更新包经签名校验后由你确认安装；Gitee 提供手动下载镜像。
         </p>
         <div class="action-row">
           <button class="btn-primary" @click="onCheckUpdate" :disabled="updateBusy" data-interactive>
