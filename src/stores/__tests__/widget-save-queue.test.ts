@@ -102,6 +102,33 @@ describe("widget store 设置持久化（R5 写队列）", () => {
     expect(lastSaved("clipboard_clear_seconds")).toBe("15");
   });
 
+  it("迷你/完整切换窗口内几何保存被抑制，窗口期后恢复（R3 放行检查）", async () => {
+    vi.useFakeTimers();
+    try {
+      const store = useWidgetStore();
+      store._testResetSaveQueues();
+      await store.toggleMiniMode(); // 进入迷你（后端 mock 立即完成）
+      store.savePositionNow(); // 切换窗口期内的 move / resize / 拖拽结束事件
+      expect(saveCalls.length).toBe(0); // 必须被抑制：不得污染几何快照
+      await store.toggleMiniMode(); // 退出迷你（仍在 800ms 抑制窗口内）
+      store.savePositionNow();
+      expect(saveCalls.length).toBe(0); // 仍被抑制
+      vi.advanceTimersByTime(800);
+      await vi.runAllTimersAsync(); // 解除抑制定时器 + 写队列微任务
+      // 此时已回到完整模式且抑制解除 → 正常保存完整几何
+      store.savePositionNow();
+      await vi.runAllTimersAsync();
+      const keys = saveCalls.map((c) => c.key);
+      expect(keys).toContain("x");
+      expect(keys).toContain("y");
+      expect(keys).toContain("width");
+      expect(keys).toContain("height");
+      expect(lastSaved("width")).toBe("480");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("0 是合法设置值：setTempExpireDays(0) 原样入队持久化", async () => {
     const store = useWidgetStore();
     store._testResetSaveQueues();

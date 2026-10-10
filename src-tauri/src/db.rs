@@ -1156,12 +1156,19 @@ impl Db {
     pub const TEMP_MAX_RENEW_ADD_MS: i64 = 315_360_000_000;
 
     /// 创建便签：TTL（分钟）→ 绝对到期时间。
-    /// - ttl <= 0 = 永不过期（哨兵，唯一合法的永久写入路径）；
+    /// - ttl == 0 = 永不过期（哨兵，唯一合法的永久写入路径）；
+    /// - ttl < 0 = 可见错误（负数不是合法语义，不静默当永久）；
     /// - ttl > TEMP_MAX_TTL_MINUTES = 可见错误（不静默截断为永久）；
     /// - 合法范围用 checked 运算，杜绝整数溢出。
     pub fn resolve_create_expiry(now: i64, ttl_minutes: i64) -> std::result::Result<i64, String> {
-        if ttl_minutes <= 0 {
+        if ttl_minutes == 0 {
+            // 唯一的"永不过期"入口：显式 0
             return Ok(Self::TEMP_NEVER_EXPIRES_MS);
+        }
+        if ttl_minutes < 0 {
+            // 放行检查修正：负数不是合法语义（v0.4.1 早期本地版曾把负数当永久），
+            // 必须 fail visible，防止 UI/IPC 误传静默变永久
+            return Err("保留时长不能为负数；如需永不过期请选择「永不过期」".to_string());
         }
         if ttl_minutes > Self::TEMP_MAX_TTL_MINUTES {
             return Err(format!(
@@ -1279,6 +1286,26 @@ impl Db {
             return Err("便签不存在或已删除".to_string());
         }
         Ok(target)
+    }
+
+    /// R3-放行检查：进入迷你模式前，把"当前完整窗口的真实几何"可靠快照进 settings。
+    /// 覆盖：数据库尚无几何记录的首次切换 / 用户已自定义尺寸（含仅 resize 未 move，
+    /// move 监听器不会触发）/ 任何时点切换 —— 退出迷你与重启都按这份真实值还原。
+    /// 始终以当前真实值为准（真实值 ≠ 固定默认值），不覆盖 mini_x/mini_y。
+    pub fn snapshot_full_geometry(&self, x: i32, y: i32, width: u32, height: u32) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        for (k, v) in [
+            ("widget.x", x.to_string()),
+            ("widget.y", y.to_string()),
+            ("widget.width", width.to_string()),
+            ("widget.height", height.to_string()),
+        ] {
+            conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+                params![k, v],
+            )?;
+        }
+        Ok(())
     }
 
     /// 恢复回收站中的（过期）便签并同时设定新的有效到期时间（单条 UPDATE，原子）。

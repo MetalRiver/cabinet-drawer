@@ -192,10 +192,15 @@ fn t_te08_sentinel_matches_frontend_constant() {
 #[test]
 fn t_te09_create_ttl_boundaries() {
     let now = 1_700_000_000_000_i64;
-    // 负数与 0 = 永不过期（合法专门语义，非截断）
+    // 0 = 永不过期（唯一合法永久入口）
     assert_eq!(DbType::resolve_create_expiry(now, 0).unwrap(), NEVER);
-    assert_eq!(DbType::resolve_create_expiry(now, -1).unwrap(), NEVER);
-    assert_eq!(DbType::resolve_create_expiry(now, i64::MIN).unwrap(), NEVER);
+    // 负数 = 可见错误（不静默当永久，放行检查修正）
+    assert!(DbType::resolve_create_expiry(now, -1)
+        .unwrap_err()
+        .contains("不能为负数"));
+    assert!(DbType::resolve_create_expiry(now, i64::MIN)
+        .unwrap_err()
+        .contains("不能为负数"));
     // 正常范围
     assert_eq!(DbType::resolve_create_expiry(now, 1).unwrap(), now + 60_000);
     let max = DbType::TEMP_MAX_TTL_MINUTES;
@@ -301,4 +306,38 @@ fn t_te14_restore_temp_with_expiry_atomic() {
     // 未删除的行不可用本方法触碰
     let live = db.create_temp("live", 60).unwrap();
     assert_eq!(db.restore_temp_with_expiry(live, new_expiry).unwrap(), 0);
+}
+
+// ===== 放行检查 2（D-Repair Final）：迷你模式初始几何快照 =====
+
+#[test]
+fn t_gm01_snapshot_full_geometry_overwrites_stale_values() {
+    let (_dir, db) = temp_db("geosnap");
+    // 旧几何已在库（如上次会话保存）
+    db.snapshot_full_geometry(10, 20, 320, 400).unwrap();
+    // 用户已调整尺寸/位置但未触发 move 保存；进入迷你时快照"当前真实几何"
+    db.snapshot_full_geometry(140, 260, 900, 800).unwrap();
+    for (k, v) in [
+        ("widget.x", "140"),
+        ("widget.y", "260"),
+        ("widget.width", "900"),
+        ("widget.height", "800"),
+    ] {
+        assert_eq!(
+            db.get_setting(k).unwrap().as_deref(),
+            Some(v),
+            "旧几何必须被当前真实值覆盖（退出迷你按真实值还原，非固定默认）"
+        );
+    }
+}
+
+#[test]
+fn t_gm02_snapshot_fresh_db_writes_all_four_keys() {
+    let (_dir, db) = temp_db("geofresh");
+    // 首次切换：库中无任何几何记录
+    assert_eq!(db.get_setting("widget.width").unwrap(), None);
+    db.snapshot_full_geometry(0, 0, 480, 720).unwrap();
+    for k in ["widget.x", "widget.y", "widget.width", "widget.height"] {
+        assert!(db.get_setting(k).unwrap().is_some(), "首次切换四键必须齐全");
+    }
 }

@@ -7,8 +7,8 @@ use crate::db::{self, Db};
 use crate::AppState;
 
 // ============================================================
-// 📝 新增便签（带 TTL 分钟数；ttl_minutes <= 0 = 永不过期，v0.4.1）
-// 范围校验：TTL 超上限返回可见错误（不静默截断为永久，R2）
+// 📝 新增便签（带 TTL 分钟数；ttl_minutes == 0 = 永不过期，负数拒绝，v0.4.1）
+// 范围校验：负数 / 超上限返回可见错误（不静默截断为永久，R2+放行检查）
 // ============================================================
 #[tauri::command]
 pub fn create_temp(state: State<AppState>, text: String, ttl_minutes: i64) -> Result<i64, String> {

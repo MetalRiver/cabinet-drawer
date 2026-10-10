@@ -214,6 +214,15 @@ pub fn set_mini_mode_with_pos(
     };
 
     if mini {
+        // ⓪ 放行检查修正：先把"当前完整窗口的真实几何"可靠快照进 settings。
+        // 覆盖三类场景：数据库尚无几何记录的首次切换 / 用户已自定义尺寸
+        //（含仅 resize 未 move，tauri://move 监听器不触发）/ 任何时点切换。
+        // 必须在缩小窗口之前读取（缩完读到的就是迷你几何）。快速连续切换也
+        // 安全：每次进入时读到的都是上一轮退出恢复出的完整几何，快照值收敛。
+        if let (Ok(pos), Ok(size)) = (window.outer_position(), window.outer_size()) {
+            let db = state.db.lock().unwrap();
+            let _ = db.snapshot_full_geometry(pos.x, pos.y, size.width, size.height);
+        }
         // ① 先解除最小尺寸约束，再缩小（64×360 逻辑px 低于 minWidth 320）
         let _ = window.set_min_size::<tauri::LogicalSize<f64>>(None);
         let _ = window.set_size(tauri::LogicalSize::new(64.0, 360.0));

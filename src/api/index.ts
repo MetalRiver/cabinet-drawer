@@ -487,7 +487,7 @@ export interface TempMeta {
 export const TEMP_NEVER_EXPIRES_MS = 4_102_444_800_000;
 export const isTempPermanent = (expiresAt: number) => expiresAt >= TEMP_NEVER_EXPIRES_MS;
 
-// ttlMinutes <= 0 = 永不过期（后端换算为哨兵值）
+// ttlMinutes == 0 = 永不过期（后端换算为哨兵值）；负数会被后端拒绝（可见错误）
 export const createTemp = (text: string, ttlMinutes: number) =>
   invoke<number>("create_temp", { text, ttlMinutes });
 
