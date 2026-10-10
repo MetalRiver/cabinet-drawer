@@ -3,6 +3,7 @@ import { ref, onMounted } from "vue";
 import { useAppStore } from "../stores/app";
 import { useSnippetsStore } from "../stores/snippets";
 import ConfirmInline from "../components/ConfirmInline.vue";
+import DarkSelect from "../components/DarkSelect.vue";
 
 const appStore = useAppStore();
 const snippetsStore = useSnippetsStore();
@@ -58,6 +59,17 @@ function openAdd() {
 }
 
 /** 语言 code → 中文标签（带简短解释） */
+const languageOptions = [
+  { value: "text", label: "纯文本" },
+  { value: "bash", label: "Bash（终端脚本）" },
+  { value: "javascript", label: "JavaScript（前端脚本）" },
+  { value: "typescript", label: "TypeScript（带类型 JS）" },
+  { value: "python", label: "Python（脚本）" },
+  { value: "rust", label: "Rust（系统级语言）" },
+  { value: "vue", label: "Vue（前端框架）" },
+  { value: "sql", label: "SQL（数据库查询）" },
+];
+
 function languageLabel(code: string): string {
   const map: Record<string, string> = {
     bash: "Bash（终端脚本）",
@@ -265,16 +277,12 @@ async function confirmRemove(id: number) {
             </div>
             <div class="form-row">
               <label>语言（可选）</label>
-              <select v-model="form.language" class="form-input">
-                <option value="text">纯文本</option>
-                <option value="bash">Bash（终端脚本）</option>
-                <option value="javascript">JavaScript（前端脚本）</option>
-                <option value="typescript">TypeScript（带类型 JS）</option>
-                <option value="python">Python（蟒蛇脚本）</option>
-                <option value="rust">Rust（系统级语言）</option>
-                <option value="vue">Vue（前端框架）</option>
-                <option value="sql">SQL（数据库查询）</option>
-              </select>
+              <DarkSelect
+                v-model="form.language"
+                :options="languageOptions"
+                aria-label="语言（可选）"
+                block
+              />
             </div>
             <div class="form-row">
               <label>内容</label>
@@ -296,6 +304,8 @@ async function confirmRemove(id: number) {
 </template>
 
 <style scoped>
+.form-select-block { width: 100%; }
+
 .view { padding-bottom: 20px; }
 
 /* ============ 左侧可收缩 sidebar（语言分类） ============ */

@@ -3,7 +3,7 @@ import { onMounted, onUnmounted, ref, watch } from "vue";
 import { useRouter, useRoute } from "vue-router";
 import { useAppStore } from "../stores/app";
 import { useWidgetStore } from "../stores/widget";
-import { hideWindow, lockApp, setWindowSize, rescanSubtypes, getAppVersion } from "../api";
+import { hideWindow, lockApp, rescanSubtypes, getAppVersion } from "../api";
 import { listen } from "@tauri-apps/api/event";
 import { useWindowDrag } from "../composables/useWindowDrag";
 import { useSoftwareStore } from "../stores/software";
@@ -204,20 +204,10 @@ onUnmounted(() => {
   window.removeEventListener("open-trash", onOpenTrash);
 });
 
-// ===== 迷你模式自适应窗口尺寸 =====
-watch(
-  () => widgetStore.miniMode,
-  async (isMini) => {
-    if (isMini) {
-      await setWindowSize(64, 360);
-    } else {
-      // 默认 420×640（不覆盖用户手动调过的尺寸）
-      // 用户在主界面里拖拽过窗口后，apply_widget_config 会用保存的尺寸
-      // 这里只在"刚展开回完整模式"时给个建议默认值（可被用户后续拖拽覆盖）
-      await setWindowSize(420, 640);
-    }
-  }
-);
+// ===== 迷你模式窗口尺寸 =====
+// v0.4.1：删除这里的前端 setWindowSize watch（420×640/64×360）。
+// 尺寸唯一事实源 = 后端 set_mini_mode_with_pos（迷你 64×360 / 完整 480×720），
+// toggleMiniMode 每次都会调用它；前端再设一次会造成双写竞争与三处尺寸常量打架。
 </script>
 
 <template>

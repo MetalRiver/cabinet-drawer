@@ -40,6 +40,8 @@ import {
   type RetainedSourceInfo,
 } from "../api";
 import ConfirmInline from "../components/ConfirmInline.vue";
+import DarkSelect from "../components/DarkSelect.vue";
+import type { DarkSelectOption } from "../components/DarkSelect.vue";
 
 const widgetStore = useWidgetStore();
 const softwareStore = useSoftwareStore();
@@ -59,19 +61,13 @@ const SETTING_TABS = [
   { key: "advanced", label: "高级",         icon: "🔬" },
 ];
 const activeTab = ref<string>("basic");
+// v0.4.1 重构：真 tab 切换（旧实现 5 个分类全量常驻渲染 + 滚动定位模拟 tab，
+// 导致跨分类内容露出 / 绿色按钮越界 / sticky、z-index、overflow 相互影响）。
+// 现在切换只渲染当前分类（v-show 隐藏其余），并回到顶部。
 function selectTab(key: string) {
   activeTab.value = key;
-  const el = document.getElementById(`tab-${key}`);
-  const tabsBar = document.querySelector<HTMLElement>(".settings-tabs");
-  const scrollEl = document.querySelector<HTMLElement>(".content-scroll")
-    || (document.scrollingElement as HTMLElement | null);
-  if (!el || !scrollEl) return;
-  const tabsH = tabsBar?.offsetHeight ?? 62;
-  const scrollRect = scrollEl.getBoundingClientRect();
-  const elRect = el.getBoundingClientRect();
-  const relTop = elRect.top - scrollRect.top;
-  const target = scrollEl.scrollTop + relTop - tabsH - 10;
-  scrollEl.scrollTo({ top: target, behavior: "smooth" });
+  const scrollEl = document.querySelector<HTMLElement>(".content-scroll");
+  scrollEl?.scrollTo({ top: 0 });
 }
 
 // ========== 数据目录 ==========
@@ -207,6 +203,36 @@ watch(() => widgetStore.clipboardClearSeconds, (v) => clipboardSeconds.value = v
 watch(autoLockMinutes, async (v) => { await widgetStore.setAutoLockMinutes(Number(v)); });
 watch(tempExpireDays, async (v) => { await widgetStore.setTempExpireDays(Number(v)); });
 watch(clipboardSeconds, async (v) => { await widgetStore.setClipboardClearSeconds(Number(v)); });
+
+// v0.4.1：DarkSelect 选项（替代原生 select，修复 WebView2 白色弹层）
+const autoLockOptions: DarkSelectOption<number>[] = [
+  { value: 1, label: "1 分钟" },
+  { value: 5, label: "5 分钟" },
+  { value: 10, label: "10 分钟" },
+  { value: 15, label: "15 分钟" },
+  { value: 30, label: "30 分钟" },
+  { value: 0, label: "永不自动锁定" },
+];
+const tempExpireOptions: DarkSelectOption<number>[] = [
+  { value: 1, label: "1 天" },
+  { value: 3, label: "3 天" },
+  { value: 7, label: "7 天" },
+  { value: 0, label: "永不过期" },
+];
+const clipboardOptions: DarkSelectOption<number>[] = [
+  { value: 10, label: "10 秒" },
+  { value: 15, label: "15 秒" },
+  { value: 30, label: "30 秒" },
+  { value: 60, label: "1 分钟" },
+];
+const trashRetentionOptions: DarkSelectOption<number>[] = [
+  { value: 1, label: "1 天" },
+  { value: 7, label: "7 天" },
+  { value: 30, label: "30 天（默认）" },
+  { value: 90, label: "90 天" },
+  { value: 365, label: "1 年" },
+  { value: 0, label: "永久保留" },
+];
 
 // ========== 回收站 ==========
 const trashRetentionDays = ref<number>(30);
@@ -461,18 +487,21 @@ async function onRescuePasswords() {
 }
 
 // ========== 窗口位置 ==========
+// v0.4.1：尺寸常量与后端 set_mini_mode_with_pos 对齐（迷你 64×360 / 完整 480×720）。
+// 旧值 56×320 / 380×560 会被窗口 minWidth 320 截断，"重置/居中"产生错误尺寸。
+const MINI_W = 64, MINI_H = 360, FULL_W = 480, FULL_H = 720;
 async function resetPosition() {
   const screenW = window.screen.width;
-  const w = widgetStore.miniMode ? 56 : 380;
-  const h = widgetStore.miniMode ? 320 : 560;
+  const w = widgetStore.miniMode ? MINI_W : FULL_W;
+  const h = widgetStore.miniMode ? MINI_H : FULL_H;
   await setWindowPosition(screenW - w - 24, 24);
   await setWindowSize(w, h);
 }
 async function centerWindow() {
   const screenW = window.screen.width;
   const screenH = window.screen.height;
-  const w = widgetStore.miniMode ? 56 : 380;
-  const h = widgetStore.miniMode ? 320 : 560;
+  const w = widgetStore.miniMode ? MINI_W : FULL_W;
+  const h = widgetStore.miniMode ? MINI_H : FULL_H;
   await setWindowPosition(Math.round((screenW - w) / 2), Math.round((screenH - h) / 2));
   await setWindowSize(w, h);
 }
@@ -711,33 +740,6 @@ onMounted(async () => {
   } catch {}
 });
 
-// ========== IntersectionObserver：滚动自动同步 active tab（绑定到 .content-scroll 容器） ==========
-onMounted(() => {
-  setTimeout(() => {
-    const sections = SETTING_TABS
-      .map((t) => document.getElementById(`tab-${t.key}`))
-      .filter(Boolean) as HTMLElement[];
-    if (sections.length === 0) return;
-    const root = document.querySelector<HTMLElement>(".content-scroll") || null;
-    const io = new IntersectionObserver(
-      (entries) => {
-        const visible = entries
-          .filter((e) => e.isIntersecting)
-          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
-        if (visible.length > 0) {
-          const key = visible[0].target.id.replace(/^tab-/, "");
-          if (key && key !== activeTab.value) activeTab.value = key;
-        }
-      },
-      {
-        root,
-        rootMargin: root ? "-10% 0px -75% 0px" : "-20% 0px -70% 0px",
-        threshold: 0,
-      }
-    );
-    sections.forEach((s) => io.observe(s));
-  }, 120);
-});
 </script>
 
 <template>
@@ -747,7 +749,9 @@ onMounted(() => {
       <button
         v-for="t in SETTING_TABS"
         :key="t.key"
+        :id="`tab-${t.key}`"
         class="settings-tab tap"
+        :title="t.label"
         :class="{ active: activeTab === t.key }"
         role="tab"
         :aria-selected="activeTab === t.key"
@@ -762,7 +766,14 @@ onMounted(() => {
     <!-- ================================================= -->
     <!-- 🛠️ Tab 1：基础（行为偏好 + 回收站 + 快捷键说明） -->
     <!-- ================================================= -->
-    <section id="tab-basic" class="settings-section-group" data-tab="basic">
+    <section
+      v-show="activeTab === 'basic'"
+      id="panel-basic"
+      class="settings-section-group"
+      role="tabpanel"
+      :aria-labelledby="`tab-basic`"
+      data-tab="basic"
+    >
 
       <!-- 快捷键（纯展示卡片） -->
       <div class="settings-section card-soft">
@@ -800,14 +811,11 @@ onMounted(() => {
                 <span class="pref-sub">无操作后自动锁定密码区</span>
               </div>
             </div>
-            <select v-model.number="autoLockMinutes" class="form-select form-select-inline" data-interactive>
-              <option :value="1">1 分钟</option>
-              <option :value="5">5 分钟</option>
-              <option :value="10">10 分钟</option>
-              <option :value="15">15 分钟</option>
-              <option :value="30">30 分钟</option>
-              <option :value="0">永不自动锁定</option>
-            </select>
+            <DarkSelect
+              v-model="autoLockMinutes"
+              :options="autoLockOptions"
+              aria-label="闲置自动锁定"
+            />
           </div>
           <div class="pref-row">
             <div class="pref-left">
@@ -817,12 +825,11 @@ onMounted(() => {
                 <span class="pref-sub">新建便签的自动清除时间</span>
               </div>
             </div>
-            <select v-model.number="tempExpireDays" class="form-select form-select-inline" data-interactive>
-              <option :value="1">1 天</option>
-              <option :value="3">3 天</option>
-              <option :value="7">7 天</option>
-              <option :value="0">永不过期</option>
-            </select>
+            <DarkSelect
+              v-model="tempExpireDays"
+              :options="tempExpireOptions"
+              aria-label="便签默认过期"
+            />
           </div>
           <div class="pref-row">
             <div class="pref-left">
@@ -832,12 +839,11 @@ onMounted(() => {
                 <span class="pref-sub">复制密码后自动清空剪贴板</span>
               </div>
             </div>
-            <select v-model.number="clipboardSeconds" class="form-select form-select-inline" data-interactive>
-              <option :value="10">10 秒</option>
-              <option :value="15">15 秒</option>
-              <option :value="30">30 秒</option>
-              <option :value="60">1 分钟</option>
-            </select>
+            <DarkSelect
+              v-model="clipboardSeconds"
+              :options="clipboardOptions"
+              aria-label="剪贴板自动清除"
+            />
           </div>
         </div>
       </div>
@@ -857,14 +863,11 @@ onMounted(() => {
                 <span class="pref-sub">超过后将在下次启动时永久清理</span>
               </div>
             </div>
-            <select v-model.number="trashRetentionDays" class="form-select form-select-inline" data-interactive>
-              <option :value="1">1 天</option>
-              <option :value="7">7 天</option>
-              <option :value="30">30 天（默认）</option>
-              <option :value="90">90 天</option>
-              <option :value="365">1 年</option>
-              <option :value="0">永久保留</option>
-            </select>
+            <DarkSelect
+              v-model="trashRetentionDays"
+              :options="trashRetentionOptions"
+              aria-label="删除项保留天数"
+            />
           </div>
         </div>
         <div class="action-row">
@@ -877,7 +880,14 @@ onMounted(() => {
     <!-- ================================================= -->
     <!-- 🔒 Tab 2：安全与密码（所有安全相关集中） -->
     <!-- ================================================= -->
-    <section id="tab-security" class="settings-section-group" data-tab="security">
+    <section
+      v-show="activeTab === 'security'"
+      id="panel-security"
+      class="settings-section-group"
+      role="tabpanel"
+      :aria-labelledby="`tab-security`"
+      data-tab="security"
+    >
 
       <!-- 主密码（保持原 section 结构，但用新样式） -->
       <div class="settings-section card-soft">
@@ -1069,12 +1079,20 @@ onMounted(() => {
     <!-- ================================================= -->
     <!-- 🖼️ Tab 3：桌面插件框（外观/显示/位置，不含开发者模式） -->
     <!-- ================================================= -->
-    <section id="tab-widget" class="settings-section-group" data-tab="widget">
+    <section
+      v-show="activeTab === 'widget'"
+      id="panel-widget"
+      class="settings-section-group"
+      role="tabpanel"
+      :aria-labelledby="`tab-widget`"
+      data-tab="widget"
+    >
       <div class="settings-section card-soft">
         <div class="section-head">
           <h3 class="section-title">🖥️ 显示模式</h3>
         </div>
         <p class="section-hint">抽屉柜支持完整卡片和极简图标列两种形态，可随时切换窗口层级与显示尺寸。</p>
+        <p class="hint">说明：极简图标列仅在本次会话内生效——重启应用或用 Alt+Q 呼出时，会自动恢复为完整卡片模式（这是有意设计，避免每次呼出都是小图标）。</p>
         <div class="seg-group">
           <div class="seg-label"><span>形态</span></div>
           <div class="seg-inner">
@@ -1134,7 +1152,14 @@ onMounted(() => {
     <!-- ================================================= -->
     <!-- 📦 Tab 4：数据维护（存储位置 / 迁移 / 导入导出） -->
     <!-- ================================================= -->
-    <section id="tab-data" class="settings-section-group" data-tab="data">
+    <section
+      v-show="activeTab === 'data'"
+      id="panel-data"
+      class="settings-section-group"
+      role="tabpanel"
+      :aria-labelledby="`tab-data`"
+      data-tab="data"
+    >
 
       <!-- 数据目录：独立展示卡片（不与迁移混） -->
       <div class="settings-section card-soft">
@@ -1386,7 +1411,14 @@ onMounted(() => {
     <!-- ================================================= -->
     <!-- 🔬 Tab 5：高级（图标诊断 / 更新 / 危险操作） -->
     <!-- ================================================= -->
-    <section id="tab-advanced" class="settings-section-group" data-tab="advanced">
+    <section
+      v-show="activeTab === 'advanced'"
+      id="panel-advanced"
+      class="settings-section-group"
+      role="tabpanel"
+      :aria-labelledby="`tab-advanced`"
+      data-tab="advanced"
+    >
 
       <!-- 图标诊断 -->
       <div class="settings-section card-soft">
@@ -1517,9 +1549,12 @@ onMounted(() => {
 }
 .tab-icon { font-size: 14px; line-height: 1; }
 .tab-label { letter-spacing: 0.2px; overflow: hidden; text-overflow: ellipsis; }
+/* v0.4.1：小窗口下不再隐藏分类文字（隐藏后只有图标，分不清含义）——
+   改为自动换行两行排布，320px 宽度下仍可读 */
 @media (max-width: 659px) {
-  .tab-label { display: none; }
-  .settings-tab { padding: 10px 6px; }
+  .settings-tabs { flex-wrap: wrap; }
+  .settings-tab { flex: 1 1 30%; padding: 8px 4px; }
+  .tab-label { font-size: 11px; }
 }
 
 /* section 层级 */

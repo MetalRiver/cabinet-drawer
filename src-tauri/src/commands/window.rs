@@ -264,7 +264,7 @@ pub fn apply_widget_config(window: Window, state: State<AppState>) -> Result<(),
             _ => None,
         }
     };
-    let (cur_w, cur_h) = saved_size.unwrap_or((480.0, 720.0));
+    let (cur_w, _cur_h) = saved_size.unwrap_or((480.0, 720.0));
     if let (Some(x), Some(y)) = (
         db.get_setting("widget.x").map_err(|e| e.to_string())?,
         db.get_setting("widget.y").map_err(|e| e.to_string())?,

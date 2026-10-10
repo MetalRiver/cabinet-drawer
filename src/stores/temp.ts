@@ -7,6 +7,9 @@ import {
   createTemp as apiCreateTemp,
   deleteTemp as apiDeleteTemp,
   cleanupExpiredTemp as apiCleanupExpired,
+  updateTempText as apiUpdateTempText,
+  renewTemp as apiRenewTemp,
+  isTempPermanent,
   copyToClipboardWithTimeout,
   type TempMeta,
 } from "../api";
@@ -36,6 +39,29 @@ export const useTempStore = defineStore("temp", () => {
     await loadItems();
   }
 
+  /** v0.4.1：编辑/追加便签内容（后端只改 text，到期时间保持不变） */
+  async function updateText(id: number, text: string) {
+    await apiUpdateTempText(id, text);
+    await loadItems();
+  }
+
+  /**
+   * v0.4.1：续期。
+   * - addMs：在现有到期时间上加毫秒（1/3/7/30 天预设）
+   * - setExpiresAt：直接设定绝对到期时间（TEMP_NEVER_EXPIRES_MS = 永不过期）
+   * 返回后端给出的新到期时间。
+   */
+  async function renew(id: number, addMs: number | null, setExpiresAt: number | null) {
+    const newExpiresAt = await apiRenewTemp(id, addMs, setExpiresAt);
+    await loadItems();
+    return newExpiresAt;
+  }
+
+  /** 是否永久便签（哨兵值） */
+  function isPermanent(expiresAt: number): boolean {
+    return isTempPermanent(expiresAt);
+  }
+
   async function remove(id: number) {
     await apiDeleteTemp(id);
     await loadItems();
@@ -56,8 +82,9 @@ export const useTempStore = defineStore("temp", () => {
     await copyToClipboardWithTimeout(text, widgetStore.clipboardClearSeconds);
   }
 
-  /** 把剩余时间格式化为 mm:ss */
+  /** 把剩余时间格式化为 mm:ss（永久便签返回"永久"） */
   function remaining(item: TempMeta): string {
+    if (isTempPermanent(item.expires_at)) return "永久";
     const ms = item.expires_at - Date.now();
     if (ms <= 0) return "已过期";
     const sec = Math.floor(ms / 1000);
@@ -86,6 +113,9 @@ export const useTempStore = defineStore("temp", () => {
     // 导入备份后整体刷新（调用方：SettingsView 导入完成后）
     reloadAll: loadItems,
     create,
+    updateText,
+    renew,
+    isPermanent,
     remove,
     cleanupExpired,
     copy,

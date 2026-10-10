@@ -1130,6 +1130,57 @@ impl Db {
         )?;
         Ok(n)
     }
+
+    /// 永不过期哨兵：2100-01-01T00:00:00Z（UTC ms）。
+    /// 用远期时间戳而非 NULL / i64::MAX：不改表结构、旧数据零迁移，
+    /// `expires_at > now` 列表过滤天然包含、`expires_at <= now` 清理天然排除，
+    /// 排序/备份/恢复全部按普通整数兼容。
+    pub const TEMP_NEVER_EXPIRES_MS: i64 = 4_102_444_800_000;
+
+    /// 编辑便签内容（只改 text，绝不动 expires_at —— 用户反馈：仅编辑内容不得自动重置到期时间）
+    pub fn update_temp_text(&self, id: i64, text: &str) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE temp_contents SET text = ?1 WHERE id = ?2 AND deleted_at IS NULL",
+            params![text, id],
+        )
+    }
+
+    /// 续期便签：`add_ms`（在现有到期时间上延长）或 `set_expires_at`
+    /// （直接设定绝对到期时间，可为 TEMP_NEVER_EXPIRES_MS=永久）二选一。
+    /// 返回受影响行数（0 = 不存在或已进回收站）。
+    pub fn renew_temp(
+        &self,
+        id: i64,
+        add_ms: Option<i64>,
+        set_expires_at: Option<i64>,
+    ) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let target: Option<i64> = if let Some(ms) = add_ms {
+            let cur: Option<i64> = conn
+                .query_row(
+                    "SELECT expires_at FROM temp_contents WHERE id = ?1 AND deleted_at IS NULL",
+                    params![id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            match cur {
+                Some(cur) => Some(cur.saturating_add(ms)),
+                // 便签不存在 / 已删除：返回 0 行，由调用方 fail visible
+                None => return Ok(0),
+            }
+        } else {
+            set_expires_at
+        };
+        let target = match target {
+            Some(t) => t,
+            None => return Ok(0),
+        };
+        conn.execute(
+            "UPDATE temp_contents SET expires_at = ?1 WHERE id = ?2 AND deleted_at IS NULL",
+            params![target, id],
+        )
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize)]

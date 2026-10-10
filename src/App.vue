@@ -2,7 +2,7 @@
 import { ref, onMounted, onUnmounted } from "vue";
 import { useAppStore } from "./stores/app";
 import { useWidgetStore } from "./stores/widget";
-import { applyWidgetConfig, setWindowSize, getAppStatus, getDataRootBlock, getSetupMode, restartApp } from "./api";
+import { applyWidgetConfig, getAppStatus, getDataRootBlock, getSetupMode, restartApp } from "./api";
 import type { DataRootBlockInfo, SetupModeInfo } from "./api";
 import { listen } from "@tauri-apps/api/event";
 import LockScreen from "./components/LockScreen.vue";
@@ -119,14 +119,9 @@ onMounted(async () => {
   }
   await appStore.init();
   await widgetStore.init();
-  // 若上次以迷你模式退出，启动时按迷你模式尺寸显示
-  if (widgetStore.miniMode) {
-    try {
-      await setWindowSize(56, 320);
-    } catch (e) {
-      console.warn("恢复迷你模式尺寸失败", e);
-    }
-  }
+  // v0.4.1：删除"上次以迷你模式退出则恢复迷你尺寸"分支。
+  // mini_mode 已不持久化（widget.ts init 不读取），启动恒为完整模式，此分支是死代码；
+  // 且其 56×320 尺寸常量与后端 64×360 不一致。
 
   // P0-#LOCK#POLLING#FALLBACK：启动 lock 状态轮询
   // 2s 一次查询后端 lock 状态 → 如果后端 lock 但前端 isLocked=false → 强制切锁屏

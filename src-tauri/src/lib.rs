@@ -26,6 +26,8 @@ pub mod migration;
 #[cfg(test)]
 mod phase2d;
 #[cfg(test)]
+mod temp_edit_tests;
+#[cfg(test)]
 mod trash_retention_tests;
 #[cfg(test)]
 mod v2_verification_tests;
@@ -1956,6 +1958,8 @@ pub fn run() {
             list_temp,
             delete_temp,
             cleanup_expired_temp,
+            update_temp_text,
+            renew_temp,
             // 回收站（P0-#T）
             list_trash,
             restore_from_trash,

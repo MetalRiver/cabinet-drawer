@@ -483,12 +483,26 @@ export interface TempMeta {
   expires_at: number;
 }
 
+// 永不过期哨兵：2100-01-01T00:00:00Z（UTC ms），与 Rust 端 Db::TEMP_NEVER_EXPIRES_MS 一致
+export const TEMP_NEVER_EXPIRES_MS = 4_102_444_800_000;
+export const isTempPermanent = (expiresAt: number) => expiresAt >= TEMP_NEVER_EXPIRES_MS;
+
+// ttlMinutes <= 0 = 永不过期（后端换算为哨兵值）
 export const createTemp = (text: string, ttlMinutes: number) =>
   invoke<number>("create_temp", { text, ttlMinutes });
 
 export const listTemp = () => invoke<TempMeta[]>("list_temp");
 
 export const deleteTemp = (id: number) => invoke<void>("delete_temp", { id });
+
+// v0.4.1 便签增强：编辑内容（只改 text，不动到期时间）
+export const updateTempText = (id: number, text: string) =>
+  invoke<void>("update_temp_text", { id, text });
+
+// v0.4.1 便签增强：续期。addMs 与 setExpiresAt 二选一（另一个传 null）；
+// setExpiresAt 传 TEMP_NEVER_EXPIRES_MS = 永不过期；返回新到期时间
+export const renewTemp = (id: number, addMs: number | null, setExpiresAt: number | null) =>
+  invoke<number>("renew_temp", { id, addMs, setExpiresAt });
 
 export const cleanupExpiredTemp = () =>
   invoke<number>("cleanup_expired_temp");

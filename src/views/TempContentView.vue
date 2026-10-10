@@ -4,6 +4,8 @@ import { useAppStore } from "../stores/app";
 import { useWidgetStore } from "../stores/widget";
 import { useTempStore } from "../stores/temp";
 import { useSnippetsStore } from "../stores/snippets";
+import { TEMP_NEVER_EXPIRES_MS, isTempPermanent, type TempMeta } from "../api";
+import DarkSelect from "../components/DarkSelect.vue";
 import ConfirmInline from "../components/ConfirmInline.vue";
 
 const appStore = useAppStore();
@@ -17,16 +19,148 @@ const deletingId = ref<number | null>(null);
 
 // 新增
 const showAdd = ref(false);
-const defaultTtl = computed(() => Math.max(1, widgetStore.tempExpireDays) * 24 * 60);
-const ttlOptions = computed(() => [
-  { value: 60, label: "1 小时" },
-  { value: 360, label: "6 小时" },
-  { value: 1440, label: "1 天" },
-  { value: 4320, label: "3 天" },
-  { value: 10080, label: "7 天" },
-  { value: 43200, label: "30 天" },
-].map(o => ({ ...o, label: o.value === defaultTtl.value ? `${o.label}（默认）` : o.label })));
-const addForm = ref({ text: "", ttlMinutes: defaultTtl.value });
+// v0.4.1：设置"永不过期"(0) 时默认 TTL = 0（创建即永久），不再被 Math.max(1,·) 强改成 1 天
+const defaultTtl = computed(() =>
+  widgetStore.tempExpireDays === 0 ? 0 : widgetStore.tempExpireDays * 24 * 60
+);
+const ttlOptions = computed(() => {
+  const base = [
+    { value: 60, label: "1 小时" },
+    { value: 360, label: "6 小时" },
+    { value: 1440, label: "1 天" },
+    { value: 4320, label: "3 天" },
+    { value: 10080, label: "7 天" },
+    { value: 43200, label: "30 天" },
+    { value: 0, label: "永不过期" },
+  ];
+  return base.map((o) => ({
+    ...o,
+    label: o.value === defaultTtl.value && o.value !== 0 ? `${o.label}（默认）` : o.label,
+  }));
+});
+const addForm = ref({ text: "", ttlMinutes: 0 });
+
+// v0.4.1：编辑 / 追加
+const showEdit = ref(false);
+const editTarget = ref<TempMeta | null>(null);
+const editMode = ref<"append" | "overwrite">("append");
+const editText = ref("");
+const editBusy = ref(false);
+function openEdit(item: TempMeta) {
+  editTarget.value = item;
+  editMode.value = "append"; // 默认追加：不覆盖原始内容，防误触
+  editText.value = "";
+  showEdit.value = true;
+}
+function onEditModeChange(mode: "append" | "overwrite") {
+  editMode.value = mode;
+  if (mode === "overwrite" && editTarget.value) {
+    editText.value = editTarget.value.text;
+  } else {
+    editText.value = "";
+  }
+}
+async function submitEdit() {
+  if (!editTarget.value || editBusy.value) return;
+  const original = editTarget.value.text;
+  let finalText: string;
+  if (editMode.value === "append") {
+    if (!editText.value.trim()) {
+      appStore.showClipToast("info", "请输入要追加的内容");
+      return;
+    }
+    finalText = original.endsWith("\n") || original === ""
+      ? original + editText.value
+      : original + "\n" + editText.value;
+  } else {
+    if (!editText.value.trim()) {
+      appStore.showClipToast("info", "内容不能为空");
+      return;
+    }
+    finalText = editText.value;
+  }
+  editBusy.value = true;
+  try {
+    await tempStore.updateText(editTarget.value.id, finalText);
+    showEdit.value = false;
+    appStore.showClipToast("success", editMode.value === "append" ? "已追加" : "已保存");
+  } catch (e) {
+    appStore.showClipToast("info", String(e));
+  } finally {
+    editBusy.value = false;
+  }
+}
+
+// v0.4.1：续期
+const RENEW_PRESETS = [
+  { value: 1 * 24 * 60 * 60 * 1000, label: "延长 1 天" },
+  { value: 3 * 24 * 60 * 60 * 1000, label: "延长 3 天" },
+  { value: 7 * 24 * 60 * 60 * 1000, label: "延长 7 天" },
+  { value: 30 * 24 * 60 * 60 * 1000, label: "延长 30 天" },
+  { value: -1, label: "永不过期" }, // -1 = 哨兵标记，提交时换算 TEMP_NEVER_EXPIRES_MS
+  { value: -2, label: "自定义到期时间" }, // -2 = 哨兵标记
+] as const;
+const showRenew = ref(false);
+const renewTarget = ref<TempMeta | null>(null);
+const renewChoice = ref<number>(-3); // -3 = 未选择
+const renewCustom = ref("");
+const renewBusy = ref(false);
+const renewError = ref("");
+function openRenew(item: TempMeta) {
+  renewTarget.value = item;
+  renewChoice.value = -3;
+  renewCustom.value = "";
+  renewError.value = "";
+  showRenew.value = true;
+}
+const renewCustomMs = computed(() => {
+  if (renewChoice.value !== -2) return null;
+  if (!renewCustom.value) return null;
+  const t = new Date(renewCustom.value).getTime();
+  return Number.isFinite(t) && t > Date.now() ? t : null;
+});
+const renewPreview = computed(() => {
+  if (!renewTarget.value) return "";
+  const cur = renewTarget.value.expires_at;
+  if (renewChoice.value === -1) return "永不过期";
+  if (renewChoice.value === -2) {
+    if (renewCustomMs.value === null) return renewCustom.value ? "无效时间（必须晚于现在）" : "";
+    return fmtDateTime(renewCustomMs.value);
+  }
+  if (renewChoice.value > 0) return fmtDateTime(cur + renewChoice.value);
+  return "";
+});
+const renewReady = computed(
+  () =>
+    renewChoice.value === -1 ||
+    (renewChoice.value === -2 && renewCustomMs.value !== null) ||
+    renewChoice.value > 0
+);
+function fmtDateTime(ms: number): string {
+  return new Date(ms).toLocaleString("zh-CN", { hour12: false });
+}
+async function submitRenew() {
+  if (!renewTarget.value || !renewReady.value || renewBusy.value) return;
+  renewBusy.value = true;
+  renewError.value = "";
+  try {
+    let setExpiresAt: number | null = null;
+    let addMs: number | null = null;
+    if (renewChoice.value === -1) setExpiresAt = TEMP_NEVER_EXPIRES_MS;
+    else if (renewChoice.value === -2) setExpiresAt = renewCustomMs.value;
+    else addMs = renewChoice.value;
+    const newExpires = await tempStore.renew(renewTarget.value.id, addMs, setExpiresAt);
+    showRenew.value = false;
+    appStore.showClipToast(
+      "success",
+      newExpires >= TEMP_NEVER_EXPIRES_MS ? "已设为永不过期" : `已续期，新到期时间：${fmtDateTime(newExpires)}`
+    );
+  } catch (e) {
+    renewError.value = String(e);
+  } finally {
+    renewBusy.value = false;
+  }
+}
 
 // 倒计时实时刷新（KeepAlive 缓存下切走 tab 走 deactivated 路径，
 // 必须用 onActivated/onDeactivated 管理计时器，否则离开便签页后每秒空转）
@@ -66,6 +200,7 @@ const filteredItems = computed(() => {
 });
 
 function timeLeft(expires: number): string {
+  if (isTempPermanent(expires)) return "永久保留";
   const diff = expires - now.value;
   if (diff <= 0) return "已过期";
   const sec = Math.floor(diff / 1000);
@@ -78,9 +213,10 @@ function timeLeft(expires: number): string {
   return `${s}s`;
 }
 
-function progress(expires: number, created: number): number {
-  const total = expires - created;
-  const left = expires - now.value;
+function progress(item: TempMeta): number {
+  if (isTempPermanent(item.expires_at)) return 100;
+  const total = item.expires_at - item.created_at;
+  const left = item.expires_at - now.value;
   if (total <= 0) return 0;
   return Math.max(0, Math.min(100, (left / total) * 100));
 }
@@ -160,7 +296,7 @@ async function promoteToSnippet(item: any) {
             <span class="view-title-text">便签</span>
             <span class="title-count">{{ filteredItems.length }}</span>
           </h2>
-          <p class="view-subtitle">默认 3 天后过期 · {{ new Date(now).toLocaleString("zh-CN") }}</p>
+          <p class="view-subtitle">{{ widgetStore.tempExpireDays === 0 ? "新建便签默认永不过期" : `新建便签默认 ${widgetStore.tempExpireDays} 天后过期` }} · {{ new Date(now).toLocaleString("zh-CN") }}</p>
         </div>
       </div>
       <div class="view-header-actions">
@@ -195,17 +331,21 @@ async function promoteToSnippet(item: any) {
           <div class="item-info">
             <div class="item-text">{{ item.text }}</div>
             <div class="item-meta">
-              <span class="meta-time">⏱ 剩余 {{ timeLeft(item.expires_at) }}</span>
-              <div class="meta-progress">
+              <span class="meta-time" :class="{ 'meta-permanent': isTempPermanent(item.expires_at) }">
+                ⏱ {{ isTempPermanent(item.expires_at) ? "永久保留" : `剩余 ${timeLeft(item.expires_at)}` }}
+              </span>
+              <div v-if="!isTempPermanent(item.expires_at)" class="meta-progress">
                 <div
                   class="meta-progress-bar"
-                  :style="{ width: progress(item.expires_at, item.created_at) + '%' }"
+                  :style="{ width: progress(item) + '%' }"
                 ></div>
               </div>
             </div>
           </div>
         </div>
         <div v-if="confirmingDeleteId !== item.id" class="item-actions">
+          <button class="action-btn" title="编辑 / 追加内容" @click="openEdit(item)">✏️</button>
+          <button class="action-btn" title="续期" @click="openRenew(item)">⏰</button>
           <button class="action-btn" title="转存为命令" @click="promoteToSnippet(item)">📌</button>
           <button class="action-btn" title="复制" @click="copy(item.text)">📋</button>
           <button class="action-btn" title="删除" @click="askRemove(item.id)">🗑️</button>
@@ -244,14 +384,109 @@ async function promoteToSnippet(item: any) {
             </div>
             <div class="form-row">
               <label>保留时长</label>
-              <select v-model.number="addForm.ttlMinutes" class="form-input">
-                <option v-for="o in ttlOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
-              </select>
+              <DarkSelect
+                v-model="addForm.ttlMinutes"
+                :options="ttlOptions"
+                aria-label="保留时长"
+                block
+              />
             </div>
           </div>
           <div class="modal-footer">
             <button class="btn-secondary tap" @click="showAdd = false">取消</button>
             <button class="btn-primary tap" @click="submitAdd">保存</button>
+          </div>
+        </div>
+      </div>
+    </Transition>
+
+    <!-- 编辑 / 追加表单（v0.4.1） -->
+    <Transition name="modal">
+      <div v-if="showEdit && editTarget" class="modal-mask" @click.self="showEdit = false">
+        <div class="modal">
+          <div class="modal-header">
+            <span>编辑便签</span>
+            <button class="modal-close tap" @click="showEdit = false">×</button>
+          </div>
+          <div class="modal-body">
+            <div class="form-row">
+              <label>当前内容</label>
+              <div class="edit-original">{{ editTarget.text }}</div>
+            </div>
+            <div class="form-row">
+              <label>编辑方式</label>
+              <div class="seg-mini">
+                <button
+                  class="seg-mini-btn tap"
+                  :class="{ active: editMode === 'append' }"
+                  data-interactive
+                  @click="onEditModeChange('append')"
+                >➕ 追加到末尾（不覆盖原文）</button>
+                <button
+                  class="seg-mini-btn tap"
+                  :class="{ active: editMode === 'overwrite' }"
+                  data-interactive
+                  @click="onEditModeChange('overwrite')"
+                >✏️ 重写全部内容</button>
+              </div>
+            </div>
+            <div class="form-row">
+              <label>{{ editMode === "append" ? "要追加的内容" : "新的完整内容" }}</label>
+              <textarea
+                v-model="editText"
+                class="form-input form-textarea"
+                rows="5"
+                :placeholder="editMode === 'append' ? '输入要追加到末尾的内容…' : '输入新的完整内容…'"
+              ></textarea>
+              <span v-if="editMode === 'append'" class="field-hint">原文会完整保留，新内容换行追加在末尾</span>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn-secondary tap" @click="showEdit = false">取消</button>
+            <button class="btn-primary tap" :disabled="editBusy" @click="submitEdit">
+              {{ editBusy ? "保存中…" : "保存" }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Transition>
+
+    <!-- 续期弹窗（v0.4.1） -->
+    <Transition name="modal">
+      <div v-if="showRenew && renewTarget" class="modal-mask" @click.self="showRenew = false">
+        <div class="modal">
+          <div class="modal-header">
+            <span>续期便签</span>
+            <button class="modal-close tap" @click="showRenew = false">×</button>
+          </div>
+          <div class="modal-body">
+            <div class="form-row">
+              <label>
+                当前到期：{{ isTempPermanent(renewTarget.expires_at) ? "永不过期" : fmtDateTime(renewTarget.expires_at) }}
+              </label>
+              <DarkSelect
+                v-model="renewChoice"
+                :options="RENEW_PRESETS.map(p => ({ value: p.value as number, label: p.label }))"
+                aria-label="续期方式"
+                placeholder="选择续期方式"
+                block
+              />
+            </div>
+            <div v-if="renewChoice === -2" class="form-row">
+              <label>自定义到期时间</label>
+              <input v-model="renewCustom" type="datetime-local" class="form-input" />
+            </div>
+            <p class="renew-preview" v-if="renewPreview">
+              预计新到期时间：<b>{{ renewPreview }}</b>
+              <template v-if="renewChoice > 0">（在当前到期时间上延长）</template>
+            </p>
+            <p class="renew-error" v-if="renewError">⚠️ {{ renewError }}</p>
+          </div>
+          <div class="modal-footer">
+            <button class="btn-secondary tap" @click="showRenew = false">取消</button>
+            <button class="btn-primary tap" :disabled="!renewReady || renewBusy" @click="submitRenew">
+              {{ renewBusy ? "续期中…" : "确认续期" }}
+            </button>
           </div>
         </div>
       </div>
@@ -285,6 +520,37 @@ async function promoteToSnippet(item: any) {
 .item-text { font-size: 12px; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; line-height: 1.4; }
 .item-meta { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
 .meta-time { font-size: 10px; color: var(--text-muted); font-family: monospace; white-space: nowrap; }
+.meta-time.meta-permanent { color: #34d399; }
+
+/* v0.4.1：编辑/续期 */
+.edit-original {
+  font-size: 12px; color: var(--text-secondary);
+  background: rgba(0, 0, 0, 0.25); border: 1px dashed var(--border);
+  border-radius: 8px; padding: 8px 10px;
+  max-height: 120px; overflow-y: auto; white-space: pre-wrap; word-break: break-all;
+}
+.seg-mini { display: flex; gap: 4px; background: var(--bg-tertiary); border-radius: 8px; padding: 3px; }
+.seg-mini-btn {
+  flex: 1; border: none; border-radius: 6px; padding: 7px 6px;
+  background: transparent; color: var(--text-muted);
+  font-size: 11px; cursor: pointer; transition: all 0.15s;
+  -webkit-app-region: no-drag; white-space: nowrap;
+}
+.seg-mini-btn.active {
+  background: linear-gradient(135deg, var(--accent) 0%, var(--highlight) 100%);
+  color: white; font-weight: 600;
+}
+.field-hint { font-size: 10.5px; color: var(--text-faint); margin-top: 2px; }
+.renew-preview {
+  font-size: 12px; color: var(--text-secondary);
+  background: rgba(16, 185, 129, 0.08); border-left: 3px solid #10b981;
+  border-radius: 6px; padding: 8px 10px; margin: 4px 0 0;
+}
+.renew-error {
+  font-size: 12px; color: #f87171;
+  margin: 4px 0 0;
+}
+.form-select-block { width: 100%; }
 .meta-progress { flex: 1; height: 3px; background: rgba(0, 0, 0, 0.3); border-radius: 2px; overflow: hidden; }
 .meta-progress-bar { height: 100%; background: linear-gradient(90deg, var(--warning), #ff8a5e); transition: width 1s linear; }
 
