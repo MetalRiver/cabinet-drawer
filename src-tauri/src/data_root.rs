@@ -3325,12 +3325,34 @@ mod tests {
 
 /// Release-Train §0 测试隔离：DRAWER_CONFIG_DIR 显式重定向 Config Root。
 /// 仅测试/CI 设置该变量；普通用户走标准 app_data_dir，行为零差异。
+/// 验收便携测试版（v0.4.1）：exe 同目录存在 `DRAWER-TEST-EDITION.marker` 时，
+/// Config Root 固定重定向到 exe 旁的 `drawer-test-data/`。
+/// 设计目标：双击即用的独立验收版——与正式版完全隔离（独立数据库/配置/单实例标识
+/// 由验收构建的 identifier=com.drawer-box.acceptance 另行保证），删除整个文件夹即完成卸载。
+/// 正式版不存在该标记文件，行为零变化。
+pub fn portable_test_root() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    if !dir.join("DRAWER-TEST-EDITION.marker").exists() {
+        return None;
+    }
+    Some(dir.join("drawer-test-data"))
+}
+
+/// 当前进程是否为便携测试版（前端"测试版"徽章依据）
+pub fn is_portable_test_edition() -> bool {
+    portable_test_root().is_some()
+}
+
 pub fn effective_config_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     use tauri::Manager;
     if let Ok(dir) = std::env::var("DRAWER_CONFIG_DIR") {
         if !dir.trim().is_empty() {
             return Ok(PathBuf::from(dir));
         }
+    }
+    if let Some(dir) = portable_test_root() {
+        return Ok(dir);
     }
     app.path()
         .app_data_dir()

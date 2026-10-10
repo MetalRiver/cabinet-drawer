@@ -20,8 +20,10 @@ import {
   setupResumeCustomInit,
   setupRestoreBackupBegin,
 } from "../api";
-import type { SetupModeInfo } from "../api";
+import { getAppEdition, type SetupModeInfo } from "../api";
 
+const isTestEdition = ref(false);
+void getAppEdition().then((e) => { isTestEdition.value = e === "acceptance"; }).catch(() => {});
 const props = defineProps<{ mode: SetupModeInfo }>();
 
 const busy = ref(false);
@@ -190,6 +192,7 @@ async function onAbandon() {
 
     <!-- ===== 选择数据保存位置 ===== -->
     <div v-if="isChoose" class="dr-body">
+      <div v-if="isTestEdition" class="edition-badge edition-badge-float" title="验收便携测试版：数据将保存在本文件夹内，删除文件夹即卸载，与正式版完全隔离">测试版</div>
       <h1 class="dr-title">请选择抽屉柜的数据保存位置</h1>
       <p class="dr-sub">软件可以重新安装，数据丢失却很难恢复。请选择抽屉柜的数据保存位置。</p>
 

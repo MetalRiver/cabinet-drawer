@@ -1396,7 +1396,13 @@ pub fn run() {
                     eprintln!("[data-root] DRAWER_CONFIG_DIR override -> {:?}", dir);
                     dir
                 }
-                _ => app.path().app_data_dir().expect("failed to get app data dir"),
+                _ => match data_root::portable_test_root() {
+                    Some(dir) => {
+                        eprintln!("[data-root] 便携测试版数据根 -> {:?}", dir);
+                        dir
+                    }
+                    None => app.path().app_data_dir().expect("failed to get app data dir"),
+                },
             };
             std::fs::create_dir_all(&config_root).expect("failed to create app data dir");
             // Phase 2C-2：两个 managed 状态必须在任何早期返回（setup/blocked 模式）之前就位
@@ -1961,6 +1967,7 @@ pub fn run() {
             update_temp_text,
             renew_temp,
             restore_temp_expired,
+            commands::window::get_app_edition,
             // 回收站（P0-#T）
             list_trash,
             restore_from_trash,

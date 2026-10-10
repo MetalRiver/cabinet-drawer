@@ -8,12 +8,14 @@ import {
   getSecurityStatus,
   verifyV2RecoveryPhrase,
   recoverV2WithPhrase,
-} from "../api";
+  getAppEdition } from "../api";
 import { listen } from "@tauri-apps/api/event";
 import { useWindowDrag } from "../composables/useWindowDrag";
 // 品牌 Logo
 import logo from "@/assets/logo.png";
 
+const isTestEdition = ref(false);
+void getAppEdition().then((e) => { isTestEdition.value = e === "acceptance"; }).catch(() => {});
 const appStore = useAppStore();
 const password = ref("");
 const error = ref("");
@@ -169,6 +171,7 @@ async function handleClose() {
       <div class="lock-topbar-left" data-tauri-drag-region>
         <img :src="logo" alt="抽屉柜 Drawer" class="lock-topbar-logo" />
         <span class="lock-topbar-title">抽屉柜 Drawer</span>
+        <span v-if="isTestEdition" class="edition-badge">测试版</span>
       </div>
       <div class="lock-topbar-right" data-no-drag>
         <button class="lock-topbar-btn" title="隐藏 (Alt+Q)" @click="handleClose">✕</button>

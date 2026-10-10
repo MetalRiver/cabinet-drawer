@@ -535,3 +535,25 @@ input, select, button, textarea {
   line-height: 1.4;
   opacity: 0.85;
 }
+
+/* ===== v0.4.1 验收便携测试版徽章 ===== */
+.edition-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: #ffb020;
+  background: rgba(255, 176, 32, 0.14);
+  border: 1px solid rgba(255, 176, 32, 0.5);
+  flex-shrink: 0;
+  -webkit-app-region: no-drag;
+}
+.edition-badge-float {
+  position: absolute;
+  top: 14px;
+  right: 16px;
+  z-index: 5;
+}

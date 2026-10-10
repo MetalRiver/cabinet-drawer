@@ -3,7 +3,7 @@ import { onMounted, onUnmounted, ref, watch } from "vue";
 import { useRouter, useRoute } from "vue-router";
 import { useAppStore } from "../stores/app";
 import { useWidgetStore } from "../stores/widget";
-import { hideWindow, lockApp, rescanSubtypes, getAppVersion } from "../api";
+import { hideWindow, lockApp, rescanSubtypes, getAppVersion, getAppEdition } from "../api";
 import { listen } from "@tauri-apps/api/event";
 import { useWindowDrag } from "../composables/useWindowDrag";
 import { useSoftwareStore } from "../stores/software";
@@ -26,6 +26,9 @@ const showTrash = ref(false);
 // P0-#Y#FIX#VERSION#DISPLAY：版本号（启动时调一次）
 // 用户看这个判断 exe 是不是最新的
 const versionInfo = ref<string>("");
+// 验收便携测试版徽章（R：界面明确标注，防与正式版混淆）
+const isTestEdition = ref(false);
+void getAppEdition().then((e) => { isTestEdition.value = e === "acceptance"; }).catch(() => {});
 getAppVersion().then((v) => (versionInfo.value = v)).catch(() => {});
 
 interface Tab {
@@ -260,6 +263,7 @@ onUnmounted(() => {
         <div class="titlebar-left" data-tauri-drag-region>
           <img :src="logo" alt="抽屉柜 Drawer" class="logo" />
           <div class="title">抽屉柜 Drawer</div>
+        <span v-if="isTestEdition" class="edition-badge" title="验收便携测试版：数据独立保存在本文件夹内，删除文件夹即卸载">测试版</span>
           <!-- P0-#Y#FIX#VERSION#DISPLAY：标题栏显示版本号，用户能肉眼看出是不是新版本 -->
           <div class="titlebar-version" :title="`编译时间：${versionInfo || '加载中'}`">
             {{ versionInfo || '...' }}

@@ -295,6 +295,9 @@ export const restartApp = () => invoke<void>("restart_app");
 
 /** P0-#Y#FIX#VERSION#DISPLAY：返回当前 exe 版本号 */
 export const getAppVersion = () => invoke<string>("get_app_version");
+// v0.4.1 验收便携测试版："acceptance" = 双击便携 exe（exe 旁有 DRAWER-TEST-EDITION.marker），
+// 数据根固定 exe 旁 drawer-test-data/；"standard" = 正式版
+export const getAppEdition = () => invoke<string>("get_app_edition");
 
 /// P0-#Y#3：一次性回填所有 app 的 subtype（启动时调用）
 export const rescanSubtypes = () => invoke<number>("rescan_subtypes");

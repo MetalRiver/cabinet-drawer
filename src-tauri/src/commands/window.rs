@@ -320,3 +320,17 @@ pub fn apply_widget_config(window: Window, state: State<AppState>) -> Result<(),
     }
     Ok(())
 }
+
+// ============================================================
+// 🪟 应用版本形态（v0.4.1 验收便携测试版："测试版"徽章依据）
+// ============================================================
+#[tauri::command]
+pub fn get_app_edition() -> Result<String, String> {
+    Ok(
+        if crate::data_root::is_portable_test_edition() {
+            "acceptance".to_string()
+        } else {
+            "standard".to_string()
+        },
+    )
+}

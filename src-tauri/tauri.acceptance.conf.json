@@ -1,0 +1,35 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "抽屉柜测试版",
+  "identifier": "com.drawer-box.acceptance",
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "抽屉柜 Drawer · 测试版",
+        "width": 480,
+        "height": 720,
+        "minWidth": 320,
+        "minHeight": 400,
+        "maxWidth": 1400,
+        "maxHeight": 1100,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": false,
+        "skipTaskbar": true,
+        "visible": false,
+        "resizable": true,
+        "maximizable": false,
+        "minimizable": true,
+        "closable": true,
+        "shadow": true,
+        "fullscreen": false,
+        "center": true,
+        "dragDropEnabled": true
+      }
+    ]
+  },
+  "bundle": {
+    "createUpdaterArtifacts": false
+  }
+}
