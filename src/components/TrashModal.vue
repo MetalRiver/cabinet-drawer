@@ -3,10 +3,12 @@ import { ref, onMounted, computed } from "vue";
 import {
   listTrash,
   restoreFromTrash,
+  restoreTempExpired,
   permanentDelete,
   emptyTrash,
   kindToTable,
   getSetting,
+  TEMP_NEVER_EXPIRES_MS,
   type TrashItem,
 } from "../api";
 import { useAppStore } from "../stores/app";
@@ -33,6 +35,7 @@ const loading = ref(false);
 const filterSource = ref<"all" | "软件" | "密码" | "命令行" | "便签">("all");
 const confirmAction = ref<{ kind: "delete" | "empty"; item?: TrashItem } | null>(null);
 const retentionDays = ref<number>(30);
+const restoreError = ref<string>("");
 
 const filtered = computed(() => {
   if (filterSource.value === "all") return items.value;
@@ -120,6 +123,55 @@ async function reloadStoresByKind(kind?: TrashItem["kind"]) {
   }
 }
 
+// R6：过期便签恢复 —— 直接恢复后列表不可见（list_temp 过滤 expires_at > now），
+// 旧实现"恢复成功但便签区找不到"= 虚假成功。改为：恢复前必须选定新有效期，
+// 恢复 + 新到期时间经 restore_temp_expired 原子落库。
+const EXPIRED_RESTORE_CHOICES = [
+  { days: 1, label: "1 天" },
+  { days: 3, label: "3 天" },
+  { days: 7, label: "7 天" },
+  { days: 0, label: "永不过期" }, // 0 = 永久哨兵
+] as const;
+const expiredRestoreItem = ref<TrashItem | null>(null);
+const expiredRestoreBusy = ref(false);
+function isExpiredTemp(item: TrashItem): boolean {
+  return (
+    item.kind === "temp" &&
+    typeof item.expires_at === "number" &&
+    item.expires_at <= Date.now()
+  );
+}
+function askRestore(item: TrashItem) {
+  if (isExpiredTemp(item)) {
+    expiredRestoreItem.value = item;
+    expiredRestoreBusy.value = false;
+    restoreError.value = "";
+    return;
+  }
+  void doRestore(item);
+}
+function cancelExpiredRestore() {
+  expiredRestoreItem.value = null;
+}
+async function confirmExpiredRestore(days: number) {
+  const item = expiredRestoreItem.value;
+  if (!item || expiredRestoreBusy.value) return;
+  expiredRestoreBusy.value = true;
+  try {
+    const expiresAt =
+      days === 0 ? TEMP_NEVER_EXPIRES_MS : Date.now() + days * 24 * 60 * 60 * 1000;
+    await restoreTempExpired(item.id, expiresAt);
+    expiredRestoreItem.value = null;
+    await load();
+    await reloadStoresByKind("temp");
+    emit("restored");
+  } catch (e) {
+    // fail visible：恢复/续期失败保持面板打开，用户可重试或取消
+    restoreError.value = String(e);
+  } finally {
+    expiredRestoreBusy.value = false;
+  }
+}
 async function doRestore(item: TrashItem) {
   const table = kindToTable(item.kind);
   await restoreFromTrash(table, item.id);
@@ -266,10 +318,27 @@ onMounted(async () => {
               {{ formatTimeAgo(item.deleted_at) }}
             </div>
             <div class="col col-actions">
-              <button class="row-btn restore-btn" @click="doRestore(item)" title="恢复">↺</button>
+              <button class="row-btn restore-btn" @click="askRestore(item)" title="恢复">↺</button>
               <button class="row-btn delete-btn" @click="askDelete(item)" title="永久删除">×</button>
             </div>
-          </div>
+          <!-- R6：过期便签恢复 → 先选新有效期（原子恢复，消除虚假成功） -->
+          <div v-if="expiredRestoreItem && expiredRestoreItem.id === item.id" class="expired-restore-panel">
+            <p class="expired-restore-reason">
+              ⚠️ 该便签已过期：直接恢复后不会出现在便签区。请先设定新的有效期再恢复。
+            </p>
+            <p v-if="restoreError" class="expired-restore-reason" style="color:#f87171;">{{ restoreError }}</p>
+            <div class="expired-restore-actions">
+              <button
+                v-for="c in EXPIRED_RESTORE_CHOICES"
+                :key="c.days"
+                class="row-btn restore-btn expired-choice"
+                :disabled="expiredRestoreBusy"
+                @click="confirmExpiredRestore(c.days)"
+              >{{ c.label }}</button>
+              <button class="row-btn delete-btn expired-choice" :disabled="expiredRestoreBusy" @click="cancelExpiredRestore">取消</button>
+            </div>
+                    </div>
+</div>
         </div>
       </div>
 
@@ -634,5 +703,30 @@ onMounted(async () => {
 .trash-confirm-enter-from, .trash-confirm-leave-to {
   opacity: 0;
   transform: translateY(20px);
+}
+
+/* R6：过期便签恢复面板 */
+.expired-restore-panel {
+  grid-column: 1 / -1;
+  background: rgba(255, 184, 77, 0.08);
+  border: 1px dashed rgba(255, 184, 77, 0.4);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 2px 0 6px;
+}
+.expired-restore-reason {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: #fbbf24;
+}
+.expired-restore-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.expired-choice {
+  width: auto;
+  min-width: 64px;
+  padding: 5px 12px;
 }
 </style>

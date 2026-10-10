@@ -62,16 +62,17 @@ fn t_te02_renew_add_ms_extends_from_current_expiry() {
     let id = db.create_temp("note", 60).unwrap(); // 1 小时后过期
     let (_, _, expires_before) = get_row(&db, id).unwrap();
 
-    let n = db
-        .renew_temp(id, Some(3 * 24 * 60 * 60 * 1000), None)
+    let now = chrono::Utc::now().timestamp_millis();
+    let new_expiry = db
+        .renew_temp(id, now, Some(3 * 24 * 60 * 60 * 1000), None)
         .unwrap();
-    assert_eq!(n, 1);
-    let (_, _, expires_after) = get_row(&db, id).unwrap();
     assert_eq!(
-        expires_after,
+        new_expiry,
         expires_before + 3 * 24 * 60 * 60 * 1000,
         "延长 N 天 = 现有到期时间 + N 天（用户可见的续期计算规则）"
     );
+    let (_, _, expires_after) = get_row(&db, id).unwrap();
+    assert_eq!(expires_after, new_expiry);
 }
 
 #[test]
@@ -79,14 +80,15 @@ fn t_te03_renew_set_absolute_and_never() {
     let (_dir, db) = temp_db("renew-set");
     let id = db.create_temp("note", 60).unwrap();
 
-    let target = chrono::Utc::now().timestamp_millis() + 7 * 24 * 60 * 60 * 1000;
-    let n = db.renew_temp(id, None, Some(target)).unwrap();
-    assert_eq!(n, 1);
+    let now = chrono::Utc::now().timestamp_millis();
+    let target = now + 7 * 24 * 60 * 60 * 1000;
+    let new_expiry = db.renew_temp(id, now, None, Some(target)).unwrap();
+    assert_eq!(new_expiry, target);
     assert_eq!(get_row(&db, id).unwrap().2, target);
 
     // 永不过期
-    let n = db.renew_temp(id, None, Some(NEVER)).unwrap();
-    assert_eq!(n, 1);
+    let new_expiry = db.renew_temp(id, now, None, Some(NEVER)).unwrap();
+    assert_eq!(new_expiry, NEVER);
     assert_eq!(get_row(&db, id).unwrap().2, NEVER);
 }
 
@@ -131,17 +133,24 @@ fn t_te05_never_expire_row_excluded_from_expiry_cleanup_by_sentinel() {
 }
 
 #[test]
-fn t_te06_renew_missing_or_deleted_note_returns_zero() {
+fn t_te06_renew_missing_or_deleted_note_fails_visible() {
     let (_dir, db) = temp_db("renew-missing");
-    assert_eq!(db.renew_temp(99999, Some(1000), None).unwrap(), 0);
-    assert_eq!(db.renew_temp(99999, None, Some(NEVER)).unwrap(), 0);
+    let now = chrono::Utc::now().timestamp_millis();
+    assert!(db
+        .renew_temp(99999, now, Some(1000), None)
+        .unwrap_err()
+        .contains("不存在"));
+    assert!(db
+        .renew_temp(99999, now, None, Some(NEVER))
+        .unwrap_err()
+        .contains("不存在"));
 
     // 软删除（进回收站）的便签不可续期
     let id = db.create_temp("to-trash", 60).unwrap();
     db.soft_delete("temp_contents", id).unwrap();
-    assert_eq!(
-        db.renew_temp(id, Some(1000), None).unwrap(),
-        0,
+    let err = db.renew_temp(id, now, Some(1000), None).unwrap_err();
+    assert!(
+        err.contains("不存在"),
         "已进回收站的便签不得绕过回收站流程被续期"
     );
 }
@@ -162,4 +171,134 @@ fn t_te07_legacy_finite_expiry_rows_unchanged() {
     let listed = db.list_temp().unwrap();
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].expires_at, now + 60 * 60 * 1000);
+}
+
+// ===== R1/R2（D-Repair）：永久语义统一 + 期限范围校验 + 哨兵一致性 =====
+
+#[test]
+fn t_te08_sentinel_matches_frontend_constant() {
+    // Rust 与 TypeScript 的永久哨兵必须一致：直接读取前端源文件钉死
+    let ts_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../src/api/index.ts");
+    let ts = std::fs::read_to_string(&ts_path)
+        .expect("读取 src/api/index.ts 失败（哨兵一致性测试需要前端源码在位）");
+    let needle = "TEMP_NEVER_EXPIRES_MS = 4_102_444_800_000";
+    assert!(
+        ts.contains(needle),
+        "前端 TEMP_NEVER_EXPIRES_MS 与 Rust Db::TEMP_NEVER_EXPIRES_MS 不一致（应为 4_102_444_800_000）"
+    );
+    assert_eq!(DbType::TEMP_NEVER_EXPIRES_MS, 4_102_444_800_000);
+}
+
+#[test]
+fn t_te09_create_ttl_boundaries() {
+    let now = 1_700_000_000_000_i64;
+    // 负数与 0 = 永不过期（合法专门语义，非截断）
+    assert_eq!(DbType::resolve_create_expiry(now, 0).unwrap(), NEVER);
+    assert_eq!(DbType::resolve_create_expiry(now, -1).unwrap(), NEVER);
+    assert_eq!(DbType::resolve_create_expiry(now, i64::MIN).unwrap(), NEVER);
+    // 正常范围
+    assert_eq!(DbType::resolve_create_expiry(now, 1).unwrap(), now + 60_000);
+    let max = DbType::TEMP_MAX_TTL_MINUTES;
+    assert_eq!(
+        DbType::resolve_create_expiry(now, max).unwrap(),
+        now + max.checked_mul(60_000).unwrap()
+    );
+    // 超上限 → 可见错误（不静默截断为永久）
+    let err = DbType::resolve_create_expiry(now, max + 1).unwrap_err();
+    assert!(err.contains("超出支持范围"), "err={}", err);
+    assert!(DbType::resolve_create_expiry(now, i64::MAX)
+        .unwrap_err()
+        .contains("超出支持范围"));
+}
+
+#[test]
+fn t_te10_renew_target_validation() {
+    let now = 1_700_000_000_000_i64;
+    // 合法：未来时间、永久哨兵
+    assert!(DbType::validate_renew_target(now, now + 1).is_ok());
+    assert!(DbType::validate_renew_target(now, NEVER).is_ok());
+    // 非法：过去/现在
+    assert!(DbType::validate_renew_target(now, now).is_err());
+    assert!(DbType::validate_renew_target(now, now - 1).is_err());
+    // 大于哨兵 → 拒绝（防"UI 显示永久、实际会过期"歧义）
+    assert!(DbType::validate_renew_target(now, NEVER + 1).is_err());
+    assert!(DbType::validate_renew_target(now, i64::MAX).is_err());
+}
+
+#[test]
+fn t_te11_renew_add_validation() {
+    assert!(DbType::validate_renew_add(0).is_err());
+    assert!(DbType::validate_renew_add(-1).is_err());
+    assert!(DbType::validate_renew_add(DbType::TEMP_MAX_RENEW_ADD_MS).is_ok());
+    assert!(DbType::validate_renew_add(DbType::TEMP_MAX_RENEW_ADD_MS + 1).is_err());
+    assert!(DbType::validate_renew_add(i64::MAX).is_err());
+}
+
+#[test]
+fn t_te12_renew_permanent_with_add_is_rejected_not_accumulated() {
+    let (_dir, db) = temp_db("perm-add");
+    let id = db.create_temp("永久", NEVER).unwrap();
+    let now = chrono::Utc::now().timestamp_millis();
+    let err = db
+        .renew_temp(id, now, Some(24 * 60 * 60 * 1000), None)
+        .unwrap_err();
+    assert!(err.contains("永不过期"), "err={}", err);
+    // 哨兵未被累加（重复续期不漂移）
+    assert_eq!(get_row(&db, id).unwrap().2, NEVER);
+    // 永久 → 限时：显式选择新到期日是唯一合法路径
+    let target = now + 7 * 24 * 60 * 60 * 1000;
+    assert_eq!(db.renew_temp(id, now, None, Some(target)).unwrap(), target);
+    assert_eq!(get_row(&db, id).unwrap().2, target);
+}
+
+#[test]
+fn t_te13_renew_param_mutex_and_custom_collision() {
+    let (_dir, db) = temp_db("mutex");
+    let id = db.create_temp("n", 60).unwrap();
+    let now = chrono::Utc::now().timestamp_millis();
+    // 二者都给 / 都不给 → 错误
+    assert!(db.renew_temp(id, now, Some(1000), Some(NEVER)).is_err());
+    assert!(db.renew_temp(id, now, None, None).is_err());
+    // 自定义日期恰好等于哨兵 = 永久（合法，无歧义：UI 单独呈现"永不过期"项）
+    assert_eq!(db.renew_temp(id, now, None, Some(NEVER)).unwrap(), NEVER);
+}
+
+#[test]
+fn t_te14_restore_temp_with_expiry_atomic() {
+    let (_dir, db) = temp_db("restore-exp");
+    let id = db.create_temp("过期便签", 60).unwrap();
+    // 模拟已过期 + 软删除
+    let conn = db.conn.lock().unwrap();
+    conn.execute(
+        "UPDATE temp_contents SET expires_at = 1, deleted_at = ?1 WHERE id = ?2",
+        params![chrono::Utc::now().timestamp_millis(), id],
+    )
+    .unwrap();
+    drop(conn);
+
+    // 恢复 + 新到期时间原子生效
+    let new_expiry = chrono::Utc::now().timestamp_millis() + 3 * 24 * 60 * 60 * 1000;
+    let n = db.restore_temp_with_expiry(id, new_expiry).unwrap();
+    assert_eq!(n, 1);
+    let (text, _created, expires_after) = get_row(&db, id).unwrap();
+    assert_eq!(text, "过期便签");
+    assert_eq!(expires_after, new_expiry);
+    let conn = db.conn.lock().unwrap();
+    let deleted: Option<i64> = conn
+        .query_row(
+            "SELECT deleted_at FROM temp_contents WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    drop(conn);
+    assert!(deleted.is_none(), "恢复后 deleted_at 必须为 NULL");
+    assert!(
+        db.list_temp().unwrap().iter().any(|x| x.id == id),
+        "恢复+续期后必须可见"
+    );
+
+    // 未删除的行不可用本方法触碰
+    let live = db.create_temp("live", 60).unwrap();
+    assert_eq!(db.restore_temp_with_expiry(live, new_expiry).unwrap(), 0);
 }

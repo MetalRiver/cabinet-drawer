@@ -100,6 +100,17 @@ const RENEW_PRESETS = [
   { value: -1, label: "永不过期" }, // -1 = 哨兵标记，提交时换算 TEMP_NEVER_EXPIRES_MS
   { value: -2, label: "自定义到期时间" }, // -2 = 哨兵标记
 ] as const;
+// 自定义到期时间上限：2099-12-31T23:59（不允许接近/越过永久哨兵，防显示歧义）
+const RENEW_DT_MAX = "2099-12-31T23:59";
+// 永久便签的续期选项：延长无意义（后端明确拒绝），只留"自定义到期时间"作为改回限时的唯一路径
+const renewOptions = computed(() => {
+  const target = renewTarget.value;
+  if (!target || !isTempPermanent(target.expires_at)) return RENEW_PRESETS.map((p) => ({ value: p.value as number, label: p.label }));
+  return [{ value: -2 as number, label: "自定义到期时间（改回限时）" }];
+});
+const renewTargetIsPermanent = computed(
+  () => !!renewTarget.value && isTempPermanent(renewTarget.value.expires_at)
+);
 const showRenew = ref(false);
 const renewTarget = ref<TempMeta | null>(null);
 const renewChoice = ref<number>(-3); // -3 = 未选择
@@ -117,14 +128,20 @@ const renewCustomMs = computed(() => {
   if (renewChoice.value !== -2) return null;
   if (!renewCustom.value) return null;
   const t = new Date(renewCustom.value).getTime();
-  return Number.isFinite(t) && t > Date.now() ? t : null;
+  // 合法区间：(now, 永久哨兵) 开区间；越过上限的日期会被后端拒绝且会造成"显示永久实际会过期"歧义
+  return Number.isFinite(t) && t > Date.now() && t < TEMP_NEVER_EXPIRES_MS ? t : null;
 });
 const renewPreview = computed(() => {
   if (!renewTarget.value) return "";
   const cur = renewTarget.value.expires_at;
   if (renewChoice.value === -1) return "永不过期";
   if (renewChoice.value === -2) {
-    if (renewCustomMs.value === null) return renewCustom.value ? "无效时间（必须晚于现在）" : "";
+    if (renewCustomMs.value === null) {
+      if (!renewCustom.value) return "";
+      const t = new Date(renewCustom.value).getTime();
+      if (Number.isFinite(t) && t >= TEMP_NEVER_EXPIRES_MS) return "超出支持范围（最晚 2099-12-31）";
+      return "无效时间（必须晚于现在且早于 2099-12-31）";
+    }
     return fmtDateTime(renewCustomMs.value);
   }
   if (renewChoice.value > 0) return fmtDateTime(cur + renewChoice.value);
@@ -149,6 +166,12 @@ async function submitRenew() {
     if (renewChoice.value === -1) setExpiresAt = TEMP_NEVER_EXPIRES_MS;
     else if (renewChoice.value === -2) setExpiresAt = renewCustomMs.value;
     else addMs = renewChoice.value;
+    // 永久便签只能走 setExpiresAt（-1 选项不在其选项列表内，防御再拦一层）
+    if (renewTargetIsPermanent.value && addMs !== null) {
+      renewError.value = "该便签已永不过期：如需改为限时，请选择自定义到期时间";
+      renewBusy.value = false;
+      return;
+    }
     const newExpires = await tempStore.renew(renewTarget.value.id, addMs, setExpiresAt);
     showRenew.value = false;
     appStore.showClipToast(
@@ -274,11 +297,24 @@ async function confirmRemove(id: number) {
   }
 }
 
-async function promoteToSnippet(item: any) {
-  const title = prompt("命令标题", item.text.slice(0, 30) + "...");
-  if (!title) return;
+// R4：转存为命令改为应用内弹窗（Tauri webview 原生 prompt 不可靠）
+const showPromote = ref(false);
+const promoteTarget = ref<TempMeta | null>(null);
+const promoteTitle = ref("");
+function openPromote(item: TempMeta) {
+  promoteTarget.value = item;
+  promoteTitle.value = item.text.slice(0, 30) + (item.text.length > 30 ? "..." : "");
+  showPromote.value = true;
+}
+async function submitPromote() {
+  if (!promoteTarget.value) return;
+  if (!promoteTitle.value.trim()) {
+    appStore.showClipToast("info", "请输入命令标题");
+    return;
+  }
   try {
-    await snippetsStore.create({ title, content: item.text });
+    await snippetsStore.create({ title: promoteTitle.value.trim(), content: promoteTarget.value.text });
+    showPromote.value = false;
     appStore.showClipToast("success", "已转存为命令");
   } catch (e) {
     appStore.showClipToast("info", String(e));
@@ -346,7 +382,7 @@ async function promoteToSnippet(item: any) {
         <div v-if="confirmingDeleteId !== item.id" class="item-actions">
           <button class="action-btn" title="编辑 / 追加内容" @click="openEdit(item)">✏️</button>
           <button class="action-btn" title="续期" @click="openRenew(item)">⏰</button>
-          <button class="action-btn" title="转存为命令" @click="promoteToSnippet(item)">📌</button>
+          <button class="action-btn" title="转存为命令" @click="openPromote(item)">📌</button>
           <button class="action-btn" title="复制" @click="copy(item.text)">📋</button>
           <button class="action-btn" title="删除" @click="askRemove(item.id)">🗑️</button>
         </div>
@@ -466,15 +502,18 @@ async function promoteToSnippet(item: any) {
               </label>
               <DarkSelect
                 v-model="renewChoice"
-                :options="RENEW_PRESETS.map(p => ({ value: p.value as number, label: p.label }))"
+                :options="renewOptions"
                 aria-label="续期方式"
                 placeholder="选择续期方式"
                 block
               />
+              <span v-if="renewTargetIsPermanent" class="field-hint">
+                当前为永久便签：延长选项不适用；如需改回限时，请选择自定义到期时间。
+              </span>
             </div>
             <div v-if="renewChoice === -2" class="form-row">
-              <label>自定义到期时间</label>
-              <input v-model="renewCustom" type="datetime-local" class="form-input" />
+              <label>自定义到期时间（最晚 2099-12-31）</label>
+              <input v-model="renewCustom" type="datetime-local" class="form-input" :max="RENEW_DT_MAX" />
             </div>
             <p class="renew-preview" v-if="renewPreview">
               预计新到期时间：<b>{{ renewPreview }}</b>
@@ -487,6 +526,32 @@ async function promoteToSnippet(item: any) {
             <button class="btn-primary tap" :disabled="!renewReady || renewBusy" @click="submitRenew">
               {{ renewBusy ? "续期中…" : "确认续期" }}
             </button>
+          </div>
+        </div>
+      </div>
+    </Transition>
+
+    <!-- 转存为命令（R4：替代原生 prompt） -->
+    <Transition name="modal">
+      <div v-if="showPromote && promoteTarget" class="modal-mask" @click.self="showPromote = false">
+        <div class="modal">
+          <div class="modal-header">
+            <span>转存为命令</span>
+            <button class="modal-close tap" @click="showPromote = false">×</button>
+          </div>
+          <div class="modal-body">
+            <div class="form-row">
+              <label>命令标题</label>
+              <input v-model="promoteTitle" class="form-input" placeholder="如：Docker 常用命令" />
+            </div>
+            <div class="form-row">
+              <label>内容（来自便签原文）</label>
+              <div class="edit-original">{{ promoteTarget.text }}</div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn-secondary tap" @click="showPromote = false">取消</button>
+            <button class="btn-primary tap" @click="submitPromote">保存</button>
           </div>
         </div>
       </div>

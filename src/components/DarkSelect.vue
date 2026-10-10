@@ -6,7 +6,7 @@
 // aria（listbox + aria-activedescendant）/ 视口下方放不下自动上翻 /
 // Teleport 到 body（不受父容器 overflow 裁切）/ 长列表滚动 / 点击外部关闭。
 
-import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, useId, watch } from "vue";
 
 export interface DarkSelectOption<T extends string | number> {
   value: T;
@@ -28,14 +28,18 @@ const props = withDefaults(
 
 const emit = defineEmits<{ (e: "update:modelValue", v: T): void }>();
 
+// R7：listbox 弹层的稳定 id（aria-controls / aria-activedescendant 用）
+const popupId = `dark-select-popup-${useId()}`;
+
 const open = ref(false);
 const rootEl = ref<HTMLElement | null>(null);
 const triggerEl = ref<HTMLElement | null>(null);
 const popupEl = ref<HTMLElement | null>(null);
-const popupStyle = ref<{ left: string; top: string; width: string; upward: boolean }>({
+const popupStyle = ref<{ left: string; top: string; minWidth: string; maxWidth: string; upward: boolean }>({
   left: "0px",
   top: "0px",
-  width: "0px",
+  minWidth: "0px",
+  maxWidth: "480px",
   upward: false,
 });
 const activeIndex = ref(0);
@@ -61,7 +65,8 @@ function positionPopup() {
     top: upward
       ? `${Math.round(Math.max(VIEWPORT_MARGIN, rect.top - estimatedH - 4))}px`
       : `${Math.round(rect.bottom + 4)}px`,
-    width: `${Math.round(rect.width)}px`,
+    minWidth: `${Math.round(rect.width)}px`,
+    maxWidth: `${Math.round(Math.min(480, window.innerWidth - VIEWPORT_MARGIN * 2))}px`,
     upward,
   };
 }
@@ -191,12 +196,14 @@ onBeforeUnmount(() => {
       role="combobox"
       :aria-expanded="open"
       :aria-label="ariaLabel || undefined"
+      :aria-controls="open ? popupId : undefined"
+      :aria-activedescendant="open ? `${popupId}-opt-${activeIndex}` : undefined"
       aria-haspopup="listbox"
       data-interactive
       @click="toggleOpen"
       @keydown="onTriggerKeydown"
     >
-      <span class="dark-select-value" :class="{ 'is-placeholder': selectedIndex < 0 }">
+      <span class="dark-select-value" :class="{ 'is-placeholder': selectedIndex < 0 }" :title="selectedLabel">
         {{ selectedLabel }}
       </span>
       <span class="dark-select-arrow" aria-hidden="true">▾</span>
@@ -205,16 +212,19 @@ onBeforeUnmount(() => {
     <Teleport to="body">
       <div
         v-if="open"
+        :id="popupId"
         ref="popupEl"
         class="dark-select-popup"
         :class="{ upward: popupStyle.upward }"
         :style="popupStyle"
         role="listbox"
         tabindex="-1"
+        :aria-label="ariaLabel || undefined"
         @keydown="onPopupKeydown"
       >
         <div
           v-for="(opt, i) in options"
+          :id="`${popupId}-opt-${i}`"
           :key="String(opt.value)"
           class="dark-select-option"
           :class="{
@@ -228,7 +238,7 @@ onBeforeUnmount(() => {
           @mousedown.prevent
           @click="choose(opt)"
         >
-          <span class="option-label">{{ opt.label }}</span>
+          <span class="option-label" :title="opt.label">{{ opt.label }}</span>
           <span v-if="opt.value === modelValue" class="option-check" aria-hidden="true">✓</span>
         </div>
       </div>

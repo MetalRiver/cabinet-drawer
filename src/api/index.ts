@@ -500,9 +500,16 @@ export const updateTempText = (id: number, text: string) =>
   invoke<void>("update_temp_text", { id, text });
 
 // v0.4.1 便签增强：续期。addMs 与 setExpiresAt 二选一（另一个传 null）；
-// setExpiresAt 传 TEMP_NEVER_EXPIRES_MS = 永不过期；返回新到期时间
+// setExpiresAt 传 TEMP_NEVER_EXPIRES_MS = 永不过期；返回新到期时间。
+// 后端校验：addMs ≤ 10 年、目标时间必须晚于当前且不得大于永久哨兵、
+// 永久便签 + addMs = 明确错误（哨兵不累加）
 export const renewTemp = (id: number, addMs: number | null, setExpiresAt: number | null) =>
   invoke<number>("renew_temp", { id, addMs, setExpiresAt });
+
+// v0.4.1 R6：从回收站恢复（过期）便签并同步设定新到期时间（原子），
+// 消除"恢复成功但便签区不可见"的虚假成功
+export const restoreTempExpired = (id: number, expiresAt: number) =>
+  invoke<void>("restore_temp_expired", { id, expiresAt });
 
 export const cleanupExpiredTemp = () =>
   invoke<number>("cleanup_expired_temp");
@@ -517,6 +524,8 @@ export interface TrashItem {
   sub_detail: string;
   deleted_at: number;
   source: string; // "软件" / "密码" / "命令行" / "便签"
+  /** 便签条目专有：到期时间（R6 过期恢复判定）；其他类型 undefined */
+  expires_at?: number | null;
 }
 
 export const listTrash = () => invoke<TrashItem[]>("list_trash");

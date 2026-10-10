@@ -98,14 +98,16 @@ async function loadMigrationInfo() {
   } catch { /* 摘要不可用时静默 */ }
 }
 onMounted(loadMigrationInfo);
+const migrationError = ref("");
 async function migrationPick() {
   const p = await pickPath({ mode: "folder", title: "选择新的数据存储位置（需为空目录）" });
   if (p) {
     if (p.trim().toLowerCase() === dataDir.value.trim().toLowerCase()) {
       migrationTarget.value = "";
-      alert("新位置与当前数据位置相同。");
+      migrationError.value = "新位置与当前数据位置相同。";
       return;
     }
+    migrationError.value = "";
     migrationTarget.value = p;
   }
 }
@@ -119,7 +121,7 @@ async function migrationStart() {
   } catch (e) {
     migrationRunning.value = false;
     migrationBusy.value = false;
-    alert(String(e));
+    migrationError.value = String(e); // R4：内联可见，不依赖原生 alert
   }
 }
 
@@ -146,6 +148,7 @@ async function loadRestoreInfo() {
   } catch { /* 摘要不可用时静默 */ }
 }
 onMounted(loadRestoreInfo);
+const restoreError = ref("");
 async function restoreStart() {
   if (restoreBusy.value) return;
   restoreBusy.value = true;
@@ -156,7 +159,7 @@ async function restoreStart() {
   } catch (e) {
     restoreRunning.value = false;
     restoreBusy.value = false;
-    alert(String(e));
+    restoreError.value = String(e); // R4：内联可见
   }
 }
 async function openRetained(opId: string) {
@@ -248,12 +251,26 @@ async function onOpenTrash() {
   router.push("/");
   window.dispatchEvent(new CustomEvent("open-trash"));
 }
-async function onClearTrash() {
-  if (!confirm("确定要立即清空回收站吗？\n（所有已删除项将被永久删除）")) return;
+// R4：清空回收站为高危操作 → 应用内确认（原生 confirm 在 WebView 下不可靠）
+const clearTrashConfirmOpen = ref(false);
+const trashActionMsg = ref("");
+const trashActionBusy = ref(false);
+function onClearTrash() {
+  trashActionMsg.value = "";
+  clearTrashConfirmOpen.value = true;
+}
+async function doClearTrash() {
+  if (trashActionBusy.value) return;
+  clearTrashConfirmOpen.value = false;
+  trashActionBusy.value = true;
   try {
     const n = await hardPurgeTrash();
-    alert(`已清空 ${n} 项`);
-  } catch (e) { alert("清空失败：" + e); }
+    trashActionMsg.value = `已清空 ${n} 项`;
+  } catch (e) {
+    trashActionMsg.value = "清空失败：" + e;
+  } finally {
+    trashActionBusy.value = false;
+  }
 }
 
 // ========== 主密码 ==========
@@ -262,6 +279,7 @@ const newPassword = ref("");
 const confirmPassword = ref("");
 const pwChanging = ref(false);
 const pwChangeResult = ref("");
+const pwChangeConfirmOpen = ref(false);
 const securityModel = ref<"legacy_security_model" | "stable_dek_v2" | null>(null);
 const isV2Security = computed(() => securityModel.value === "stable_dek_v2");
 async function loadSecurityModel() {
@@ -282,7 +300,14 @@ async function onChangePassword() {
   if (newPassword.value !== confirmPassword.value) { pwChangeResult.value = "两次输入的新密码不一致"; return; }
   if (newPassword.value === currentPassword.value) { pwChangeResult.value = "新密码不能与当前密码相同"; return; }
   if (securityModel.value === null) { pwChangeResult.value = "无法确认当前安全模式，请重试"; return; }
-  if (!isV2Security.value && !confirm("修改主密码将重新加密所有密码和恢复短语（约 1-3 秒），确定吗？")) return;
+  // R4：legacy 重加密为高危操作 → 应用内确认（v2 路径本身无需确认，保持原逻辑）
+  if (!isV2Security.value) {
+    if (!pwChangeConfirmOpen.value) {
+      pwChangeConfirmOpen.value = true;
+      return;
+    }
+    pwChangeConfirmOpen.value = false;
+  }
   pwChanging.value = true;
   pwChangeResult.value = isV2Security.value ? "正在保存…" : "正在重加密…";
   try {
@@ -407,6 +432,8 @@ const pw2ndNew = ref("");
 const pw2ndNewConfirm = ref("");
 const pw2ndBusy = ref(false);
 const pw2ndHint = ref("");
+// R4：启用/修改与清空独立密码均为安全敏感操作 → 应用内确认
+const pw2ndConfirm = ref<"" | "set" | "clear">("");
 async function refreshPw2ndEnabled() {
   try { pw2ndEnabled.value = await apiHasSecondPassword(); }
   catch { pw2ndEnabled.value = false; }
@@ -418,9 +445,11 @@ async function onSetPw2nd() {
   if (!pw2ndOld.value) { pw2ndHint.value = pw2ndEnabled.value ? "请输入旧的二次验证密码" : "请先输入当前主密码（用于验证身份）"; return; }
   if (pw2ndNew.value.length < 6) { pw2ndHint.value = "新二次验证密码至少 6 位"; return; }
   if (pw2ndNew.value !== pw2ndNewConfirm.value) { pw2ndHint.value = "两次新密码不一致"; return; }
-  if (!confirm(pw2ndEnabled.value
-    ? "将修改独立二次验证密码（≠主密码），确定吗？"
-    : "即将启用独立二次验证密码：\n· 启用后，查看/复制任何密码需再输它（主密码无效）\n· 它不能与主密码相同\n确定继续？")) return;
+  if (pw2ndConfirm.value !== "set") {
+    pw2ndConfirm.value = "set";
+    return;
+  }
+  pw2ndConfirm.value = "";
   pw2ndBusy.value = true; pw2ndHint.value = "";
   try {
     await changeSecondPassword(pw2ndOld.value, pw2ndNew.value);
@@ -435,7 +464,11 @@ async function onSetPw2nd() {
 async function onClearPw2nd() {
   if (!pw2ndBusy.value && pw2ndEnabled.value) {
     if (!pw2ndOld.value) { pw2ndHint.value = "请先输入当前二次验证密码（验证身份后才能关闭）"; return; }
-    if (!confirm("即将清空独立二次验证密码，改回「跟随主密码」。确定吗？")) return;
+    if (pw2ndConfirm.value !== "clear") {
+      pw2ndConfirm.value = "clear";
+      return;
+    }
+    pw2ndConfirm.value = "";
     pw2ndBusy.value = true; pw2ndHint.value = "";
     try {
       await changeSecondPassword(pw2ndOld.value, "");
@@ -450,6 +483,8 @@ async function onClearPw2nd() {
 }
 
 // ========== 🚨 紧急救援：密码解密失败时一键救回 ==========
+// R4：紧急救援为密码域高危操作 → 应用内确认
+const rescueConfirmOpen = ref(false);
 const rescuePw = reactive({
   oldMaster: "",
   busy: false,
@@ -459,13 +494,12 @@ const rescuePw = reactive({
 async function onRescuePasswords() {
   if (rescuePw.busy) return;
   if (!rescuePw.oldMaster) { rescuePw.hint = "请先输入当初加密这些密码时用的主密码"; return; }
-  if (!confirm(
-    "⚠️ 紧急救援说明：\n" +
-    "如果所有密码都显示「解密失败」（通常是改主密码/启用独立密码/换电脑导入后出现），\n" +
-    "请输入「当初创建/最后一次正常显示密码时用的主密码」，系统将尝试用它解密所有密码，\n" +
-    "然后用当前主密钥重新加密写回。\n\n" +
-    "继续吗？"
-  )) return;
+  if (!rescueConfirmOpen.value) {
+    rescueConfirmOpen.value = true;
+    return;
+  }
+  rescueConfirmOpen.value = false;
+
   rescuePw.busy = true; rescuePw.hint = ""; rescuePw.lastStats = null;
   try {
     const r = await rescuePasswordsWithMaster(rescuePw.oldMaster);
@@ -507,11 +541,19 @@ async function centerWindow() {
 }
 
 // ========== 图标诊断 ==========
+// R4：清空图标缓存为破坏性操作 → 应用内确认
+const iconClearConfirmOpen = ref(false);
+// R4：重启应用 → 应用内确认
+const restartConfirmOpen = ref(false);
 const iconBusy = ref(false);
 const lastIconResult = ref<string>("");
 async function onReextractIcons() {
   if (iconBusy.value) return;
-  if (!confirm("确定要清空所有图标缓存吗？\n（清空后抽屉柜会自动重新抽图，首次启动会慢 1-2 分钟）")) return;
+  if (!iconClearConfirmOpen.value) {
+    iconClearConfirmOpen.value = true;
+    return;
+  }
+  iconClearConfirmOpen.value = false;
   iconBusy.value = true; lastIconResult.value = "正在清空缓存…";
   try {
     const n = await softwareStore.refreshAllIcons({ forceClear: true });
@@ -523,7 +565,11 @@ async function onReextractIcons() {
 }
 async function onRestartApp() {
   if (iconBusy.value) return;
-  if (!confirm("确定要重启抽屉柜吗？\n（用于让 webview 重新加载新代码）")) return;
+  if (!restartConfirmOpen.value) {
+    restartConfirmOpen.value = true;
+    return;
+  }
+  restartConfirmOpen.value = false;
   iconBusy.value = true;
   try { await restartApp(); }
   catch (e) { lastIconResult.value = `✗ 重启失败：${e}`; iconBusy.value = false; }
@@ -699,14 +745,23 @@ onUnmounted(clearBackupSensitiveInputs);
 
 // ========== B3：危险操作 - 工厂还原 ==========
 // B3 防误触：① 勾选确认 → ② 必须输入「确认重置」四个字 → 按钮才可点
+// R4：工厂重置最终确认（应用内）
+const resetFinalConfirmOpen = ref(false);
+const resetError = ref("");
 const resetConfirmed = ref(false);
 const resetTypedText = ref("");
 const resetBusy = ref(false);
 const resetReady = computed(() => resetConfirmed.value && resetTypedText.value === "确认重置");
 async function onResetAllData() {
   if (!resetReady.value || resetBusy.value) return;
-  if (!confirm("最后确认：\n\n真的要删除所有数据并重启吗？\n\n操作一旦执行不可恢复！")) return;
+  // R4：最后确认改应用内组件（保留勾选 + 输四字 + 本确认的三重门）
+  if (!resetFinalConfirmOpen.value) {
+    resetFinalConfirmOpen.value = true;
+    return;
+  }
+  resetFinalConfirmOpen.value = false;
   resetBusy.value = true;
+  resetError.value = "";
   try {
     // Rust 端 factoryReset 会：① 清空内存密钥 ② 写 .factory_reset_pending 标记 ③ 立刻 restart_app(app) 强制重启
     // 下次启动时，setup() 会在 SQLite 打开之前先读到标记 → 100% 无句柄 → 物理删除 DB+WAL/SHM+icons → 进入首次设置向导
@@ -723,7 +778,7 @@ async function onResetAllData() {
     if (msg.includes("删除失败") || msg.includes("os error 32")) {
       msg = "重置执行失败：文件被占用。请关闭抽屉柜后，手动删除设置页「📂 数据存储位置」对应文件夹里的 drawer_box.db、drawer_box.db-wal、drawer_box.db-shm 三个文件和 icons/ 文件夹，再重新启动 App 即可进入首次设置向导。";
     }
-    alert(`✗ 重置失败：${msg}`);
+    resetError.value = "✗ 重置失败：" + msg; // R4：内联可见
     resetBusy.value = false;
   }
 }
@@ -874,6 +929,17 @@ onMounted(async () => {
           <button class="btn-secondary tap" @click="onOpenTrash" data-interactive>🗑️ 打开回收站</button>
           <button class="btn-secondary btn-warn tap" @click="onClearTrash" data-interactive>🧹 立即清空回收站</button>
         </div>
+        <ConfirmInline
+          v-if="clearTrashConfirmOpen"
+          title="确定要立即清空回收站吗？所有已删除项将被永久删除，不可恢复。"
+          confirm-text="立即清空"
+          :loading="trashActionBusy"
+          @cancel="clearTrashConfirmOpen = false"
+          @confirm="doClearTrash"
+        />
+        <p v-if="trashActionMsg" class="hint-inline" :class="{ 'hint-ok': trashActionMsg.startsWith('✓') || trashActionMsg.startsWith('已清空'), 'hint-err': trashActionMsg.startsWith('✗') || trashActionMsg.startsWith('清空失败') }">
+          {{ trashActionMsg.startsWith('✓') || trashActionMsg.startsWith('✗') ? trashActionMsg : (trashActionMsg.startsWith('已清空') ? '✓ ' + trashActionMsg : '✗ ' + trashActionMsg) }}
+        </p>
       </div>
     </section>
 
@@ -919,6 +985,13 @@ onMounted(async () => {
             {{ pwChanging ? (isV2Security ? "保存中…" : "重加密中…") : "🔐 修改主密码" }}
           </button>
         </div>
+        <ConfirmInline
+          v-if="pwChangeConfirmOpen"
+          title="修改主密码将重新加密所有密码和恢复短语（约 1-3 秒），确定继续吗？"
+          confirm-text="确认重加密"
+          @cancel="pwChangeConfirmOpen = false"
+          @confirm="onChangePassword"
+        />
         <p v-if="pwChangeResult" class="hint-inline" :class="{ 'hint-ok': pwChangeResult.startsWith('✓'), 'hint-err': pwChangeResult.startsWith('✗') }">
           {{ pwChangeResult }}
         </p>
@@ -1030,6 +1103,22 @@ onMounted(async () => {
             data-interactive
           >🗑️ 清空，改回跟随主密码</button>
         </div>
+        <ConfirmInline
+          v-if="pw2ndConfirm === 'set'"
+          :title="pw2ndEnabled
+            ? '将修改独立二次验证密码（≠主密码），确定继续吗？'
+            : '即将启用独立二次验证密码：启用后，查看/复制任何密码需再输它（主密码无效），且它不能与主密码相同。确定继续吗？'"
+          confirm-text="确认"
+          @cancel="pw2ndConfirm = ''"
+          @confirm="onSetPw2nd"
+        />
+        <ConfirmInline
+          v-if="pw2ndConfirm === 'clear'"
+          title="即将清空独立二次验证密码，改回「跟随主密码」。确定继续吗？"
+          confirm-text="确认清空"
+          @cancel="pw2ndConfirm = ''"
+          @confirm="onClearPw2nd"
+        />
 
         <p v-if="pw2ndHint" class="hint-inline" :class="{ 'hint-ok': pw2ndHint.startsWith('✓'), 'hint-err': pw2ndHint.startsWith('✗') }">
           {{ pw2ndHint }}
@@ -1063,6 +1152,13 @@ onMounted(async () => {
             {{ rescuePw.busy ? "救援中…" : "🚨 立刻救回我的密码" }}
           </button>
         </div>
+        <ConfirmInline
+          v-if="rescueConfirmOpen"
+          title="将用「当初加密时用的主密码」尝试解密所有密码，并用当前主密钥重新加密写回。确定继续吗？"
+          confirm-text="开始救援"
+          @cancel="rescueConfirmOpen = false"
+          @confirm="onRescuePasswords"
+        />
 
         <p v-if="rescuePw.lastStats" class="hint-inline" :class="rescuePw.lastStats.failed===0 ? 'hint-ok' : 'hint-err'" style="margin-top:12px;">
           <b>救援结果：</b> 共检查 <b>{{ rescuePw.lastStats.tried }}</b> 条，
@@ -1182,6 +1278,8 @@ onMounted(async () => {
         <!-- Phase 2C-3：更改数据存储位置（事务式迁移 C→D / D→E）。
              2C-4：移除 !migrationDone 门控——多级迁移/恢复默认（每级产生 retained archive）
              是 Data Root 生命周期的正式能力，横幅仍一次性展示。 -->
+        <p class="retained-error" v-if="migrationError">⚠️ {{ migrationError }}</p>
+        <p class="retained-error" v-if="restoreError && !restoreRunning">⚠️ {{ restoreError }}</p>
         <div class="migration-block" v-if="!migrationRunning">
           <button class="btn-mini tap" @click="migrationPick" data-interactive :disabled="migrationBusy">
             🚚 更改数据存储位置
@@ -1405,6 +1503,14 @@ onMounted(async () => {
             {{ resetBusy ? "重置中…（3秒后自动重启）" : (resetReady ? "🔴 确认：重置所有数据（不可恢复）" : "☑️ 请先勾选确认项并输入 4 个字") }}
           </button>
         </div>
+        <ConfirmInline
+          v-if="resetFinalConfirmOpen"
+          title="最后确认：真的要删除所有数据并重启吗？操作一旦执行不可恢复！"
+          confirm-text="确认重置所有数据"
+          @cancel="resetFinalConfirmOpen = false"
+          @confirm="onResetAllData"
+        />
+        <p v-if="resetError" class="hint-inline hint-err" style="white-space: pre-line;">{{ resetError }}</p>
       </div>
     </section>
 
@@ -1435,6 +1541,20 @@ onMounted(async () => {
           </button>
           <button class="btn-secondary" @click="onRestartApp" :disabled="iconBusy" data-interactive>🔄 重启应用</button>
         </div>
+        <ConfirmInline
+          v-if="iconClearConfirmOpen"
+          title="确定要清空所有图标缓存吗？清空后抽屉柜会自动重新抽图，首次启动会慢 1-2 分钟。"
+          confirm-text="确认清空重抽"
+          @cancel="iconClearConfirmOpen = false"
+          @confirm="onReextractIcons"
+        />
+        <ConfirmInline
+          v-if="restartConfirmOpen"
+          title="确定要重启抽屉柜吗？（用于让 webview 重新加载新代码）"
+          confirm-text="确认重启"
+          @cancel="restartConfirmOpen = false"
+          @confirm="onRestartApp"
+        />
         <p v-if="lastIconResult" class="hint-inline" :class="{ 'hint-ok': lastIconResult.startsWith('✓'), 'hint-err': lastIconResult.startsWith('✗') }">
           {{ lastIconResult }}
         </p>

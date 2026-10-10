@@ -833,6 +833,7 @@ impl Db {
                     kind_detail: row.get::<_, String>(2).unwrap_or_default(),
                     sub_detail: row.get::<_, String>(3).unwrap_or_default(),
                     deleted_at: row.get(4)?,
+                    expires_at: None,
                     source: "软件".to_string(),
                 })
             })?;
@@ -853,6 +854,7 @@ impl Db {
                     kind_detail: row.get::<_, String>(2).unwrap_or_default(),
                     sub_detail: row.get::<_, String>(3).unwrap_or_default(),
                     deleted_at: row.get(4)?,
+                    expires_at: None,
                     source: "密码".to_string(),
                 })
             })?;
@@ -873,6 +875,7 @@ impl Db {
                     kind_detail: row.get::<_, String>(2).unwrap_or_default(),
                     sub_detail: row.get::<_, String>(3).unwrap_or_default(),
                     deleted_at: row.get(4)?,
+                    expires_at: None,
                     source: "命令行".to_string(),
                 })
             })?;
@@ -882,7 +885,7 @@ impl Db {
         }
         {
             let mut stmt = conn.prepare(
-                "SELECT id, text, created_at, deleted_at FROM temp_contents WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC LIMIT 500"
+                "SELECT id, text, created_at, expires_at, deleted_at FROM temp_contents WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC LIMIT 500"
             )?;
             let rows = stmt.query_map([], |row| {
                 let text: String = row.get(1)?;
@@ -898,8 +901,9 @@ impl Db {
                     table_name: "temp_contents".to_string(), // ✅ 真实表名
                     kind_detail: String::new(),
                     sub_detail: String::new(),
-                    deleted_at: row.get(3)?,
+                    deleted_at: row.get(4)?,
                     source: "便签".to_string(),
+                    expires_at: Some(row.get(3)?),
                 })
             })?;
             for r in rows {
@@ -1135,7 +1139,87 @@ impl Db {
     /// 用远期时间戳而非 NULL / i64::MAX：不改表结构、旧数据零迁移，
     /// `expires_at > now` 列表过滤天然包含、`expires_at <= now` 清理天然排除，
     /// 排序/备份/恢复全部按普通整数兼容。
+    ///
+    /// 技术边界（v0.4.1）：
+    /// - 唯一合法的永久值 = 恰好等于本哨兵（写入入口全部收敛到校验助手）；
+    /// - 显示层用 `>= 哨兵` 判定属防御性兜底，正常数据不会出现哨兵与 i64::MAX 之间的值
+    ///   （`validate_renew_target` 拒绝超界日期，防止"UI 显示永久、实际会过期"）；
+    /// - 前端镜像常量 = `src/api/index.ts` 的 `TEMP_NEVER_EXPIRES_MS`，
+    ///   一致性由 `temp_edit_tests::t_te08_sentinel_matches_frontend_constant` 钉死。
     pub const TEMP_NEVER_EXPIRES_MS: i64 = 4_102_444_800_000;
+
+    /// 便签 TTL 合法上限：10 年（分钟）。UI 最大预设 30 天；上限确保
+    /// now + TTL 远小于永久哨兵（无显示歧义）且永不触及 i64 溢出。
+    pub const TEMP_MAX_TTL_MINUTES: i64 = 5_256_000;
+
+    /// 便签续期 add_ms 合法上限：10 年（毫秒）。
+    pub const TEMP_MAX_RENEW_ADD_MS: i64 = 315_360_000_000;
+
+    /// 创建便签：TTL（分钟）→ 绝对到期时间。
+    /// - ttl <= 0 = 永不过期（哨兵，唯一合法的永久写入路径）；
+    /// - ttl > TEMP_MAX_TTL_MINUTES = 可见错误（不静默截断为永久）；
+    /// - 合法范围用 checked 运算，杜绝整数溢出。
+    pub fn resolve_create_expiry(now: i64, ttl_minutes: i64) -> std::result::Result<i64, String> {
+        if ttl_minutes <= 0 {
+            return Ok(Self::TEMP_NEVER_EXPIRES_MS);
+        }
+        if ttl_minutes > Self::TEMP_MAX_TTL_MINUTES {
+            return Err(format!(
+                "保留时长超出支持范围（最长 {} 天）",
+                Self::TEMP_MAX_TTL_MINUTES / (24 * 60)
+            ));
+        }
+        let ms = ttl_minutes
+            .checked_mul(60 * 1000)
+            .ok_or_else(|| "保留时长溢出".to_string())?;
+        now.checked_add(ms)
+            .ok_or_else(|| "保留时长溢出".to_string())
+    }
+
+    /// 续期目标到期时间合法性：
+    /// - 恰好等于永久哨兵 = 合法（永不过期）；
+    /// - 大于哨兵 = 拒绝（该日期会被 UI 按"永久"显示但实际会过期 → 歧义）；
+    /// - 小于等于 now = 拒绝。
+    pub fn validate_renew_target(now: i64, set_expires_at: i64) -> std::result::Result<(), String> {
+        if set_expires_at == Self::TEMP_NEVER_EXPIRES_MS {
+            return Ok(());
+        }
+        if set_expires_at > Self::TEMP_NEVER_EXPIRES_MS {
+            return Err(
+                "到期时间超出支持范围（最晚 2099-12-31）；如需永久请直接选择「永不过期」"
+                    .to_string(),
+            );
+        }
+        if set_expires_at <= now {
+            return Err("目标到期时间必须晚于当前时间".to_string());
+        }
+        Ok(())
+    }
+
+    /// 续期 add_ms 合法性：必须为正且不超过 TEMP_MAX_RENEW_ADD_MS。
+    pub fn validate_renew_add(add_ms: i64) -> std::result::Result<(), String> {
+        if add_ms <= 0 {
+            return Err("延长时长必须大于 0".to_string());
+        }
+        if add_ms > Self::TEMP_MAX_RENEW_ADD_MS {
+            return Err(format!(
+                "单次延长不超过 {} 天",
+                Self::TEMP_MAX_RENEW_ADD_MS / (24 * 60 * 60 * 1000)
+            ));
+        }
+        Ok(())
+    }
+
+    /// 读取便签当前到期时间（未软删行）；None = 不存在或已进回收站。
+    pub fn get_temp_expires(&self, id: i64) -> Result<Option<i64>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT expires_at FROM temp_contents WHERE id = ?1 AND deleted_at IS NULL",
+            params![id],
+            |r| r.get(0),
+        )
+        .optional()
+    }
 
     /// 编辑便签内容（只改 text，绝不动 expires_at —— 用户反馈：仅编辑内容不得自动重置到期时间）
     pub fn update_temp_text(&self, id: i64, text: &str) -> Result<usize> {
@@ -1146,39 +1230,66 @@ impl Db {
         )
     }
 
-    /// 续期便签：`add_ms`（在现有到期时间上延长）或 `set_expires_at`
-    /// （直接设定绝对到期时间，可为 TEMP_NEVER_EXPIRES_MS=永久）二选一。
-    /// 返回受影响行数（0 = 不存在或已进回收站）。
+    /// 续期便签（R1 收紧后的唯一实现，命令层只做参数透传）：
+    /// - `add_ms`（在现有到期时间上延长）或 `set_expires_at`（绝对时间，
+    ///   可为 TEMP_NEVER_EXPIRES_MS=永久）二选一；
+    /// - 永久便签 + add_ms → 明确错误（不累加哨兵时间）；
+    /// - 目标时间非法（过去 / 超过哨兵）→ 明确错误；
+    /// - 返回续期后的新到期时间；错误一律 fail visible。
     pub fn renew_temp(
         &self,
         id: i64,
+        now: i64,
         add_ms: Option<i64>,
         set_expires_at: Option<i64>,
-    ) -> Result<usize> {
-        let conn = self.conn.lock().unwrap();
-        let target: Option<i64> = if let Some(ms) = add_ms {
-            let cur: Option<i64> = conn
-                .query_row(
-                    "SELECT expires_at FROM temp_contents WHERE id = ?1 AND deleted_at IS NULL",
-                    params![id],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            match cur {
-                Some(cur) => Some(cur.saturating_add(ms)),
-                // 便签不存在 / 已删除：返回 0 行，由调用方 fail visible
-                None => return Ok(0),
+    ) -> std::result::Result<i64, String> {
+        if add_ms.is_some() == set_expires_at.is_some() {
+            return Err("add_ms 与 set_expires_at 必须二选一".to_string());
+        }
+        if let Some(ms) = add_ms {
+            Self::validate_renew_add(ms)?;
+        }
+        if let Some(t) = set_expires_at {
+            Self::validate_renew_target(now, t)?;
+        }
+        let cur = self
+            .get_temp_expires(id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "便签不存在或已删除".to_string())?;
+        let target: i64 = if let Some(ms) = add_ms {
+            if cur >= Self::TEMP_NEVER_EXPIRES_MS {
+                return Err(
+                    "该便签已永不过期，无需延长；如需改为限时，请选择自定义到期时间".to_string(),
+                );
             }
+            cur.checked_add(ms)
+                .ok_or_else(|| "延长后时间溢出".to_string())?
         } else {
-            set_expires_at
+            // unwrap 安全：上方互斥校验已保证 Some 分支
+            set_expires_at.unwrap()
         };
-        let target = match target {
-            Some(t) => t,
-            None => return Ok(0),
-        };
+        let conn = self.conn.lock().unwrap();
+        let n = conn
+            .execute(
+                "UPDATE temp_contents SET expires_at = ?1 WHERE id = ?2 AND deleted_at IS NULL",
+                params![target, id],
+            )
+            .map_err(|e| e.to_string())?;
+        if n == 0 {
+            return Err("便签不存在或已删除".to_string());
+        }
+        Ok(target)
+    }
+
+    /// 恢复回收站中的（过期）便签并同时设定新的有效到期时间（单条 UPDATE，原子）。
+    /// 仅作用于软删除行；返回受影响行数（0 = 不存在或不在回收站）。
+    /// 修复"恢复成功但便签区不可见"的虚假成功：恢复与新到期时间同事务语义落库。
+    pub fn restore_temp_with_expiry(&self, id: i64, expires_at: i64) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
         conn.execute(
-            "UPDATE temp_contents SET expires_at = ?1 WHERE id = ?2 AND deleted_at IS NULL",
-            params![target, id],
+            "UPDATE temp_contents SET deleted_at = NULL, expires_at = ?1
+             WHERE id = ?2 AND deleted_at IS NOT NULL",
+            params![expires_at, id],
         )
     }
 }
@@ -1304,6 +1415,9 @@ pub struct TrashItem {
     pub sub_detail: String, // app_subtype / url / tags
     pub deleted_at: i64,    // ms timestamp
     pub source: String,     // "软件" / "密码" / "命令行" / "便签"
+    /// 便签条目专有：到期时间（R6 过期恢复判定用）；其他类型为 None
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<i64>,
 }
 
 /// 初始化数据库（兼容旧 API）

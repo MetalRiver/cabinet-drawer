@@ -188,6 +188,28 @@ export const useWidgetStore = defineStore("widget", () => {
     }
   }
 
+  // ===== R5：持久化写队列（每 key 串行）=====
+  // 不假设 watch 异步回调与 Tauri IPC 天然串行：同步命令可能被线程池乱序执行，
+  // 旧值可能在"新值之后"落库。每 key 维护一条 Promise 链——按调用顺序入队，
+  // 后选择的值一定最后落盘；旧写入失败只可见报错，不回滚、不阻断新值写入。
+  const saveQueues = new Map<string, Promise<void>>();
+  function enqueueSave(key: string, value: string, label: string) {
+    const prev = saveQueues.get(key) ?? Promise.resolve();
+    const next = prev.then(async () => {
+      try {
+        await saveWidgetConfig(key, value);
+      } catch (e) {
+        reportSaveError(label, e);
+      }
+    });
+    // rejection 已在上面可见化，这里吞掉防止 unhandled rejection
+    saveQueues.set(key, next.catch(() => {}));
+  }
+  /** 仅供隔离测试使用：清空保存队列 */
+  function _testResetSaveQueues() {
+    saveQueues.clear();
+  }
+
   /** 已停用：贴边自动收起 Win32 钩子存在卡死问题，此函数保留仅作向后兼容空操作 */
   async function setAutoHide(_v: boolean) {
     console.warn("[widgetStore] setAutoHide 已停用，功能 v2.0 重写后回归");
@@ -203,7 +225,7 @@ export const useWidgetStore = defineStore("widget", () => {
     alwaysOnTop.value = next;
     try {
       await setAlwaysOnTop(next);
-      await saveWidgetConfig("always_on_top", String(next));
+      enqueueSave("always_on_top", String(next), "窗口置顶");
     } catch (e) {
       // 回滚 UI 与窗口实际状态，不假装成功
       alwaysOnTop.value = !next;
@@ -214,44 +236,51 @@ export const useWidgetStore = defineStore("widget", () => {
 
   async function setAutoLockMinutes(m: number) {
     autoLockMinutes.value = m;
-    try {
-      await saveWidgetConfig("auto_lock_minutes", String(m));
-    } catch (e) {
-      reportSaveError("闲置自动锁定", e);
-    }
+    enqueueSave("auto_lock_minutes", String(m), "闲置自动锁定");
   }
 
   async function setClipboardClearSeconds(s: number) {
     clipboardClearSeconds.value = s;
-    try {
-      await saveWidgetConfig("clipboard_clear_seconds", String(s));
-    } catch (e) {
-      reportSaveError("剪贴板自动清除", e);
-    }
+    enqueueSave("clipboard_clear_seconds", String(s), "剪贴板自动清除");
   }
 
   async function setTempExpireDays(d: number) {
     tempExpireDays.value = d;
-    try {
-      await saveWidgetConfig("temp_expire_days", String(d));
-    } catch (e) {
-      reportSaveError("便签默认过期", e);
-    }
+    enqueueSave("temp_expire_days", String(d), "便签默认过期");
+  }
+
+  // ===== R3：几何隔离 =====
+  // 迷你/完整两套几何（完整 = widget.x/y/width/height，迷你 = widget.mini_x/mini_y）。
+  // 切换期间抑制几何保存：tauri://move、resize、拖拽结束等事件不得污染几何快照。
+  const geometryTransition = ref(false);
+  let geometryTransitionTimer: number | null = null;
+  function beginGeometryTransition() {
+    geometryTransition.value = true;
+    if (geometryTransitionTimer) clearTimeout(geometryTransitionTimer);
+    geometryTransitionTimer = window.setTimeout(() => {
+      geometryTransition.value = false;
+    }, 800); // > MainLayout 500ms move-debounce 窗口，留余量
   }
 
   /**
-   * 切换迷你模式（极简图标列）
-   * - 切到迷你：56×320 垂直条
-   * - 切回完整：380×560
+   * 切换迷你模式（极简图标列；R3 几何隔离）
+   * - 迷你：后端解除 min 约束 + 逻辑 64×360 + 独立迷你位置；完整几何快照不动
+   * - 完整：后端恢复 min 约束 + 用户原有完整几何（保存过才设置，缺省保持当前值）
+   * - mini_mode 不持久化：重启/Alt+Q 呼出恒为完整模式（产品约定），完整几何由
+   *   apply_widget_config 在启动时恢复
    */
   async function toggleMiniMode() {
     const next = !miniMode.value;
     miniMode.value = next;
-    await setMiniModeWithPos(next);
-    // 注意：mini_mode 已不再持久化（init() 里不读取），启动默认永远是完整版，保证 Alt+Q 弹出就是完整卡片
-    // 迷你模式仅在本次会话内生效，重启后归位
-    if (next) {
-      clickThrough.value = false; // 关闭全局穿透，由前端按区域控制
+    beginGeometryTransition();
+    try {
+      await setMiniModeWithPos(next);
+    } catch (e) {
+      console.warn("[widgetStore] 迷你模式切换失败", e);
+    } finally {
+      if (next) {
+        clickThrough.value = false; // 关闭全局穿透，由前端按区域控制
+      }
     }
   }
 
@@ -262,7 +291,7 @@ export const useWidgetStore = defineStore("widget", () => {
     const next = !clickThrough.value;
     clickThrough.value = next;
     await setIgnoreCursorEvents(next);
-    await saveWidgetConfig("click_through", String(next));
+    enqueueSave("click_through", String(next), "鼠标穿透");
   }
 
   // 导入备份后整体刷新：重新读取 settings widget.* 配置（包括 autoLock/tempExpire/alwaysOnTop 等全局偏好）
@@ -312,13 +341,22 @@ export const useWidgetStore = defineStore("widget", () => {
     await doSavePosition();
   }
   async function doSavePosition() {
+    // R3：迷你/完整切换期间不保存——切换过程的 move/resize 事件不得污染几何快照
+    if (geometryTransition.value) return;
     try {
       const [x, y] = await getWindowPosition();
-      const [w, h] = await getWindowSize();
-      await saveWidgetConfig("x", String(x));
-      await saveWidgetConfig("y", String(y));
-      await saveWidgetConfig("width", String(w));
-      await saveWidgetConfig("height", String(h));
+      if (miniMode.value) {
+        // R3：迷你态只记独立迷你位置（widget.mini_x/mini_y），
+        // 尺寸固定 64×360（逻辑px）无需保存，完整几何快照保持不变
+        enqueueSave("mini_x", String(x), "迷你位置");
+        enqueueSave("mini_y", String(y), "迷你位置");
+      } else {
+        const [w, h] = await getWindowSize();
+        enqueueSave("x", String(x), "窗口位置");
+        enqueueSave("y", String(y), "窗口位置");
+        enqueueSave("width", String(w), "窗口尺寸");
+        enqueueSave("height", String(h), "窗口尺寸");
+      }
     } catch (e) {
       console.warn("保存位置失败", e);
     }
@@ -495,10 +533,10 @@ export const useWidgetStore = defineStore("widget", () => {
           try {
             const [x, y] = await getWindowPosition();
             const [w, h] = await getWindowSize();
-            await saveWidgetConfig("x", String(x));
-            await saveWidgetConfig("y", String(y));
-            await saveWidgetConfig("width", String(w));
-            await saveWidgetConfig("height", String(h));
+            enqueueSave("x", String(x), "窗口位置");
+            enqueueSave("y", String(y), "窗口位置");
+            enqueueSave("width", String(w), "窗口尺寸");
+            enqueueSave("height", String(h), "窗口尺寸");
           } catch (e) {
             console.warn("[applyPresetPosition] remember 持久化失败", e);
           }
@@ -507,8 +545,8 @@ export const useWidgetStore = defineStore("widget", () => {
       // 修复 P0-#X：tweenPosition 会 rAF 每帧 IPC。
       // 现在直接 setWindowPosition 一次到位（无动画），让 Rust 端 SetTimer 接管后续贴边自动隐藏
       await setWindowPosition(targetX, targetY);
-      await saveWidgetConfig("x", String(targetX));
-      await saveWidgetConfig("y", String(targetY));
+      enqueueSave("x", String(targetX), "窗口位置");
+      enqueueSave("y", String(targetY), "窗口位置");
       // 注意：不再调 scheduleCheckEdgeProximity —— Rust 端 WndProc 自己会监听 WM_WINDOWPOSCHANGING
     } catch (e) {
       console.warn("应用预设位置失败", e);
@@ -526,7 +564,8 @@ export const useWidgetStore = defineStore("widget", () => {
       // 不再持久化 mini_mode，下次启动默认完整
       // 用户在本会话内可自由切换迷你模式，重启后归位
     }
-    // 总是强制调后端 setSize 恢复完整模式尺寸（后端尺寸可能因自动隐藏等被改过）
+    // R3：恢复 min 约束 + 用户原有完整几何（后端处理），切换期间抑制几何保存
+    beginGeometryTransition();
     try {
       await setMiniModeWithPos(false);
     } catch {}
@@ -552,6 +591,7 @@ export const useWidgetStore = defineStore("widget", () => {
     setTempExpireDays,
     toggleMiniMode,
     toggleClickThrough,
+    _testResetSaveQueues,
     setClickThroughForHover,
     scheduleSavePosition,
     savePositionNow,

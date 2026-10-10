@@ -1960,6 +1960,7 @@ pub fn run() {
             cleanup_expired_temp,
             update_temp_text,
             renew_temp,
+            restore_temp_expired,
             // 回收站（P0-#T）
             list_trash,
             restore_from_trash,

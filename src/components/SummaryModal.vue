@@ -3,7 +3,7 @@ import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useAppStore } from "../stores/app";
 import { useTempStore } from "../stores/temp";
 import { useWidgetStore } from "../stores/widget";
-import { copyToClipboardWithTimeout } from "../api";
+import { copyToClipboardWithTimeout, isTempPermanent } from "../api";
 
 const appStore = useAppStore();
 const tempStore = useTempStore();
@@ -44,6 +44,9 @@ function fmtDateTime(ts: number): string {
 }
 
 function fmtRemaining(expires: number): string {
+  // R1：永久便签统一走 isTempPermanent 判定（与列表/编辑/续期同一语义），
+  // 旧实现硬编码剩余时间格式化会把永久便签显示成"剩余 73000+ 天"
+  if (isTempPermanent(expires)) return "永久";
   const diff = expires - now.value;
   if (diff <= 0) return "已过期";
   const sec = Math.floor(diff / 1000);
@@ -60,10 +63,13 @@ function fmtRemaining(expires: number): string {
 const summaryText = computed(() => {
   if (sortedItems.value.length === 0) return "（暂无便签）";
   return sortedItems.value
-    .map(
-      (it, i) =>
-        `[${i + 1}] ${fmtDateTime(it.created_at)}  ${it.text}  ⏱ 剩余 ${fmtRemaining(it.expires_at)}`
-    )
+    .map((it, i) => {
+      // R1：永久便签不拼"剩余"前缀，与限时便签同一判定源
+      const time = isTempPermanent(it.expires_at)
+        ? "⏱ 永久"
+        : `⏱ 剩余 ${fmtRemaining(it.expires_at)}`;
+      return `[${i + 1}] ${fmtDateTime(it.created_at)}  ${it.text}  ${time}`;
+    })
     .join("\n");
 });
 

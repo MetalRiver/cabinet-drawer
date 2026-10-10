@@ -168,24 +168,32 @@ pub fn set_ignore_cursor_events(window: Window, ignore: bool) -> Result<(), Stri
 }
 
 // ============================================================
-// 🪟 切换迷你模式（极简图标列 64×360 / 默认 480×720）
+// 🪟 切换迷你模式（极简图标列 64×360 逻辑像素 / 默认 480×720）
+// R3：进入迷你前解除最小尺寸约束（64 < minWidth 320 逻辑px，否则会被钳制），
+//     尺寸用逻辑像素保证不同 DPI 下迷你列视觉一致。
 // ============================================================
 #[tauri::command]
 pub fn set_mini_mode(window: Window, mini: bool) -> Result<(), String> {
     if mini {
-        window
-            .set_size(tauri::PhysicalSize::new(64, 360))
-            .map_err(|e| e.to_string())?;
+        let _ = window.set_min_size::<tauri::LogicalSize<f64>>(None);
+        let _ = window.set_size(tauri::LogicalSize::new(64.0, 360.0));
     } else {
-        window
-            .set_size(tauri::PhysicalSize::new(480, 720))
-            .map_err(|e| e.to_string())?;
+        let _ = window.set_min_size(Some(tauri::LogicalSize::new(320.0, 400.0)));
+        let _ = window.set_size(tauri::LogicalSize::new(480.0, 720.0));
     }
     Ok(())
 }
 
 // ============================================================
-// 🪟 迷你模式 + 同步位置（保持原 X，迷你时往下偏移 140）
+// 🪟 迷你模式 + 几何隔离（R3，v0.4.1 D-Repair）
+//
+// 状态迁移规则（完整模式几何 = widget.x/y/width/height，迷你几何 = widget.mini_x/mini_y）：
+// - 进入迷你：解除 min 约束 → 逻辑 64×360 → 位置取独立保存的迷你位置，
+//   无记录时回退 完整位置下方 140px（兼容旧版行为）；【不写完整几何】
+// - 退出迷你：先恢复 min 约束（320×400 逻辑px，与 tauri.conf.json 对齐）
+//   → 恢复用户原有完整几何（保存过的位置+尺寸；缺省项保持当前值），【不强制默认值】
+// - 前端在切换期间抑制几何保存（geometryTransition），move/resize 事件不污染配置；
+//   迷你态下的移动由前端路由到 widget.mini_x/mini_y，同样不触碰完整几何快照。
 // ============================================================
 #[tauri::command]
 pub fn set_mini_mode_with_pos(
@@ -196,29 +204,45 @@ pub fn set_mini_mode_with_pos(
     // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
     let _data_gate = state.data_read()?;
 
-    let (x, y) = {
+    // 统一读取设置（缺省 None，不瞎填默认位置）
+    let read_setting = |key: &str| -> Option<i32> {
         let db = state.db.lock().unwrap();
-        let x = db
-            .get_setting("widget.x")
+        db.get_setting(key)
             .ok()
             .flatten()
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(100.0) as i32;
-        let y = db
-            .get_setting("widget.y")
-            .ok()
-            .flatten()
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(100.0) as i32;
-        (x, y)
+            .and_then(|s| s.parse::<i32>().ok())
     };
 
     if mini {
-        let _ = window.set_size(tauri::PhysicalSize::new(64, 360));
-        let _ = window.set_position(tauri::PhysicalPosition::new(x, y + 140));
+        // ① 先解除最小尺寸约束，再缩小（64×360 逻辑px 低于 minWidth 320）
+        let _ = window.set_min_size::<tauri::LogicalSize<f64>>(None);
+        let _ = window.set_size(tauri::LogicalSize::new(64.0, 360.0));
+        // ② 位置：优先独立迷你位置；无记录回退完整位置下方 140px（旧行为）
+        let (mx, my) = (read_setting("widget.mini_x"), read_setting("widget.mini_y"));
+        let (x, y) = match (mx, my) {
+            (Some(x), Some(y)) => (x, y),
+            _ => {
+                let fx = read_setting("widget.x").unwrap_or(100);
+                let fy = read_setting("widget.y").unwrap_or(100);
+                (fx, fy + 140)
+            }
+        };
+        let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
     } else {
-        // 关键修复：完整模式只 setSize，不改位置（否则会"跳回最初位置"）
-        let _ = window.set_size(tauri::PhysicalSize::new(480, 720));
+        // ① 先恢复 min 约束（逻辑 320×400，与 tauri.conf.json 对齐）
+        let _ = window.set_min_size(Some(tauri::LogicalSize::new(320.0, 400.0)));
+        // ② 恢复用户原有完整几何：有保存值才设置，缺省项保持当前值（不强制默认）
+        let (x, y) = (read_setting("widget.x"), read_setting("widget.y"));
+        if let (Some(x), Some(y)) = (x, y) {
+            let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
+        }
+        let (w, h) = (read_setting("widget.width"), read_setting("widget.height"));
+        if let (Some(w), Some(h)) = (w, h) {
+            // 尺寸下限与 min 约束一致（物理像素下限按 100% 基准，多余部分由窗口管理器兜底）
+            let w = w.max(320) as f64;
+            let h = h.max(400) as f64;
+            let _ = window.set_size(tauri::PhysicalSize::new(w as u32, h as u32));
+        }
     }
     Ok(())
 }
