@@ -1,5 +1,5 @@
 import { defineStore } from "pinia";
-import { ref } from "vue";
+import { ref, computed } from "vue";
 import {
   loadWidgetConfig,
   saveWidgetConfig,
@@ -82,6 +82,9 @@ export const useWidgetStore = defineStore("widget", () => {
 
       const ct = await loadWidgetConfig("click_through");
       if (ct === "true") clickThrough.value = true;
+
+      // 记忆位置（独立坐标，Settings UI V2）
+      await loadMemoryPosition();
     } catch (e) {
       console.warn("加载 widget 配置失败", e);
     } finally {
@@ -497,60 +500,95 @@ export const useWidgetStore = defineStore("widget", () => {
   void cancelAutoHide;
   void AUTO_REVEAL_DIST;
 
-  // ===== 预设位置 =====
-  type Preset = "center" | "top-left" | "top-right" | "bottom-left" | "bottom-right" | "remember";
+  // ===== 预设位置（Settings UI V2：完整九宫格，全部为纯位置动作，不改尺寸）=====
+  type Preset =
+    | "top-left" | "top-center" | "top-right"
+    | "middle-left" | "center" | "middle-right"
+    | "bottom-left" | "bottom-center" | "bottom-right";
   const PRESET_MARGIN = 24;
 
-  async function applyPresetPosition(preset: Preset) {
-    try {
-      const [w, h] = await getWindowSize();
-      const sw = window.screen.width;
-      const sh = window.screen.height;
-      let targetX = 0;
-      let targetY = 0;
-      switch (preset) {
-        case "center":
-          targetX = Math.round((sw - w) / 2);
-          targetY = Math.round((sh - h) / 2);
-          break;
-        case "top-left":
-          targetX = PRESET_MARGIN;
-          targetY = PRESET_MARGIN;
-          break;
-        case "top-right":
-          targetX = sw - w - PRESET_MARGIN;
-          targetY = PRESET_MARGIN;
-          break;
-        case "bottom-left":
-          targetX = PRESET_MARGIN;
-          targetY = sh - h - PRESET_MARGIN;
-          break;
-        case "bottom-right":
-          targetX = sw - w - PRESET_MARGIN;
-          targetY = sh - h - PRESET_MARGIN;
-          break;
-        case "remember":
-          try {
-            const [x, y] = await getWindowPosition();
-            const [w, h] = await getWindowSize();
-            enqueueSave("x", String(x), "窗口位置");
-            enqueueSave("y", String(y), "窗口位置");
-            enqueueSave("width", String(w), "窗口尺寸");
-            enqueueSave("height", String(h), "窗口尺寸");
-          } catch (e) {
-            console.warn("[applyPresetPosition] remember 持久化失败", e);
-          }
-          return;
-      }
-      // 修复 P0-#X：tweenPosition 会 rAF 每帧 IPC。
-      // 现在直接 setWindowPosition 一次到位（无动画），让 Rust 端 SetTimer 接管后续贴边自动隐藏
-      await setWindowPosition(targetX, targetY);
-      enqueueSave("x", String(targetX), "窗口位置");
-      enqueueSave("y", String(targetY), "窗口位置");
-      // 注意：不再调 scheduleCheckEdgeProximity —— Rust 端 WndProc 自己会监听 WM_WINDOWPOSCHANGING
-    } catch (e) {
-      console.warn("应用预设位置失败", e);
+  /**
+   * 应用九宫格预设位置。
+   * - 基于 Windows 显示器**工作区域**（availWidth/availHeight，已扣除任务栏）；
+   * - CSS 逻辑像素 × devicePixelRatio → 物理像素，与 set_window_position
+   *   的 PhysicalPosition 对齐（125%/150% 缩放下不再偏移）；
+   * - 绝不修改窗口尺寸（历史缺陷：旧"重置到右上角/居中"会 setWindowSize 重置尺寸）；
+   * - 成功后同步持久化 x/y（完整几何快照的一部分，与记忆坐标无关）。
+   */
+  async function applyPresetPosition(preset: Preset): Promise<{ x: number; y: number }> {
+    const [w, h] = await getWindowSize();
+    // 工作区域（逻辑 px）：优先 availWidth/availHeight（扣除任务栏），异常回退全屏
+    const aw = window.screen.availWidth || window.screen.width;
+    const ah = window.screen.availHeight || window.screen.height;
+    let lx = 0;
+    let ly = 0;
+    switch (preset) {
+      case "center":
+        lx = Math.round((aw - w) / 2);
+        ly = Math.round((ah - h) / 2);
+        break;
+      case "top-left":      lx = PRESET_MARGIN;             ly = PRESET_MARGIN;             break;
+      case "top-center":    lx = Math.round((aw - w) / 2);  ly = PRESET_MARGIN;             break;
+      case "top-right":     lx = aw - w - PRESET_MARGIN;    ly = PRESET_MARGIN;             break;
+      case "middle-left":   lx = PRESET_MARGIN;             ly = Math.round((ah - h) / 2);  break;
+      case "middle-right":  lx = aw - w - PRESET_MARGIN;    ly = Math.round((ah - h) / 2);  break;
+      case "bottom-left":   lx = PRESET_MARGIN;             ly = ah - h - PRESET_MARGIN;    break;
+      case "bottom-center": lx = Math.round((aw - w) / 2);  ly = ah - h - PRESET_MARGIN;    break;
+      case "bottom-right":  lx = aw - w - PRESET_MARGIN;    ly = ah - h - PRESET_MARGIN;    break;
     }
+    // 边界保护：负值/越界拉回工作区内
+    lx = Math.max(0, Math.min(lx, Math.max(0, aw - w)));
+    ly = Math.max(0, Math.min(ly, Math.max(0, ah - h)));
+    // 逻辑 → 物理（set_window_position 是 PhysicalPosition）
+    const dpr = window.devicePixelRatio || 1;
+    const px = Math.round(lx * dpr);
+    const py = Math.round(ly * dpr);
+    await setWindowPosition(px, py);
+    enqueueSave("x", String(px), "窗口位置");
+    enqueueSave("y", String(py), "窗口位置");
+    return { x: px, y: py };
+  }
+
+  // ===== 记忆位置（Settings UI V2：独立坐标，不与自动几何快照混用）=====
+  // 保存当前位置 = 用户显式动作，写入 widget.mem_x/mem_y；
+  // 回到记忆位置 = 仅移动窗口（不改尺寸），未保存过时可见提示。
+  const memoryX = ref<number | null>(null);
+  const memoryY = ref<number | null>(null);
+  const memoryLabel = computed(() =>
+    memoryX.value === null || memoryY.value === null ? "未保存" : `已记忆 ${memoryX.value}, ${memoryY.value}`
+  );
+
+  async function loadMemoryPosition() {
+    try {
+      const [x, y] = await Promise.all([
+        loadWidgetConfig("mem_x"),
+        loadWidgetConfig("mem_y"),
+      ]);
+      memoryX.value = x === null || x === undefined ? null : Number(x);
+      memoryY.value = y === null || y === undefined ? null : Number(y);
+      if (!Number.isFinite(memoryX.value!) || !Number.isFinite(memoryY.value!)) {
+        memoryX.value = null;
+        memoryY.value = null;
+      }
+    } catch (e) {
+      console.warn("读取记忆位置失败", e);
+    }
+  }
+
+  async function saveMemoryPosition(): Promise<void> {
+    const [x, y] = await getWindowPosition();
+    enqueueSave("mem_x", String(x), "记忆位置");
+    enqueueSave("mem_y", String(y), "记忆位置");
+    memoryX.value = x;
+    memoryY.value = y;
+  }
+
+  async function restoreMemoryPosition(): Promise<void> {
+    if (memoryX.value === null || memoryY.value === null) {
+      throw new Error("还没有保存过记忆位置：先点「保存当前位置」");
+    }
+    // 仅移动位置，不改窗口尺寸
+    await setWindowPosition(memoryX.value, memoryY.value);
   }
 
   /**
@@ -607,5 +645,11 @@ export const useWidgetStore = defineStore("widget", () => {
     stopEdgePolling,
     applyPresetPosition,
     forceExpand,
+    memoryX,
+    memoryY,
+    memoryLabel,
+    loadMemoryPosition,
+    saveMemoryPosition,
+    restoreMemoryPosition,
   };
 });

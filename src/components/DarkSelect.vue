@@ -1,3 +1,11 @@
+<script lang="ts">
+// 类型独立导出（script setup 不能 export 类型）
+export interface DarkSelectOption<T extends string | number = string | number> {
+  value: T;
+  label: string;
+}
+</script>
+
 <script setup lang="ts" generic="T extends string | number">
 // ===== DarkSelect：深色主题下拉选择（v0.4.1）=====
 // 背景：Windows WebView2 原生 <select> 弹出层是系统浅色样式，与深色主题冲突
@@ -7,11 +15,6 @@
 // Teleport 到 body（不受父容器 overflow 裁切）/ 长列表滚动 / 点击外部关闭。
 
 import { computed, nextTick, onBeforeUnmount, ref, useId, watch } from "vue";
-
-export interface DarkSelectOption<T extends string | number> {
-  value: T;
-  label: string;
-}
 
 const props = withDefaults(
   defineProps<{
