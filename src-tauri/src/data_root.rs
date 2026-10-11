@@ -3330,6 +3330,22 @@ mod tests {
 /// 设计目标：双击即用的独立验收版——与正式版完全隔离（独立数据库/配置/单实例标识
 /// 由验收构建的 identifier=com.drawer-box.acceptance 另行保证），删除整个文件夹即完成卸载。
 /// 正式版不存在该标记文件，行为零变化。
+// 发布门禁加固（v0.4.1）：测试数据根重定向为 **构建级隔离** ——
+// 正式构建（无 test-edition feature）中该函数被编译期替换为恒 None，
+// marker 文件即使存在也不会重定向数据根；测试命令同样以可见报错桩编译。
+
+/// 当前进程是否为便携测试版（前端"测试版"徽章依据）
+#[cfg(feature = "test-edition")]
+pub fn is_portable_test_edition() -> bool {
+    portable_test_root().is_some()
+}
+
+#[cfg(not(feature = "test-edition"))]
+pub fn is_portable_test_edition() -> bool {
+    false
+}
+
+#[cfg(feature = "test-edition")]
 pub fn portable_test_root() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
@@ -3339,9 +3355,9 @@ pub fn portable_test_root() -> Option<PathBuf> {
     Some(dir.join("drawer-test-data"))
 }
 
-/// 当前进程是否为便携测试版（前端"测试版"徽章依据）
-pub fn is_portable_test_edition() -> bool {
-    portable_test_root().is_some()
+#[cfg(not(feature = "test-edition"))]
+pub fn portable_test_root() -> Option<PathBuf> {
+    None
 }
 
 pub fn effective_config_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -3351,6 +3367,7 @@ pub fn effective_config_root(app: &tauri::AppHandle) -> Result<PathBuf, String> 
             return Ok(PathBuf::from(dir));
         }
     }
+    #[cfg(feature = "test-edition")]
     if let Some(dir) = portable_test_root() {
         return Ok(dir);
     }

@@ -34,61 +34,27 @@ const EXPECTED_COLUMNS: [(&str, &[&str]); 7] = [
     (
         "passwords",
         &[
-            "id",
-            "record_uuid",
-            "title",
-            "username",
-            "password",
-            "url",
-            "notes",
-            "created_at",
-            "updated_at",
-            "use_count",
-            "last_used_at",
-            "deleted_at",
+            "id", "record_uuid", "title", "username", "password", "url", "notes",
+            "created_at", "updated_at", "use_count", "last_used_at", "deleted_at",
         ],
     ),
     ("app_categories", &["id", "name", "icon", "sort_order"]),
     (
         "apps",
         &[
-            "id",
-            "name",
-            "path",
-            "icon_path",
-            "args",
-            "category_id",
-            "created_at",
-            "use_count",
-            "last_used_at",
-            "app_type",
-            "app_subtype",
-            "deleted_at",
+            "id", "name", "path", "icon_path", "args", "category_id", "created_at",
+            "use_count", "last_used_at", "app_type", "app_subtype", "deleted_at",
         ],
     ),
     (
         "snippets",
         &[
-            "id",
-            "title",
-            "content",
-            "language",
-            "tags",
-            "created_at",
-            "updated_at",
-            "use_count",
-            "last_used_at",
-            "deleted_at",
+            "id", "title", "content", "language", "tags", "created_at", "updated_at",
+            "use_count", "last_used_at", "deleted_at",
         ],
     ),
-    (
-        "temp_contents",
-        &["id", "text", "created_at", "expires_at", "deleted_at"],
-    ),
-    (
-        "pinned_items",
-        &["id", "item_type", "item_id", "sort_order"],
-    ),
+    ("temp_contents", &["id", "text", "created_at", "expires_at", "deleted_at"]),
+    ("pinned_items", &["id", "item_type", "item_id", "sort_order"]),
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -187,20 +153,20 @@ fn validate_export_target(state: &AppState, output_path: &Path) -> Result<(), St
         migration::V2_TMP_FILENAME.to_string(),
         migration::V2_SETUP_LOCK_FILENAME.to_string(),
     ];
-    if protected
-        .iter()
-        .any(|name| name.eq_ignore_ascii_case(output_name))
-    {
+    if protected.iter().any(|name| name.eq_ignore_ascii_case(output_name)) {
         return Err("备份目标不能覆盖活动数据库或安全临时文件".to_string());
     }
     Ok(())
 }
 
 fn snapshot_database(db: &crate::db::Db, path: &Path) -> Result<(), String> {
-    let source = db.conn.lock().map_err(|_| "数据库快照不可用".to_string())?;
+    let source = db
+        .conn
+        .lock()
+        .map_err(|_| "数据库快照不可用".to_string())?;
     let mut destination = Connection::open(path).map_err(|_| "无法创建数据库快照".to_string())?;
-    let backup =
-        Backup::new(&source, &mut destination).map_err(|_| "无法创建数据库快照".to_string())?;
+    let backup = Backup::new(&source, &mut destination)
+        .map_err(|_| "无法创建数据库快照".to_string())?;
     backup
         .run_to_completion(32, Duration::from_millis(5), None)
         .map_err(|_| "无法创建数据库快照".to_string())?;
@@ -243,10 +209,7 @@ fn table_counts(db: &crate::db::Db) -> Result<BTreeMap<String, u64>, String> {
 }
 
 fn validate_schema(db: &crate::db::Db) -> Result<(), String> {
-    let conn = db
-        .conn
-        .lock()
-        .map_err(|_| "数据库 schema 校验不可用".to_string())?;
+    let conn = db.conn.lock().map_err(|_| "数据库 schema 校验不可用".to_string())?;
     let mut stmt = conn
         .prepare(
             "SELECT type, name FROM sqlite_master
@@ -255,9 +218,7 @@ fn validate_schema(db: &crate::db::Db) -> Result<(), String> {
         )
         .map_err(|_| "数据库 schema 无效".to_string())?;
     let objects = stmt
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })
+        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
         .map_err(|_| "数据库 schema 无效".to_string())?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| "数据库 schema 无效".to_string())?;
@@ -366,22 +327,17 @@ fn validate_security_metadata(db: &crate::db::Db) -> Result<(), String> {
 }
 
 fn validate_password_rows(db: &crate::db::Db, dek: &[u8]) -> Result<(), String> {
-    let conn = db
-        .conn
-        .lock()
-        .map_err(|_| "密码数据校验不可用".to_string())?;
+    let conn = db.conn.lock().map_err(|_| "密码数据校验不可用".to_string())?;
     let mut stmt = conn
         .prepare("SELECT record_uuid, password FROM passwords ORDER BY id")
         .map_err(|_| "密码数据 schema 无效".to_string())?;
     let rows = stmt
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })
+        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
         .map_err(|_| "密码数据校验失败".to_string())?;
     for row in rows {
         let (record_uuid, ciphertext) = row.map_err(|_| "密码数据校验失败".to_string())?;
-        let parsed =
-            uuid::Uuid::parse_str(&record_uuid).map_err(|_| "密码记录 UUID 无效".to_string())?;
+        let parsed = uuid::Uuid::parse_str(&record_uuid)
+            .map_err(|_| "密码记录 UUID 无效".to_string())?;
         if parsed.get_version_num() != 4 || !ciphertext.starts_with(crypto::PASSWORD_PREFIX_DW2) {
             return Err("密码记录安全格式无效".to_string());
         }
@@ -475,7 +431,8 @@ pub fn export_v2_to_path(
     let trash = trash_password_count(&snapshot)?;
     drop(snapshot);
 
-    let database = std::fs::read(&snapshot_path).map_err(|_| "无法读取数据库快照".to_string())?;
+    let database = std::fs::read(&snapshot_path)
+        .map_err(|_| "无法读取数据库快照".to_string())?;
     let envelope = V2BackupEnvelope {
         backup_version: BACKUP_VERSION,
         security_model: SECURITY_MODEL.to_string(),
@@ -485,7 +442,8 @@ pub fn export_v2_to_path(
         table_counts: counts.clone(),
         database_b64: BASE64.encode(&database),
     };
-    let payload = serde_json::to_vec(&envelope).map_err(|_| "无法生成 v2 备份".to_string())?;
+    let payload = serde_json::to_vec(&envelope)
+        .map_err(|_| "无法生成 v2 备份".to_string())?;
     let encrypted = backup::encrypt_backup_v2(&payload, master_password)?;
     std::fs::write(output_path, encrypted).map_err(|_| "无法写入备份文件".to_string())?;
     drop(snapshot_guard);
@@ -501,8 +459,8 @@ fn decode_envelope(bytes: &[u8], master_password: &str) -> Result<V2BackupEnvelo
         backup::BackupKind::Unknown => return Err("未知或不受支持的备份格式".to_string()),
     }
     let payload = backup::decrypt_backup_v2(bytes, master_password)?;
-    let envelope: V2BackupEnvelope =
-        serde_json::from_slice(&payload).map_err(|_| "v2 备份清单损坏".to_string())?;
+    let envelope: V2BackupEnvelope = serde_json::from_slice(&payload)
+        .map_err(|_| "v2 备份清单损坏".to_string())?;
     if envelope.backup_version != BACKUP_VERSION {
         return Err("不支持的未来备份版本".to_string());
     }
@@ -565,11 +523,7 @@ pub fn prepare_restored_staging(
     validate_password_rows(&restored, restored_dek.as_slice())?;
     let trash = trash_password_count(&restored)?;
     drop(restored);
-    Ok(stats_from_counts(
-        &envelope.table_counts,
-        database.len(),
-        trash,
-    ))
+    Ok(stats_from_counts(&envelope.table_counts, database.len(), trash))
 }
 
 pub fn restore_v2_from_path_inject(
@@ -688,9 +642,7 @@ mod tests {
             master_wrap_gate: Mutex::new(()),
             data_op_gate: std::sync::RwLock::new(()),
             migration_freeze: std::sync::atomic::AtomicBool::new(false),
-            key: Mutex::new(Some(ActiveKey::StableDek(Zeroizing::new(
-                expected_dek.clone(),
-            )))),
+            key: Mutex::new(Some(ActiveKey::StableDek(Zeroizing::new(expected_dek.clone())))),
         };
         (dir, state, words, expected_dek)
     }
@@ -698,11 +650,7 @@ mod tests {
     fn populate_fixture(state: &AppState, dek: &[u8]) -> Vec<(String, String)> {
         let records = [
             ("936cc5af-b8c4-4659-a10f-cea1005c8348", "alpha-secret", None),
-            (
-                "94bb1e2c-4e07-43e2-b9fb-77019a4be579",
-                "trash-secret",
-                Some(12345i64),
-            ),
+            ("94bb1e2c-4e07-43e2-b9fb-77019a4be579", "trash-secret", Some(12345i64)),
         ];
         let db = state.db.lock().unwrap();
         let mut snapshots = Vec::new();
@@ -806,13 +754,14 @@ mod tests {
     }
 
     fn contains(haystack: &[u8], needle: &[u8]) -> bool {
-        !needle.is_empty()
-            && haystack
-                .windows(needle.len())
-                .any(|window| window == needle)
+        !needle.is_empty() && haystack.windows(needle.len()).any(|window| window == needle)
     }
 
-    fn mutate_database_in_backup(backup_path: &Path, output: &Path, sql: &str) {
+    fn mutate_database_in_backup(
+        backup_path: &Path,
+        output: &Path,
+        sql: &str,
+    ) {
         let bytes = std::fs::read(backup_path).unwrap();
         let payload = backup::decrypt_backup_v2(&bytes, MASTER).unwrap();
         let mut envelope: V2BackupEnvelope = serde_json::from_slice(&payload).unwrap();
@@ -841,10 +790,7 @@ mod tests {
     fn b1_v2_backup_contains_complete_ciphertext_snapshot_without_secrets() {
         let (dir, state, words, dek, backup_path) = make_backup("b1");
         let bytes = std::fs::read(&backup_path).unwrap();
-        assert_eq!(
-            backup::classify_backup(&bytes),
-            backup::BackupKind::StableDekV2
-        );
+        assert_eq!(backup::classify_backup(&bytes), backup::BackupKind::StableDekV2);
         let payload = backup::decrypt_backup_v2(&bytes, MASTER).unwrap();
         let envelope: V2BackupEnvelope = serde_json::from_slice(&payload).unwrap();
         assert_eq!(envelope.backup_version, 2);
@@ -882,21 +828,10 @@ mod tests {
         let stats = restore_v2_from_path(&dest, &backup_path, MASTER).unwrap();
         assert_eq!(stats.passwords, 2);
         assert_eq!(stats.pinned, 1);
-        assert_eq!(
-            table_counts(&dest.db.lock().unwrap()).unwrap(),
-            source_counts
-        );
+        assert_eq!(table_counts(&dest.db.lock().unwrap()).unwrap(), source_counts);
         let db = dest.db.lock().unwrap();
-        assert_eq!(
-            migration::unlock_v2_core(&db, MASTER).unwrap().to_vec(),
-            expected
-        );
-        assert_eq!(
-            migration::recover_v2_core(&db, &words.join(" "))
-                .unwrap()
-                .to_vec(),
-            expected
-        );
+        assert_eq!(migration::unlock_v2_core(&db, MASTER).unwrap().to_vec(), expected);
+        assert_eq!(migration::recover_v2_core(&db, &words.join(" ")).unwrap().to_vec(), expected);
         drop(db);
         assert_eq!(dest.stable_dek().unwrap().to_vec(), expected);
         drop(source);
@@ -926,12 +861,7 @@ mod tests {
         restore_v2_from_path(&dest, &backup_path, MASTER).unwrap();
         assert_eq!(security_snapshot(&dest), before);
         let db = dest.db.lock().unwrap();
-        assert_eq!(
-            migration::recover_v2_core(&db, &words.join(" "))
-                .unwrap()
-                .to_vec(),
-            expected
-        );
+        assert_eq!(migration::recover_v2_core(&db, &words.join(" ")).unwrap().to_vec(), expected);
         drop(db);
         drop(source);
         drop(dest);
@@ -959,11 +889,7 @@ mod tests {
         let (dest_dir, dest, _, _) = create_state("b7_dest", DEST_MASTER);
         let baseline = file_hash(&dest.db_path);
         let original = std::fs::read(&backup_path).unwrap();
-        for (index, label) in [
-            (0usize, "magic"),
-            (54usize, "version"),
-            (backup::HEADER_SIZE, "body"),
-        ] {
+        for (index, label) in [(0usize, "magic"), (54usize, "version"), (backup::HEADER_SIZE, "body")] {
             let path = source_dir.join(format!("tampered-{label}.drawerbox"));
             let mut bytes = original.clone();
             bytes[index] ^= 1;
@@ -1073,10 +999,8 @@ mod tests {
             V2RestoreFailPoint::BeforeActivation,
         ];
         for (index, point) in points.into_iter().enumerate() {
-            let (source_dir, source, _, _, backup_path) =
-                make_backup(&format!("b12_source_{index}"));
-            let (dest_dir, dest, _, expected_dest) =
-                create_state(&format!("b12_dest_{index}"), DEST_MASTER);
+            let (source_dir, source, _, _, backup_path) = make_backup(&format!("b12_source_{index}"));
+            let (dest_dir, dest, _, expected_dest) = create_state(&format!("b12_dest_{index}"), DEST_MASTER);
             let baseline = file_hash(&dest.db_path);
             assert!(restore_v2_from_path_inject(&dest, &backup_path, MASTER, Some(point)).is_err());
             assert_eq!(file_hash(&dest.db_path), baseline);

@@ -286,8 +286,8 @@ fn existing_state(path: &Path, dek: &[u8]) -> Result<AppState, String> {
         pending_recovery_rotation: Mutex::new(None),
         pending_legacy_migration: std::sync::Mutex::new(None),
         master_wrap_gate: Mutex::new(()),
-        data_op_gate: std::sync::RwLock::new(()),
-        migration_freeze: std::sync::atomic::AtomicBool::new(false),
+            data_op_gate: std::sync::RwLock::new(()),
+            migration_freeze: std::sync::atomic::AtomicBool::new(false),
         key: Mutex::new(Some(ActiveKey::StableDek(Zeroizing::new(dek.to_vec())))),
     })
 }
@@ -303,8 +303,8 @@ fn legacy_production_state(path: &Path) -> Result<AppState, String> {
         pending_recovery_rotation: Mutex::new(None),
         pending_legacy_migration: std::sync::Mutex::new(None),
         master_wrap_gate: Mutex::new(()),
-        data_op_gate: std::sync::RwLock::new(()),
-        migration_freeze: std::sync::atomic::AtomicBool::new(false),
+            data_op_gate: std::sync::RwLock::new(()),
+            migration_freeze: std::sync::atomic::AtomicBool::new(false),
         key: Mutex::new(None),
     })
 }
@@ -399,9 +399,7 @@ fn run_rehearsal_with_password(workspace: PathBuf, master_password: &str) -> Res
             "取消后 tmp 未清理",
         )?;
         require(
-            !migration_dir
-                .join(migration::V2_SETUP_LOCK_FILENAME)
-                .exists(),
+            !migration_dir.join(migration::V2_SETUP_LOCK_FILENAME).exists(),
             "取消后 setup lock 未清理",
         )?;
         require(!v2_path.exists(), "取消后不得存在正式 v2")?;
@@ -453,9 +451,7 @@ fn run_rehearsal_with_password(workspace: PathBuf, master_password: &str) -> Res
         "迁移 tmp 未消失",
     )?;
     require(
-        !migration_dir
-            .join(migration::V2_SETUP_LOCK_FILENAME)
-            .exists(),
+        !migration_dir.join(migration::V2_SETUP_LOCK_FILENAME).exists(),
         "setup lock 未清理",
     )?;
 
@@ -488,14 +484,8 @@ fn run_rehearsal_with_password(workspace: PathBuf, master_password: &str) -> Res
                 .is_err(),
             "source changed 必须 fail closed",
         )?;
-        require(
-            !sc_dir.join(migration::V2_DB_FILENAME).exists(),
-            "stale v2 被激活",
-        )?;
-        require(
-            !sc_dir.join(migration::V2_TMP_FILENAME).exists(),
-            "stale tmp 未清理",
-        )?;
+        require(!sc_dir.join(migration::V2_DB_FILENAME).exists(), "stale v2 被激活")?;
+        require(!sc_dir.join(migration::V2_TMP_FILENAME).exists(), "stale tmp 未清理")?;
         require(!sc_state.legacy_migration_status().active, "pending 未清理")?;
     }
 

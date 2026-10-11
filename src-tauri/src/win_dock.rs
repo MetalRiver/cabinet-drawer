@@ -14,16 +14,16 @@ use std::time::Instant;
 
 use tauri::{PhysicalPosition, PhysicalSize, WebviewWindow};
 use windows_sys::Win32::Foundation::{
-    GetLastError, SetLastError, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
+    GetLastError, HWND, LPARAM, LRESULT, POINT, RECT, SetLastError, WPARAM,
 };
 use windows_sys::Win32::Graphics::Gdi::{
-    GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    GetMonitorInfoW, MonitorFromPoint, MONITOR_DEFAULTTONEAREST, MONITORINFO,
 };
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallWindowProcW, GetAncestor, GetCursorPos, GetWindowRect, SetTimer, SetWindowLongPtrW,
-    SetWindowPos, GA_ROOT, GWLP_WNDPROC, HWND_TOP, SWP_NOACTIVATE, SWP_NOSENDCHANGING,
-    SWP_NOZORDER, WNDPROC,
+    SetWindowPos, GA_ROOT, GWLP_WNDPROC, HWND_TOP, SWP_NOACTIVATE, SWP_NOZORDER, SWP_NOSENDCHANGING,
+    WNDPROC,
 };
 
 const WM_WINDOWPOSCHANGING: u32 = 0x0046;
@@ -195,25 +195,13 @@ unsafe fn schedule_hide(hwnd: HWND) {
         // 在 hide 之前再检查一次"是否还贴边"（防止 200ms 内用户已经拖回中间）
         let hwnd = hwnd_addr as HWND;
         let (still_at_edge, side_dbg) = with_state(|state| -> (bool, String) {
-            if state.hidden {
-                return (false, "already_hidden".to_string());
-            }
+            if state.hidden { return (false, "already_hidden".to_string()); }
             let mut cur: RECT = std::mem::zeroed();
             GetWindowRect(hwnd, &mut cur);
             let s = detect_side(state.cached_work, cur);
-            (
-                s != Side::None,
-                format!(
-                    "side={:?} cur=({},{},{},{})",
-                    s, cur.left, cur.top, cur.right, cur.bottom
-                ),
-            )
-        })
-        .unwrap_or((false, "no_state".to_string()));
-        eprintln!(
-            "[win_dock] 200ms 后检查: still_at_edge={} ({})",
-            still_at_edge, side_dbg
-        );
+            (s != Side::None, format!("side={:?} cur=({},{},{},{})", s, cur.left, cur.top, cur.right, cur.bottom))
+        }).unwrap_or((false, "no_state".to_string()));
+        eprintln!("[win_dock] 200ms 后检查: still_at_edge={} ({})", still_at_edge, side_dbg);
         if still_at_edge {
             // 用 PostMessageW 发到主线程触发隐藏
             extern "system" {
@@ -245,8 +233,7 @@ unsafe extern "system" fn dock_wnd_proc(
     // 只打非高频消息（避免 WM_MOUSEMOVE 等每秒几十条日志）
     if msg == WM_MOVE || msg == WM_WINDOWPOSCHANGING || msg == WM_EXITSIZEMOVE || msg == WM_DOCK_HIDE
         || msg == 0x0001 /* WM_CREATE */ || msg == 0x0002 /* WM_DESTROY */
-        || msg == 0x0005
-    /* WM_SIZE */
+        || msg == 0x0005 /* WM_SIZE */
     {
         eprintln!("[win_dock] WndProc 收到 msg=0x{:04x}", msg);
     }
@@ -272,18 +259,9 @@ unsafe extern "system" fn dock_wnd_proc(
                     let hidden_rect = compute_hidden_rect(side, cur, state.cached_work);
                     apply_window_pos(state, hidden_rect); // 一次到位，无动画
                     state.hidden = true;
-                    eprintln!(
-                        "[win_dock] 已隐藏, side={:?} cur=({},{},{},{}) → hidden=({},{},{},{})",
-                        side,
-                        cur.left,
-                        cur.top,
-                        cur.right,
-                        cur.bottom,
-                        hidden_rect.left,
-                        hidden_rect.top,
-                        hidden_rect.right,
-                        hidden_rect.bottom
-                    );
+                    eprintln!("[win_dock] 已隐藏, side={:?} cur=({},{},{},{}) → hidden=({},{},{},{})",
+                        side, cur.left, cur.top, cur.right, cur.bottom,
+                        hidden_rect.left, hidden_rect.top, hidden_rect.right, hidden_rect.bottom);
                 }
             }
             return;
@@ -299,15 +277,8 @@ unsafe extern "system" fn dock_wnd_proc(
             let now = Instant::now();
             let since_last = now.duration_since(state.last_wndproc_at).as_millis();
             if since_last < WND_PROC_THROTTLE_MS {
-                eprintln!(
-                    "[win_dock] WM_{} 节流丢弃 (since_last={}ms)",
-                    if msg == WM_MOVE {
-                        "MOVE"
-                    } else {
-                        "WINDOWPOSCHANGING"
-                    },
-                    since_last
-                );
+                eprintln!("[win_dock] WM_{} 节流丢弃 (since_last={}ms)",
+                    if msg == WM_MOVE { "MOVE" } else { "WINDOWPOSCHANGING" }, since_last);
                 return;
             }
             state.last_wndproc_at = now;
@@ -315,20 +286,9 @@ unsafe extern "system" fn dock_wnd_proc(
             let mut cur: RECT = std::mem::zeroed();
             GetWindowRect(hwnd, &mut cur);
             let side = detect_side(state.cached_work, cur);
-            eprintln!(
-                "[win_dock] WM_{} cur=({},{},{},{}) side={:?} hidden={}",
-                if msg == WM_MOVE {
-                    "MOVE"
-                } else {
-                    "WINDOWPOSCHANGING"
-                },
-                cur.left,
-                cur.top,
-                cur.right,
-                cur.bottom,
-                side,
-                state.hidden
-            );
+            eprintln!("[win_dock] WM_{} cur=({},{},{},{}) side={:?} hidden={}",
+                if msg == WM_MOVE { "MOVE" } else { "WINDOWPOSCHANGING" },
+                cur.left, cur.top, cur.right, cur.bottom, side, state.hidden);
 
             if side == Side::None {
                 // 离开边缘：直接恢复（无动画）
@@ -412,10 +372,7 @@ pub fn install(window: &WebviewWindow) -> Result<(), String> {
         // 之前子类化 webview 子窗口 → WndProc 收不到任何拖动消息 → 贴边自动隐藏永远不生效
         // 用 GetAncestor(hwnd, GA_ROOT) 拿真正的顶层父窗口来子类化
         let hwnd = GetAncestor(webview_hwnd as HWND, GA_ROOT) as HWND;
-        eprintln!(
-            "[win_dock] install: webview_hwnd={:#x} → root_hwnd={:#x}",
-            webview_hwnd, hwnd as isize
-        );
+        eprintln!("[win_dock] install: webview_hwnd={:#x} → root_hwnd={:#x}", webview_hwnd, hwnd as isize);
         // 修复 P1-#10：outer_size/outer_position 返回的是物理像素（与 HWND 坐标一致），
         // 之前错误地除以 scale_factor 转成逻辑像素，导致与 GetWindowRect / SetWindowPos 不匹配，
         // 高 DPI + 多屏下窗口会偏移 1-2 倍。这里全部统一用物理像素。

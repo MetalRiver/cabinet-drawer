@@ -14,11 +14,8 @@
 //!   = AES-256-GCM(zstd(level=3, json_bytes), key=derive(master_password, salt), nonce=header_nonce)
 //!   AES-GCM 的 16 字节认证 Tag 附在密文末尾（aes-gcm crate 自动拼接）
 
+use aes_gcm::{aead::{Aead, KeyInit, Payload}, Aes256Gcm, Nonce};
 use crate::crypto;
-use aes_gcm::{
-    aead::{Aead, KeyInit, Payload},
-    Aes256Gcm, Nonce,
-};
 use zeroize::Zeroizing;
 
 pub const HEADER_SIZE: usize = 64;
@@ -54,8 +51,8 @@ pub fn classify_backup(backup_bytes: &[u8]) -> BackupKind {
 /// 加密一份 JSON 字节流，产出完整的 .drawerbox 单文件字节流（含 Header）
 pub fn encrypt_backup(json_bytes: &[u8], master_password: &str) -> Result<Vec<u8>, String> {
     // 1. 压缩 JSON（先压缩后加密，安全性更强，也显著减少备份大小）
-    let compressed =
-        zstd::encode_all(json_bytes, ZSTD_LEVEL).map_err(|e| format!("zstd 压缩失败: {}", e))?;
+    let compressed = zstd::encode_all(json_bytes, ZSTD_LEVEL)
+        .map_err(|e| format!("zstd 压缩失败: {}", e))?;
 
     // 2. 生成 32B 盐 + 12B nonce（每次导出完全随机，抗重放 / 抗彩虹表）
     let salt = crypto::generate_salt();
@@ -123,8 +120,8 @@ pub fn decrypt_backup(backup_bytes: &[u8], master_password: &str) -> Result<Vec<
 /// v2 备份：独立 Magic + 显式版本，并把整个 Header 作为 AES-GCM AAD。
 /// 因此 header/version/salt/nonce/body 任一字节变化都会关闭恢复路径。
 pub fn encrypt_backup_v2(payload: &[u8], master_password: &str) -> Result<Vec<u8>, String> {
-    let compressed =
-        zstd::encode_all(payload, ZSTD_LEVEL).map_err(|_| "无法压缩 v2 备份".to_string())?;
+    let compressed = zstd::encode_all(payload, ZSTD_LEVEL)
+        .map_err(|_| "无法压缩 v2 备份".to_string())?;
     let salt = crypto::generate_salt();
     let nonce_bytes = crypto::generate_nonce();
     let mut header = vec![0u8; HEADER_SIZE];
@@ -138,15 +135,12 @@ pub fn encrypt_backup_v2(payload: &[u8], master_password: &str) -> Result<Vec<u8
     header[60] = 1;
 
     let key = Zeroizing::new(crypto::derive_key(master_password, &salt));
-    let cipher =
-        Aes256Gcm::new_from_slice(key.as_slice()).map_err(|_| "无法加密 v2 备份".to_string())?;
+    let cipher = Aes256Gcm::new_from_slice(key.as_slice())
+        .map_err(|_| "无法加密 v2 备份".to_string())?;
     let ciphertext = cipher
         .encrypt(
             Nonce::from_slice(&nonce_bytes),
-            Payload {
-                msg: &compressed,
-                aad: &header,
-            },
+            Payload { msg: &compressed, aad: &header },
         )
         .map_err(|_| "无法加密 v2 备份".to_string())?;
     let mut out = Vec::with_capacity(HEADER_SIZE + ciphertext.len());
@@ -177,18 +171,16 @@ pub fn decrypt_backup_v2(backup_bytes: &[u8], master_password: &str) -> Result<V
     let salt = &backup_bytes[SALT_OFF..SALT_OFF + SALT_LEN];
     let nonce_bytes = &backup_bytes[NONCE_OFF..NONCE_OFF + NONCE_LEN];
     let key = Zeroizing::new(crypto::derive_key(master_password, salt));
-    let cipher =
-        Aes256Gcm::new_from_slice(key.as_slice()).map_err(|_| "无法读取 v2 备份".to_string())?;
+    let cipher = Aes256Gcm::new_from_slice(key.as_slice())
+        .map_err(|_| "无法读取 v2 备份".to_string())?;
     let compressed = cipher
         .decrypt(
             Nonce::from_slice(nonce_bytes),
-            Payload {
-                msg: &backup_bytes[HEADER_SIZE..],
-                aad: header,
-            },
+            Payload { msg: &backup_bytes[HEADER_SIZE..], aad: header },
         )
         .map_err(|_| "主密码错误，或备份文件已损坏".to_string())?;
-    zstd::decode_all(std::io::Cursor::new(compressed)).map_err(|_| "备份文件损坏".to_string())
+    zstd::decode_all(std::io::Cursor::new(compressed))
+        .map_err(|_| "备份文件损坏".to_string())
 }
 
 #[cfg(test)]

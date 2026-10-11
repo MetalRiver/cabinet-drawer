@@ -5,25 +5,25 @@
 //! - 最终 lib.rs 会 `use crate::commands::*;` 后，generate_handler!() 直接拿到全部
 //! - 前端 invoke("xxx") 完全无感
 
-pub mod apps;
 pub mod auth;
-pub mod data_root_restore;
-pub mod data_root_setup;
 pub mod passwords;
-pub mod settings_backup;
+pub mod window;
 pub mod snippets;
 pub mod temp;
 pub mod trash;
-pub mod window;
+pub mod apps;
+pub mod settings_backup;
+pub mod data_root_setup;
+pub mod data_root_restore;
 
 // 把所有领域的命令 pub use 到 commands 模块作用域
-pub use apps::*;
 pub use auth::*;
-pub use data_root_restore::*;
-pub use data_root_setup::*;
 pub use passwords::*;
-pub use settings_backup::*;
+pub use window::*;
 pub use snippets::*;
 pub use temp::*;
 pub use trash::*;
-pub use window::*;
+pub use apps::*;
+pub use settings_backup::*;
+pub use data_root_setup::*;
+pub use data_root_restore::*;

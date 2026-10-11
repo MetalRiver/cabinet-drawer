@@ -2054,6 +2054,7 @@ fn stale_fixture_ids(db: &crate::db::Db) -> Vec<i64> {
     v
 }
 
+#[cfg(feature = "test-edition")]
 #[tauri::command]
 pub async fn seed_test_fixtures(app: AppHandle) -> Result<SeedFixturesResult, String> {
     if !crate::data_root::is_portable_test_edition() {
@@ -2120,6 +2121,13 @@ pub async fn seed_test_fixtures(app: AppHandle) -> Result<SeedFixturesResult, St
     .map_err(|e| format!("播种线程失败: {}", e))?
 }
 
+#[cfg(not(feature = "test-edition"))]
+#[tauri::command]
+pub async fn seed_test_fixtures(_app: AppHandle) -> Result<SeedFixturesResult, String> {
+    Err("正式构建不包含测试数据播种能力（该能力仅存在于验收便携测试版）".to_string())
+}
+
+#[cfg(feature = "test-edition")]
 #[tauri::command]
 pub async fn clear_test_fixtures(app: AppHandle) -> Result<usize, String> {
     if !crate::data_root::is_portable_test_edition() {
@@ -2138,6 +2146,12 @@ pub async fn clear_test_fixtures(app: AppHandle) -> Result<usize, String> {
     })
     .await
     .map_err(|e| format!("重置线程失败: {}", e))?
+}
+
+#[cfg(not(feature = "test-edition"))]
+#[tauri::command]
+pub async fn clear_test_fixtures(_app: AppHandle) -> Result<usize, String> {
+    Err("正式构建不包含测试数据重置能力（该能力仅存在于验收便携测试版）".to_string())
 }
 
 // ============================================================

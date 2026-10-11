@@ -77,8 +77,15 @@ fn create_password_inner(
             let encrypted = crypto::encrypt_password_dw2(&password, &dek, &record_uuid)
                 .map_err(|_| "密码加密失败".to_string())?;
             let db = state.db.lock().unwrap();
-            db.create_password_v2(&record_uuid, &title, &username, &encrypted, &url, &notes)
-                .map_err(|_| "密码保存失败".to_string())
+            db.create_password_v2(
+                &record_uuid,
+                &title,
+                &username,
+                &encrypted,
+                &url,
+                &notes,
+            )
+            .map_err(|_| "密码保存失败".to_string())
         }
     }
 }
@@ -116,8 +123,12 @@ fn get_password_decrypted_inner(state: &AppState, id: i64) -> Result<String, Str
                 .map_err(|_| "密码数据读取失败".to_string())?
                 .ok_or_else(|| "密码不存在".to_string())?;
             drop(db);
-            crypto::decrypt_password_dw2(&record.encrypted_password, &dek, &record.record_uuid)
-                .map_err(|_| "密码解密失败".to_string())
+            crypto::decrypt_password_dw2(
+                &record.encrypted_password,
+                &dek,
+                &record.record_uuid,
+            )
+            .map_err(|_| "密码解密失败".to_string())
         }
     }
 }
@@ -214,11 +225,21 @@ fn update_password_inner(
                         .map_err(|_| "密码数据读取失败".to_string())?
                         .ok_or_else(|| "密码不存在".to_string())?;
                     let password = Zeroizing::new(pw);
-                    let encrypted =
-                        crypto::encrypt_password_dw2(&password, &dek, &record.record_uuid)
-                            .map_err(|_| "密码加密失败".to_string())?;
-                    db.update_password_v2(id, &title, &username, &encrypted, &url, &notes)
-                        .map_err(|_| "密码更新失败".to_string())
+                    let encrypted = crypto::encrypt_password_dw2(
+                        &password,
+                        &dek,
+                        &record.record_uuid,
+                    )
+                    .map_err(|_| "密码加密失败".to_string())?;
+                    db.update_password_v2(
+                        id,
+                        &title,
+                        &username,
+                        &encrypted,
+                        &url,
+                        &notes,
+                    )
+                    .map_err(|_| "密码更新失败".to_string())
                 }
                 None => db
                     .update_password_metadata_v2(id, &title, &username, &url, &notes)
@@ -305,12 +326,9 @@ mod phase2a2_tests {
         let dir = temp_dir(label);
         let path = dir.join("fixture-v2.db");
         let db = migration::open_v2_db(&path).unwrap();
-        db.set_setting("security_version", migration::SECURITY_VERSION_V2)
-            .unwrap();
-        db.set_setting("wrapped_dek_m", "fixture-master-wrap")
-            .unwrap();
-        db.set_setting("wrapped_dek_r", "fixture-recovery-wrap")
-            .unwrap();
+        db.set_setting("security_version", migration::SECURITY_VERSION_V2).unwrap();
+        db.set_setting("wrapped_dek_m", "fixture-master-wrap").unwrap();
+        db.set_setting("wrapped_dek_r", "fixture-recovery-wrap").unwrap();
         let state = AppState {
             db: Mutex::new(db),
             db_path: path,
@@ -383,21 +401,18 @@ mod phase2a2_tests {
         let first = db.get_password_v2(first_id).unwrap().unwrap();
         let second = db.get_password_v2(second_id).unwrap().unwrap();
 
-        assert_eq!(
-            Uuid::parse_str(&first.record_uuid)
-                .unwrap()
-                .get_version_num(),
-            4
-        );
+        assert_eq!(Uuid::parse_str(&first.record_uuid).unwrap().get_version_num(), 4);
         assert!(!first.record_uuid.is_empty());
         assert_ne!(first.record_uuid, second.record_uuid);
-        assert!(first
-            .encrypted_password
-            .starts_with(crypto::PASSWORD_PREFIX_DW2));
+        assert!(first.encrypted_password.starts_with(crypto::PASSWORD_PREFIX_DW2));
         assert!(!first.encrypted_password.contains("plain-secret-one"));
         assert_eq!(
-            crypto::decrypt_password_dw2(&first.encrypted_password, &V2_DEK, &first.record_uuid)
-                .unwrap(),
+            crypto::decrypt_password_dw2(
+                &first.encrypted_password,
+                &V2_DEK,
+                &first.record_uuid
+            )
+            .unwrap(),
             "plain-secret-one"
         );
         assert!(db
@@ -420,10 +435,7 @@ mod phase2a2_tests {
         let (state, dir) = v2_state("p2");
         let first_id = create_fixture_password(&state, "first", "secret-a");
         let second_id = create_fixture_password(&state, "second", "secret-b");
-        assert_eq!(
-            get_password_decrypted_inner(&state, first_id).unwrap(),
-            "secret-a"
-        );
+        assert_eq!(get_password_decrypted_inner(&state, first_id).unwrap(), "secret-a");
 
         state.set_stable_dek(Zeroizing::new(vec![0x7b; 32]));
         assert_eq!(
@@ -476,10 +488,7 @@ mod phase2a2_tests {
             .get_password_v2_snapshot(id)
             .unwrap()
             .unwrap();
-        assert_eq!(
-            after.encrypted_password.as_bytes(),
-            before.encrypted_password.as_bytes()
-        );
+        assert_eq!(after.encrypted_password.as_bytes(), before.encrypted_password.as_bytes());
         assert_eq!(after.record_uuid, before.record_uuid);
         assert_eq!(state.stable_dek().unwrap().to_vec(), dek_before);
         assert_eq!(after.use_count, before.use_count);
@@ -527,14 +536,8 @@ mod phase2a2_tests {
             dw2_nonce(&after.encrypted_password),
             dw2_nonce(&before.encrypted_password)
         );
-        assert_eq!(
-            get_password_decrypted_inner(&state, id).unwrap(),
-            "new-secret"
-        );
-        assert_ne!(
-            get_password_decrypted_inner(&state, id).unwrap(),
-            "old-secret"
-        );
+        assert_eq!(get_password_decrypted_inner(&state, id).unwrap(), "new-secret");
+        assert_ne!(get_password_decrypted_inner(&state, id).unwrap(), "old-secret");
         assert_eq!(state.stable_dek().unwrap().to_vec(), V2_DEK);
         cleanup(state, dir);
     }
@@ -601,25 +604,14 @@ mod phase2a2_tests {
             )
         };
 
-        state
-            .db
-            .lock()
-            .unwrap()
-            .hard_delete("passwords", target_id)
-            .unwrap();
+        state.db.lock().unwrap().hard_delete("passwords", target_id).unwrap();
 
         let db = state.db.lock().unwrap();
         assert!(db.get_password_v2(target_id).unwrap().is_none());
         let keep_after = db.get_password_v2_snapshot(keep_id).unwrap().unwrap();
         assert_eq!(keep_after.record_uuid, keep_before.record_uuid);
-        assert_eq!(
-            keep_after.encrypted_password,
-            keep_before.encrypted_password
-        );
-        assert_eq!(
-            db.get_setting("security_version").unwrap(),
-            settings_before.0
-        );
+        assert_eq!(keep_after.encrypted_password, keep_before.encrypted_password);
+        assert_eq!(db.get_setting("security_version").unwrap(), settings_before.0);
         assert_eq!(db.get_setting("wrapped_dek_m").unwrap(), settings_before.1);
         assert_eq!(db.get_setting("wrapped_dek_r").unwrap(), settings_before.2);
         drop(db);
@@ -659,17 +651,8 @@ mod phase2a2_tests {
     fn p8_legacy_crud_and_patch_semantics_remain_unchanged() {
         let (state, dir) = legacy_state("p8");
         let id = create_fixture_password(&state, "legacy", "old-secret");
-        let before = state
-            .db
-            .lock()
-            .unwrap()
-            .get_password_encrypted(id)
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            get_password_decrypted_inner(&state, id).unwrap(),
-            "old-secret"
-        );
+        let before = state.db.lock().unwrap().get_password_encrypted(id).unwrap().unwrap();
+        assert_eq!(get_password_decrypted_inner(&state, id).unwrap(), "old-secret");
         assert_eq!(list_passwords_inner(&state).unwrap().len(), 1);
 
         update_password_inner(
@@ -682,13 +665,7 @@ mod phase2a2_tests {
             "legacy-note".to_string(),
         )
         .unwrap();
-        let patched = state
-            .db
-            .lock()
-            .unwrap()
-            .get_password_encrypted(id)
-            .unwrap()
-            .unwrap();
+        let patched = state.db.lock().unwrap().get_password_encrypted(id).unwrap().unwrap();
         assert_eq!(patched.2, before.2);
 
         update_password_inner(
@@ -701,10 +678,7 @@ mod phase2a2_tests {
             "legacy-note".to_string(),
         )
         .unwrap();
-        assert_eq!(
-            get_password_decrypted_inner(&state, id).unwrap(),
-            "new-secret"
-        );
+        assert_eq!(get_password_decrypted_inner(&state, id).unwrap(), "new-secret");
         assert_eq!(bump_password_use_count_inner(&state, id).unwrap(), 1);
         delete_password_inner(&state, id).unwrap();
         assert!(list_passwords_inner(&state).unwrap().is_empty());
