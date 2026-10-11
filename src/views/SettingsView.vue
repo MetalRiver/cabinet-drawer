@@ -16,6 +16,7 @@ import WindowTab from "./settings/tabs/WindowTab.vue";
 import DataTab from "./settings/tabs/DataTab.vue";
 import AdvancedTab from "./settings/tabs/AdvancedTab.vue";
 import { provideSettingsOps } from "./settings/ops";
+import { revealNavTab, updateScrollHints } from "./settings/revealTab";
 
 provideSettingsOps();
 
@@ -29,13 +30,25 @@ const TABS = [
 
 const activeTab = ref<string>("basic");
 const navEl = ref<HTMLElement | null>(null);
+// 左右渐隐提示（仅当导航横向可滚时出现；白色系统滚动条已隐藏，滚动能力保留）
+const canScrollLeft = ref(false);
+const canScrollRight = ref(false);
+
+function refreshScrollHints() {
+  const nav = navEl.value;
+  if (!nav) return;
+  const hints = updateScrollHints(nav);
+  canScrollLeft.value = hints.left;
+  canScrollRight.value = hints.right;
+}
 
 function selectTab(key: string) {
   activeTab.value = key;
   void nextTick(() => {
-    // 顶部横向滚动模式：选中项滚入视野中央（≥900px 左导航模式无横向溢出，调用无害）
-    const btn = navEl.value?.querySelector<HTMLElement>(`[data-tab-key="${key}"]`);
-    btn?.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
+    // P0 修复：只对导航容器自身 scrollTo（旧 scrollIntoView 会级联滚动
+    // 应用根/content-scroll 造成整页左移裁切）
+    if (navEl.value) revealNavTab(navEl.value, key);
+    refreshScrollHints();
   });
 }
 
@@ -57,6 +70,9 @@ const { ops } = provideSettingsOps();
 const backgroundOps = ref<{ label: string; originTab: string }[]>([]);
 let stopOpsWatch: (() => void) | null = null;
 onMounted(() => {
+  navEl.value?.addEventListener("scroll", refreshScrollHints, { passive: true });
+  window.addEventListener("resize", refreshScrollHints);
+  void nextTick(refreshScrollHints);
   stopOpsWatch = watch(
     () => ({ ...ops }),
     (val) => {
@@ -67,7 +83,11 @@ onMounted(() => {
     { deep: true, immediate: true }
   );
 });
-onBeforeUnmount(() => stopOpsWatch?.());
+onBeforeUnmount(() => {
+  stopOpsWatch?.();
+  navEl.value?.removeEventListener("scroll", refreshScrollHints);
+  window.removeEventListener("resize", refreshScrollHints);
+});
 watch(activeTab, () => {
   backgroundOps.value = Object.entries(ops)
     .filter(([, v]) => v && v.originTab !== activeTab.value)
@@ -95,9 +115,12 @@ const ORIGIN_LABEL: Record<string, string> = {
     </div>
 
     <div class="settings-body">
-      <!-- 分类导航：窄窗口顶部横向滚动；≥900px 左侧竖排 -->
-      <nav
-        ref="navEl"
+      <!-- 分类导航：窄窗口顶部横向滚动（隐藏原生滚动条 + 左右渐隐提示）；≥900px 左侧竖排 -->
+      <div class="s-nav-wrap">
+        <span v-show="canScrollLeft" class="s-nav-fade left" aria-hidden="true"></span>
+        <span v-show="canScrollRight" class="s-nav-fade right" aria-hidden="true"></span>
+        <nav
+          ref="navEl"
         class="s-nav"
         role="tablist"
         aria-label="设置分类"
@@ -122,6 +145,7 @@ const ORIGIN_LABEL: Record<string, string> = {
           <span class="s-nav-label">{{ t.label }}</span>
         </button>
       </nav>
+      </div>
 
       <!-- 内容区：Tab 常驻挂载，仅当前分类可见 -->
       <div class="s-content">
@@ -150,7 +174,10 @@ const ORIGIN_LABEL: Record<string, string> = {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  min-width: 0;
+  max-width: 100%;
   position: relative;
+  box-sizing: border-box;
 }
 
 /* ===== 后台操作横幅 ===== */
@@ -158,6 +185,9 @@ const ORIGIN_LABEL: Record<string, string> = {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
   padding: 8px 12px;
   margin-bottom: 10px;
   border-radius: 9px;
@@ -194,8 +224,26 @@ const ORIGIN_LABEL: Record<string, string> = {
   -webkit-backdrop-filter: blur(10px);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
   overflow-x: auto;
-  scrollbar-width: thin;
+  /* 隐藏原生滚动条视觉（白色系统条），滚动能力保留；左右可滚提示用渐隐遮罩 */
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }
+.s-nav::-webkit-scrollbar { display: none; }
+.s-nav-wrap {
+  position: relative;
+  min-width: 0;
+  max-width: 100%;
+}
+.s-nav-fade {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 28px;
+  pointer-events: none;
+  z-index: 6;
+}
+.s-nav-fade.left { left: 0; background: linear-gradient(90deg, var(--bg-primary), transparent); }
+.s-nav-fade.right { right: 0; background: linear-gradient(270deg, var(--bg-primary), transparent); }
 .s-nav-btn {
   flex: none;
   display: flex;

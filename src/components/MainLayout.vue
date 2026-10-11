@@ -832,7 +832,9 @@ onUnmounted(() => {
 .content-scroll {
   flex: 1;
   overflow-y: auto;
-  overflow-x: hidden;
+  /* P0 加固：clip（而非 hidden）——hidden 盒仍可被 scrollIntoView 等程序化横向滚动，
+     clip 完全禁止横向滚动状态，从根上杜绝整页左移类回归 */
+  overflow-x: clip;
   padding: 12px 14px 16px;
   min-height: 0;
 }
