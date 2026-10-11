@@ -18,8 +18,8 @@
 use std::ffi::OsStr;
 use std::iter::once;
 use std::os::windows::ffi::OsStrExt;
-use std::ptr;
 use std::process::Command;
+use std::ptr;
 
 use windows_sys::Win32::UI::Shell::ShellExecuteW;
 /// 判断是否是 URL 协议（http/https/steam:// 等）
@@ -44,42 +44,118 @@ pub fn is_url(s: &str) -> bool {
 /// 用于后端二次校验 app_type，避免前端 bug 把网址存为 folder
 pub fn looks_like_domain(s: &str) -> bool {
     let s = s.trim().to_lowercase();
-    if s.is_empty() { return false; }
+    if s.is_empty() {
+        return false;
+    }
     // Windows 盘符：C:\ D:\ 不是域名
     let bytes = s.as_bytes();
-    if bytes.len() >= 3 && bytes[0].is_ascii_alphabetic()
-        && (bytes[1] == b':' )
-        && (bytes[2] == b'\\' || bytes[2] == b'/') {
+    if bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && (bytes[1] == b':')
+        && (bytes[2] == b'\\' || bytes[2] == b'/')
+    {
         return false;
     }
     const TLDS: &[&str] = &[
         // 中国区域后缀（长的放前面，避免被短的抢先匹配）
-        ".com.cn", ".net.cn", ".org.cn", ".gov.cn", ".edu.cn", ".ac.cn",
+        ".com.cn",
+        ".net.cn",
+        ".org.cn",
+        ".gov.cn",
+        ".edu.cn",
+        ".ac.cn",
         // 通用顶级域名 gTLD（最常用）
-        ".com", ".cn", ".net", ".org", ".io", ".dev", ".cc", ".co", ".ai", ".app",
-        ".top", ".xyz", ".club", ".shop", ".site", ".vip", ".tech", ".store",
-        ".me", ".tv", ".fm", ".info", ".biz", ".us", ".jp", ".kr", ".ru", ".uk",
-        ".de", ".fr", ".edu", ".gov", ".mil",
+        ".com",
+        ".cn",
+        ".net",
+        ".org",
+        ".io",
+        ".dev",
+        ".cc",
+        ".co",
+        ".ai",
+        ".app",
+        ".top",
+        ".xyz",
+        ".club",
+        ".shop",
+        ".site",
+        ".vip",
+        ".tech",
+        ".store",
+        ".me",
+        ".tv",
+        ".fm",
+        ".info",
+        ".biz",
+        ".us",
+        ".jp",
+        ".kr",
+        ".ru",
+        ".uk",
+        ".de",
+        ".fr",
+        ".edu",
+        ".gov",
+        ".mil",
         // 高频率新型 TLD（之前漏的 .fun 特别补：用于 v2fun 等）
-        ".fun", ".online", ".live", ".news", ".blog", ".wiki", ".video", ".cloud",
-        ".work", ".link", ".win", ".space", ".website", ".press", ".today", ".run",
-        ".life", ".group", ".design", ".art", ".photo", ".pics", ".pictures",
-        ".show", ".watch", ".games", ".game", ".play", ".plus", ".pro", ".name",
-        ".mobi", ".icu", ".xin", ".top", ".ren", ".wang", ".so", ".lu",
+        ".fun",
+        ".online",
+        ".live",
+        ".news",
+        ".blog",
+        ".wiki",
+        ".video",
+        ".cloud",
+        ".work",
+        ".link",
+        ".win",
+        ".space",
+        ".website",
+        ".press",
+        ".today",
+        ".run",
+        ".life",
+        ".group",
+        ".design",
+        ".art",
+        ".photo",
+        ".pics",
+        ".pictures",
+        ".show",
+        ".watch",
+        ".games",
+        ".game",
+        ".play",
+        ".plus",
+        ".pro",
+        ".name",
+        ".mobi",
+        ".icu",
+        ".xin",
+        ".top",
+        ".ren",
+        ".wang",
+        ".so",
+        ".lu",
     ];
     for tld in TLDS {
         if let Some(idx) = s.find(tld) {
             let after = s.as_bytes().get(idx + tld.len()).copied();
             let match_after = match after {
-                None => true,                          // 字符串结尾
+                None => true, // 字符串结尾
                 Some(b'/') | Some(b'?') | Some(b':') | Some(b'#') => true,
                 _ => false,
             };
-            if !match_after { continue; }
+            if !match_after {
+                continue;
+            }
             // TLD 前面如果是反斜杠（\），那就是 Windows 路径，不是域名
             if idx > 0 {
                 if let Some(before) = s.as_bytes().get(idx - 1) {
-                    if *before == b'\\' { continue; }
+                    if *before == b'\\' {
+                        continue;
+                    }
                 }
             }
             return true;
@@ -90,8 +166,12 @@ pub fn looks_like_domain(s: &str) -> bool {
 
 /// 综合判断 path 是否属于 URL 类型（协议前缀 / .url 扩展名 / 裸域名）
 pub fn is_url_path(path: &str) -> bool {
-    if is_url(path) { return true; }
-    if looks_like_domain(path) { return true; }
+    if is_url(path) {
+        return true;
+    }
+    if looks_like_domain(path) {
+        return true;
+    }
     let ext = std::path::Path::new(path)
         .extension()
         .and_then(|e| e.to_str())
@@ -131,10 +211,7 @@ pub fn launch(path: &str, args: &str) -> Result<(), String> {
         }
     }
 
-    let wide_path: Vec<u16> = OsStr::new(path_trim)
-        .encode_wide()
-        .chain(once(0))
-        .collect();
+    let wide_path: Vec<u16> = OsStr::new(path_trim).encode_wide().chain(once(0)).collect();
     let wide_args: Vec<u16> = if args.is_empty() {
         // 空参数也必须传一个空字符串的指针，而不是 null
         vec![0u16]
@@ -190,20 +267,14 @@ fn launch_url_via_explorer(url: &str) -> Result<(), String> {
     if url_trim.is_empty() {
         return Err("URL 是空字符串，拒绝启动（否则 explorer 会误开「文档」文件夹！）".to_string());
     }
-    let wide_url: Vec<u16> = OsStr::new(url_trim)
-        .encode_wide()
-        .chain(once(0))
-        .collect();
-    let wide_verb: Vec<u16> = OsStr::new("open")
-        .encode_wide()
-        .chain(once(0))
-        .collect();
+    let wide_url: Vec<u16> = OsStr::new(url_trim).encode_wide().chain(once(0)).collect();
+    let wide_verb: Vec<u16> = OsStr::new("open").encode_wide().chain(once(0)).collect();
     unsafe {
         let result = ShellExecuteW(
             ptr::null_mut(),
-            wide_verb.as_ptr(),   // lpOperation = "open"（强制走「打开」动词，URL → 默认浏览器）
-            wide_url.as_ptr(),    // lpFile = URL
-            ptr::null(),          // lpParameters = 空（URL 不需要额外参数）
+            wide_verb.as_ptr(), // lpOperation = "open"（强制走「打开」动词，URL → 默认浏览器）
+            wide_url.as_ptr(),  // lpFile = URL
+            ptr::null(),        // lpParameters = 空（URL 不需要额外参数）
             ptr::null(),
             1,
         );
@@ -214,7 +285,10 @@ fn launch_url_via_explorer(url: &str) -> Result<(), String> {
             // ShellExecuteW 失败 → 兜底 explorer.exe（原错误码文案仅用于已删除的调试日志）
             match Command::new("explorer.exe").arg(url_trim).spawn() {
                 Ok(_) => Ok(()),
-                Err(e) => Err(format!("打开 URL 彻底失败（ShellExecuteW={}, explorer.exe 兜底也失败）: {} ({})", code, url_trim, e)),
+                Err(e) => Err(format!(
+                    "打开 URL 彻底失败（ShellExecuteW={}, explorer.exe 兜底也失败）: {} ({})",
+                    code, url_trim, e
+                )),
             }
         }
     }

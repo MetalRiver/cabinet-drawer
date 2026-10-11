@@ -4,10 +4,10 @@ use aes_gcm::{
 };
 use argon2::{self, Algorithm, Argon2, Params, Version};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use bip39::{Language, Mnemonic};
 use hkdf::Hkdf;
 use rand::Rng;
 use sha2::{Digest, Sha256};
-use bip39::{Language, Mnemonic};
 use zeroize::Zeroizing;
 
 const NONCE_SIZE: usize = 12;
@@ -80,35 +80,30 @@ pub fn hash_password(password: &str, salt: &[u8]) -> String {
 
 /// BIP39 风格的简化词库（256 个常用词，足以做 12 词恢复短语）
 const WORD_LIST: &[&str] = &[
-    "abandon", "ability", "able", "about", "above", "absent", "absorb", "abstract",
-    "absurd", "abuse", "access", "accident", "account", "accuse", "achieve", "acid",
-    "acoustic", "acquire", "across", "act", "action", "actor", "actress", "actual",
-    "adapt", "add", "addict", "address", "adjust", "admit", "adult", "advance",
-    "advice", "aerobic", "affair", "afford", "afraid", "again", "age", "agent",
-    "agree", "ahead", "aim", "air", "airport", "aisle", "alarm", "album",
-    "alcohol", "alert", "alien", "all", "alley", "allow", "almost", "alone",
-    "alpha", "already", "also", "alter", "always", "amateur", "amazing", "among",
-    "amount", "amused", "analyst", "anchor", "ancient", "anger", "angle", "angry",
-    "animal", "ankle", "announce", "annual", "another", "answer", "antenna", "antique",
-    "anxiety", "any", "apart", "apology", "appear", "apple", "approve", "april",
-    "arch", "arctic", "area", "arena", "argue", "arm", "armed", "armor",
-    "army", "around", "arrange", "arrest", "arrive", "arrow", "art", "artefact",
-    "artist", "artwork", "ask", "aspect", "assault", "asset", "assist", "assume",
-    "asthma", "athlete", "atom", "attack", "attend", "attitude", "attract", "auction",
-    "audit", "august", "aunt", "author", "auto", "autumn", "average", "avocado",
-    "avoid", "awake", "aware", "away", "awesome", "awful", "awkward", "axis",
-    "baby", "bachelor", "bacon", "badge", "bag", "balance", "balcony", "ball",
-    "bamboo", "banana", "banner", "bar", "barely", "bargain", "barrel", "basic",
-    "basket", "battle", "beach", "bean", "beauty", "because", "become", "beef",
-    "before", "begin", "behave", "behind", "believe", "below", "belt", "bench",
-    "benefit", "best", "betray", "better", "between", "beyond", "bicycle", "bid",
-    "bike", "bind", "biology", "bird", "birth", "bitter", "black", "blade",
-    "blame", "blanket", "blast", "bleak", "bless", "blind", "blood", "blossom",
-    "blouse", "blue", "blur", "blush", "board", "boat", "body", "boil",
-    "bomb", "bone", "bonus", "book", "boost", "border", "boring", "borrow",
-    "boss", "bottom", "bounce", "box", "boy", "bracket", "brain", "brand",
-    "brass", "brave", "bread", "breeze", "brick", "bridge", "brief", "bright",
-    "bring", "brisk", "broccoli", "broken", "bronze", "broom", "brother", "brown",
+    "abandon", "ability", "able", "about", "above", "absent", "absorb", "abstract", "absurd",
+    "abuse", "access", "accident", "account", "accuse", "achieve", "acid", "acoustic", "acquire",
+    "across", "act", "action", "actor", "actress", "actual", "adapt", "add", "addict", "address",
+    "adjust", "admit", "adult", "advance", "advice", "aerobic", "affair", "afford", "afraid",
+    "again", "age", "agent", "agree", "ahead", "aim", "air", "airport", "aisle", "alarm", "album",
+    "alcohol", "alert", "alien", "all", "alley", "allow", "almost", "alone", "alpha", "already",
+    "also", "alter", "always", "amateur", "amazing", "among", "amount", "amused", "analyst",
+    "anchor", "ancient", "anger", "angle", "angry", "animal", "ankle", "announce", "annual",
+    "another", "answer", "antenna", "antique", "anxiety", "any", "apart", "apology", "appear",
+    "apple", "approve", "april", "arch", "arctic", "area", "arena", "argue", "arm", "armed",
+    "armor", "army", "around", "arrange", "arrest", "arrive", "arrow", "art", "artefact", "artist",
+    "artwork", "ask", "aspect", "assault", "asset", "assist", "assume", "asthma", "athlete",
+    "atom", "attack", "attend", "attitude", "attract", "auction", "audit", "august", "aunt",
+    "author", "auto", "autumn", "average", "avocado", "avoid", "awake", "aware", "away", "awesome",
+    "awful", "awkward", "axis", "baby", "bachelor", "bacon", "badge", "bag", "balance", "balcony",
+    "ball", "bamboo", "banana", "banner", "bar", "barely", "bargain", "barrel", "basic", "basket",
+    "battle", "beach", "bean", "beauty", "because", "become", "beef", "before", "begin", "behave",
+    "behind", "believe", "below", "belt", "bench", "benefit", "best", "betray", "better",
+    "between", "beyond", "bicycle", "bid", "bike", "bind", "biology", "bird", "birth", "bitter",
+    "black", "blade", "blame", "blanket", "blast", "bleak", "bless", "blind", "blood", "blossom",
+    "blouse", "blue", "blur", "blush", "board", "boat", "body", "boil", "bomb", "bone", "bonus",
+    "book", "boost", "border", "boring", "borrow", "boss", "bottom", "bounce", "box", "boy",
+    "bracket", "brain", "brand", "brass", "brave", "bread", "breeze", "brick", "bridge", "brief",
+    "bright", "bring", "brisk", "broccoli", "broken", "bronze", "broom", "brother", "brown",
     "brush", "bubble", "buddy", "budget", "buffalo", "build", "bulb", "bulk",
 ];
 
@@ -160,13 +155,29 @@ pub fn password_strength(password: &str) -> u8 {
 }
 
 /// 生成随机密码
-pub fn generate_password(length: usize, use_upper: bool, use_lower: bool, use_digits: bool, use_symbols: bool) -> String {
+pub fn generate_password(
+    length: usize,
+    use_upper: bool,
+    use_lower: bool,
+    use_digits: bool,
+    use_symbols: bool,
+) -> String {
     let mut charset = String::new();
-    if use_upper { charset.push_str("ABCDEFGHJKLMNPQRSTUVWXYZ"); }
-    if use_lower { charset.push_str("abcdefghijkmnpqrstuvwxyz"); }
-    if use_digits { charset.push_str("23456789"); }
-    if use_symbols { charset.push_str("!@#$%^&*-_=+"); }
-    if charset.is_empty() { charset.push_str("abcdefghijkmnpqrstuvwxyz"); }
+    if use_upper {
+        charset.push_str("ABCDEFGHJKLMNPQRSTUVWXYZ");
+    }
+    if use_lower {
+        charset.push_str("abcdefghijkmnpqrstuvwxyz");
+    }
+    if use_digits {
+        charset.push_str("23456789");
+    }
+    if use_symbols {
+        charset.push_str("!@#$%^&*-_=+");
+    }
+    if charset.is_empty() {
+        charset.push_str("abcdefghijkmnpqrstuvwxyz");
+    }
 
     let charset_bytes = charset.as_bytes();
     let mut rng = rand::thread_rng();
@@ -287,7 +298,10 @@ pub fn wrap_dek(dek: &[u8], kek: &[u8], aad: &str) -> Result<String, String> {
     let ct = cipher
         .encrypt(
             Nonce::from_slice(&nonce_bytes),
-            aes_gcm::aead::Payload { msg: dek, aad: aad.as_bytes() },
+            aes_gcm::aead::Payload {
+                msg: dek,
+                aad: aad.as_bytes(),
+            },
         )
         .map_err(|e| e.to_string())?;
     let mut raw = nonce_bytes.to_vec();
@@ -296,16 +310,30 @@ pub fn wrap_dek(dek: &[u8], kek: &[u8], aad: &str) -> Result<String, String> {
 }
 
 /// 解封 DEK：认证解封成功 = KEK 正确。任何失败统一 SecretError
-pub fn unwrap_dek(serialized: &str, kek: &[u8], aad: &str) -> Result<Zeroizing<Vec<u8>>, SecretError> {
-    let body = serialized.strip_prefix(WRAP_DEK_PREFIX).ok_or(SecretError::InvalidFormat)?;
-    let raw = BASE64.decode(body).map_err(|_| SecretError::InvalidFormat)?;
+pub fn unwrap_dek(
+    serialized: &str,
+    kek: &[u8],
+    aad: &str,
+) -> Result<Zeroizing<Vec<u8>>, SecretError> {
+    let body = serialized
+        .strip_prefix(WRAP_DEK_PREFIX)
+        .ok_or(SecretError::InvalidFormat)?;
+    let raw = BASE64
+        .decode(body)
+        .map_err(|_| SecretError::InvalidFormat)?;
     if raw.len() < 12 + 16 {
         return Err(SecretError::InvalidFormat);
     }
     let (nonce, ct) = raw.split_at(12);
     let cipher = Aes256Gcm::new_from_slice(kek).map_err(|_| SecretError::AuthFailed)?;
     let pt = cipher
-        .decrypt(Nonce::from_slice(nonce), aes_gcm::aead::Payload { msg: ct, aad: aad.as_bytes() })
+        .decrypt(
+            Nonce::from_slice(nonce),
+            aes_gcm::aead::Payload {
+                msg: ct,
+                aad: aad.as_bytes(),
+            },
+        )
         .map_err(|_| SecretError::AuthFailed)?;
     Ok(Zeroizing::new(pt))
 }
@@ -363,7 +391,11 @@ pub fn wrap_dek_recovery(dek: &[u8], entropy: &[u8], salt_r: &[u8]) -> Result<St
 }
 
 /// 解封 DEK（Recovery 路径便捷组合）：derive_recovery_kek + unwrap_dek
-pub fn unwrap_dek_recovery(serialized: &str, entropy: &[u8], salt_r: &[u8]) -> Result<Zeroizing<Vec<u8>>, SecretError> {
+pub fn unwrap_dek_recovery(
+    serialized: &str,
+    entropy: &[u8],
+    salt_r: &[u8],
+) -> Result<Zeroizing<Vec<u8>>, SecretError> {
     let kek = derive_recovery_kek(entropy, salt_r);
     unwrap_dek(serialized, &kek, AAD_WRAP_RECOVERY)
 }
@@ -376,13 +408,20 @@ pub fn password_aad(record_uuid: &str) -> String {
 }
 
 /// 行加密（DW2 格式）：AES-GCM(DEK, 明文, AAD)
-pub fn encrypt_password_dw2(plaintext: &str, dek: &[u8], record_uuid: &str) -> Result<String, String> {
+pub fn encrypt_password_dw2(
+    plaintext: &str,
+    dek: &[u8],
+    record_uuid: &str,
+) -> Result<String, String> {
     let cipher = Aes256Gcm::new_from_slice(dek).map_err(|e| e.to_string())?;
     let nonce_bytes = rand::thread_rng().gen::<[u8; 12]>();
     let ct = cipher
         .encrypt(
             Nonce::from_slice(&nonce_bytes),
-            aes_gcm::aead::Payload { msg: plaintext.as_bytes(), aad: password_aad(record_uuid).as_bytes() },
+            aes_gcm::aead::Payload {
+                msg: plaintext.as_bytes(),
+                aad: password_aad(record_uuid).as_bytes(),
+            },
         )
         .map_err(|e| e.to_string())?;
     let mut raw = nonce_bytes.to_vec();
@@ -391,16 +430,30 @@ pub fn encrypt_password_dw2(plaintext: &str, dek: &[u8], record_uuid: &str) -> R
 }
 
 /// 行解密（DW2 格式）：认证失败/格式错误统一 SecretError
-pub fn decrypt_password_dw2(dw2: &str, dek: &[u8], record_uuid: &str) -> Result<String, SecretError> {
-    let body = dw2.strip_prefix(PASSWORD_PREFIX_DW2).ok_or(SecretError::InvalidFormat)?;
-    let raw = BASE64.decode(body).map_err(|_| SecretError::InvalidFormat)?;
+pub fn decrypt_password_dw2(
+    dw2: &str,
+    dek: &[u8],
+    record_uuid: &str,
+) -> Result<String, SecretError> {
+    let body = dw2
+        .strip_prefix(PASSWORD_PREFIX_DW2)
+        .ok_or(SecretError::InvalidFormat)?;
+    let raw = BASE64
+        .decode(body)
+        .map_err(|_| SecretError::InvalidFormat)?;
     if raw.len() < 12 + 16 {
         return Err(SecretError::InvalidFormat);
     }
     let (nonce, ct) = raw.split_at(12);
     let cipher = Aes256Gcm::new_from_slice(dek).map_err(|_| SecretError::AuthFailed)?;
     let pt = cipher
-        .decrypt(Nonce::from_slice(nonce), aes_gcm::aead::Payload { msg: ct, aad: password_aad(record_uuid).as_bytes() })
+        .decrypt(
+            Nonce::from_slice(nonce),
+            aes_gcm::aead::Payload {
+                msg: ct,
+                aad: password_aad(record_uuid).as_bytes(),
+            },
+        )
         .map_err(|_| SecretError::AuthFailed)?;
     String::from_utf8(pt).map_err(|_| SecretError::AuthFailed)
 }
@@ -414,7 +467,14 @@ mod phase2a_tests {
         BASE64.encode(b"0123456789abcdef0123456789abcdef")
     }
     fn params_with(salt: &str) -> KdfParams {
-        KdfParams { algo: "argon2id".into(), version: 1, m_cost: 19456, t_cost: 2, p_cost: 1, salt: salt.into() }
+        KdfParams {
+            algo: "argon2id".into(),
+            version: 1,
+            m_cost: 19456,
+            t_cost: 2,
+            p_cost: 1,
+            salt: salt.into(),
+        }
     }
 
     // ===== T1：Master KEK derivation =====
@@ -436,7 +496,10 @@ mod phase2a_tests {
     #[test]
     fn t1_master_kek_differs_by_salt() {
         let a = derive_master_kek(PW, &params_with(&salt_b64()));
-        let b = derive_master_kek(PW, &params_with(&BASE64.encode(b"ffffffffffffffffffffffffffffffff")));
+        let b = derive_master_kek(
+            PW,
+            &params_with(&BASE64.encode(b"ffffffffffffffffffffffffffffffff")),
+        );
         assert_ne!(*a, *b);
     }
 
@@ -482,16 +545,29 @@ mod phase2a_tests {
         let body = wrapped.strip_prefix(WRAP_DEK_PREFIX).unwrap();
         let mut raw = BASE64.decode(body).unwrap();
         let n = raw.len();
-        let mut v1 = raw.clone(); v1[3] ^= 0xff;
-        let mut v2 = raw.clone(); v2[n - 20] ^= 0xff;
-        let mut v3 = raw.clone(); v3[n - 1] ^= 0xff;
+        let mut v1 = raw.clone();
+        v1[3] ^= 0xff;
+        let mut v2 = raw.clone();
+        v2[n - 20] ^= 0xff;
+        let mut v3 = raw.clone();
+        v3[n - 1] ^= 0xff;
         for (name, v) in [("nonce", v1), ("ciphertext", v2), ("tag", v3)] {
             let s = format!("{}{}", WRAP_DEK_PREFIX, BASE64.encode(&v));
-            assert!(unwrap_dek(&s, &kek, AAD_WRAP_MASTER).is_err(), "{} 篡改必须失败", name);
+            assert!(
+                unwrap_dek(&s, &kek, AAD_WRAP_MASTER).is_err(),
+                "{} 篡改必须失败",
+                name
+            );
         }
         let s = format!("DWK9:{}", body);
-        assert!(unwrap_dek(&s, &kek, AAD_WRAP_MASTER).is_err(), "未知版本必须失败");
-        assert!(unwrap_dek(&wrapped, &kek, AAD_WRAP_RECOVERY).is_err(), "AAD 不匹配必须失败");
+        assert!(
+            unwrap_dek(&s, &kek, AAD_WRAP_MASTER).is_err(),
+            "未知版本必须失败"
+        );
+        assert!(
+            unwrap_dek(&wrapped, &kek, AAD_WRAP_RECOVERY).is_err(),
+            "AAD 不匹配必须失败"
+        );
     }
 
     #[test]
@@ -499,9 +575,22 @@ mod phase2a_tests {
         let kek = derive_master_kek(PW, &params_with(&salt_b64()));
         let dek = generate_dek();
         let wrapped = wrap_dek(&dek, &kek, AAD_WRAP_MASTER).unwrap();
-        let e1 = unwrap_dek(&wrapped, &kek, AAD_WRAP_RECOVERY).unwrap_err().to_string();
-        let e2 = unwrap_dek("DWK1:!!!notbase64", &kek, AAD_WRAP_MASTER).unwrap_err().to_string();
-        let e3 = unwrap_dek(&wrapped, &derive_master_kek("x", &params_with(&BASE64.encode(b"003456789abcdef0123456789abcdef"))), AAD_WRAP_MASTER).unwrap_err().to_string();
+        let e1 = unwrap_dek(&wrapped, &kek, AAD_WRAP_RECOVERY)
+            .unwrap_err()
+            .to_string();
+        let e2 = unwrap_dek("DWK1:!!!notbase64", &kek, AAD_WRAP_MASTER)
+            .unwrap_err()
+            .to_string();
+        let e3 = unwrap_dek(
+            &wrapped,
+            &derive_master_kek(
+                "x",
+                &params_with(&BASE64.encode(b"003456789abcdef0123456789abcdef")),
+            ),
+            AAD_WRAP_MASTER,
+        )
+        .unwrap_err()
+        .to_string();
         assert_eq!(e1, e2, "失败原因不得通过错误消息区分");
         assert_eq!(e2, e3);
         assert!(!e1.contains("nonce") && !e1.contains("key") && !e1.contains("tag"));
@@ -523,13 +612,22 @@ mod phase2a_tests {
         let entropy = generate_recovery_entropy();
         let phrase = entropy_to_mnemonic(&entropy).unwrap();
         let words: Vec<&str> = phrase.split_whitespace().collect();
-        assert!(mnemonic_to_entropy(&words[..11].join(" ")).is_err(), "11 词必须拒绝");
-        assert!(mnemonic_to_entropy(&format!("{} {}", phrase, words[0])).is_err(), "13 词必须拒绝");
+        assert!(
+            mnemonic_to_entropy(&words[..11].join(" ")).is_err(),
+            "11 词必须拒绝"
+        );
+        assert!(
+            mnemonic_to_entropy(&format!("{} {}", phrase, words[0])).is_err(),
+            "13 词必须拒绝"
+        );
     }
 
     #[test]
     fn t3_unknown_word_rejected() {
-        assert!(mnemonic_to_entropy("this-is-not-a-bip39-word list entry alpha beta gamma delta").is_err());
+        assert!(
+            mnemonic_to_entropy("this-is-not-a-bip39-word list entry alpha beta gamma delta")
+                .is_err()
+        );
     }
 
     #[test]
@@ -539,7 +637,10 @@ mod phase2a_tests {
         let words: Vec<&str> = phrase.split_whitespace().collect();
         let swapped = format!("{} {}", words[1], words[0]);
         if swapped != phrase {
-            assert!(mnemonic_to_entropy(&swapped).is_err(), "顺序错误/校验和错误必须拒绝");
+            assert!(
+                mnemonic_to_entropy(&swapped).is_err(),
+                "顺序错误/校验和错误必须拒绝"
+            );
         }
     }
 
@@ -561,11 +662,20 @@ mod phase2a_tests {
         let kek_r = derive_recovery_kek(mnemonic_to_entropy(&phrase).unwrap().as_slice(), salt_r);
         let dek = generate_dek();
         let wrapped = wrap_dek(&dek, &kek_r, AAD_WRAP_RECOVERY).unwrap();
-        let back = unwrap_dek_recovery(&wrapped, mnemonic_to_entropy(&phrase).unwrap().as_slice(), salt_r).unwrap();
+        let back = unwrap_dek_recovery(
+            &wrapped,
+            mnemonic_to_entropy(&phrase).unwrap().as_slice(),
+            salt_r,
+        )
+        .unwrap();
         assert_eq!(*back, *dek);
         let kek_m = derive_master_kek(PW, &params_with(&salt_b64()));
         let w_m = wrap_dek(&dek, &kek_m, AAD_WRAP_MASTER).unwrap();
-        assert_eq!(*unwrap_dek(&w_m, &kek_m, AAD_WRAP_MASTER).unwrap(), *back, "两条包裹路径解出同一 DEK");
+        assert_eq!(
+            *unwrap_dek(&w_m, &kek_m, AAD_WRAP_MASTER).unwrap(),
+            *back,
+            "两条包裹路径解出同一 DEK"
+        );
     }
 
     #[test]
@@ -573,7 +683,10 @@ mod phase2a_tests {
         let salt_r = b"recovery-salt-r-16b";
         let e1 = generate_recovery_entropy();
         let e2 = generate_recovery_entropy();
-        assert_ne!(*derive_recovery_kek(e1.as_slice(), salt_r), *derive_recovery_kek(e2.as_slice(), salt_r));
+        assert_ne!(
+            *derive_recovery_kek(e1.as_slice(), salt_r),
+            *derive_recovery_kek(e2.as_slice(), salt_r)
+        );
     }
 
     #[test]
@@ -581,10 +694,27 @@ mod phase2a_tests {
         let entropy_old = generate_recovery_entropy();
         let entropy_new = generate_recovery_entropy();
         let dek = generate_dek();
-        let w_old = wrap_dek(&dek, &derive_recovery_kek(entropy_old.as_slice(), b"old-salt-r-16b"), AAD_WRAP_RECOVERY).unwrap();
-        let w_new = wrap_dek(&dek, &derive_recovery_kek(entropy_new.as_slice(), b"new-salt-r-16b"), AAD_WRAP_RECOVERY).unwrap();
+        let w_old = wrap_dek(
+            &dek,
+            &derive_recovery_kek(entropy_old.as_slice(), b"old-salt-r-16b"),
+            AAD_WRAP_RECOVERY,
+        )
+        .unwrap();
+        let w_new = wrap_dek(
+            &dek,
+            &derive_recovery_kek(entropy_new.as_slice(), b"new-salt-r-16b"),
+            AAD_WRAP_RECOVERY,
+        )
+        .unwrap();
         assert_ne!(w_old, w_new, "轮换后 wrapped_dek_r 必须变化");
-        assert_eq!(*unwrap_dek_recovery(&w_new, entropy_new.as_slice(), b"new-salt-r-16b").unwrap(), *dek, "新短语解出同一 DEK");
-        assert!(unwrap_dek_recovery(&w_new, entropy_old.as_slice(), b"old-salt-r-16b").is_err(), "旧短语立即失效");
+        assert_eq!(
+            *unwrap_dek_recovery(&w_new, entropy_new.as_slice(), b"new-salt-r-16b").unwrap(),
+            *dek,
+            "新短语解出同一 DEK"
+        );
+        assert!(
+            unwrap_dek_recovery(&w_new, entropy_old.as_slice(), b"old-salt-r-16b").is_err(),
+            "旧短语立即失效"
+        );
     }
 }

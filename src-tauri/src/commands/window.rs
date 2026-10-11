@@ -326,11 +326,9 @@ pub fn apply_widget_config(window: Window, state: State<AppState>) -> Result<(),
 // ============================================================
 #[tauri::command]
 pub fn get_app_edition() -> Result<String, String> {
-    Ok(
-        if crate::data_root::is_portable_test_edition() {
-            "acceptance".to_string()
-        } else {
-            "standard".to_string()
-        },
-    )
+    Ok(if crate::data_root::is_portable_test_edition() {
+        "acceptance".to_string()
+    } else {
+        "standard".to_string()
+    })
 }

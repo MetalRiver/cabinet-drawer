@@ -79,7 +79,8 @@ mod legacy_migration_tests {
         )
         .unwrap();
         db.set_setting("trash_retention_days", "7").unwrap();
-        db.set_setting("fixture_business_setting", "preserve-me").unwrap();
+        db.set_setting("fixture_business_setting", "preserve-me")
+            .unwrap();
 
         for i in 0..6 {
             let enc = crypto::encrypt(&format!("legacy-secret-{i}"), &key).unwrap();
@@ -112,9 +113,18 @@ mod legacy_migration_tests {
             .unwrap();
         }
         let cat = db.create_app_category("fixture-cat", "📁").unwrap();
-        db.create_app("Fixture App", "C:\\fixture\\app.exe", "", "", Some(cat), "app", "utility")
+        db.create_app(
+            "Fixture App",
+            "C:\\fixture\\app.exe",
+            "",
+            "",
+            Some(cat),
+            "app",
+            "utility",
+        )
+        .unwrap();
+        db.create_snippet("Fixture Snippet", "echo fixture", "bash", "fixture")
             .unwrap();
-        db.create_snippet("Fixture Snippet", "echo fixture", "bash", "fixture").unwrap();
         db.create_temp("fixture temp content", 60).unwrap();
         key
     }
@@ -226,7 +236,10 @@ mod legacy_migration_tests {
                 )
                 .unwrap();
             assert!(seen.insert(record_uuid.clone()), "record_uuid 不唯一");
-            assert!(dw2.starts_with(crypto::PASSWORD_PREFIX_DW2), "不是 DW2 格式");
+            assert!(
+                dw2.starts_with(crypto::PASSWORD_PREFIX_DW2),
+                "不是 DW2 格式"
+            );
             let v2_plain =
                 Zeroizing::new(crypto::decrypt_password_dw2(&dw2, dek, &record_uuid).unwrap());
             assert_eq!(
@@ -295,10 +308,23 @@ mod legacy_migration_tests {
         sorted.sort();
         assert_eq!(sorted, prepared.confirmation_indexes, "确认位置有序");
         assert!(sorted.iter().all(|i| (0..12).contains(i)));
-        assert!(sorted.iter().collect::<std::collections::HashSet<_>>().len() == 3, "位置不重复");
+        assert!(
+            sorted
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len()
+                == 3,
+            "位置不重复"
+        );
 
-        assert!(dir.join(migration::V2_TMP_FILENAME).is_file(), "pending tmp 已创建");
-        assert!(!dir.join(migration::V2_DB_FILENAME).exists(), "正式 v2 不得存在");
+        assert!(
+            dir.join(migration::V2_TMP_FILENAME).is_file(),
+            "pending tmp 已创建"
+        );
+        assert!(
+            !dir.join(migration::V2_DB_FILENAME).exists(),
+            "正式 v2 不得存在"
+        );
         assert_eq!(
             file_sha256(&dir.join(LEGACY_DB_FILENAME)),
             legacy_hash,
@@ -306,7 +332,10 @@ mod legacy_migration_tests {
         );
         let status = state.legacy_migration_status();
         assert!(status.active);
-        assert_eq!(status.migration_token.as_deref(), Some(prepared.migration_token.as_str()));
+        assert_eq!(
+            status.migration_token.as_deref(),
+            Some(prepared.migration_token.as_str())
+        );
 
         state.pending_legacy_migration.lock().unwrap().take();
         cleanup_dir(&dir);
@@ -324,7 +353,10 @@ mod legacy_migration_tests {
         assert!(result.is_err(), "错主密码必须被拒绝");
         assert!(!dir.join(migration::V2_DB_FILENAME).exists(), "无正式 v2");
         assert!(!dir.join(migration::V2_TMP_FILENAME).exists(), "无脏 tmp");
-        assert!(!dir.join(migration::V2_SETUP_LOCK_FILENAME).exists(), "无脏 lock");
+        assert!(
+            !dir.join(migration::V2_SETUP_LOCK_FILENAME).exists(),
+            "无脏 lock"
+        );
         assert!(!state.legacy_migration_status().active, "无 pending");
         assert_eq!(file_sha256(&dir.join(LEGACY_DB_FILENAME)), legacy_hash);
         cleanup_dir(&dir);
@@ -349,13 +381,18 @@ mod legacy_migration_tests {
         assert!(removed, "orphan tmp 必须被识别并清理");
         assert!(!dir.join(migration::V2_TMP_FILENAME).exists());
         assert!(!dir.join(migration::V2_SETUP_LOCK_FILENAME).exists());
-        assert!(!dir.join(migration::V2_DB_FILENAME).exists(), "正式 v2 不存在");
+        assert!(
+            !dir.join(migration::V2_DB_FILENAME).exists(),
+            "正式 v2 不存在"
+        );
 
         // 用户可以再次完整升级
         let state = legacy_state(&dir);
         let prepared = state.prepare_legacy_migration(MASTER).unwrap();
         let answers = confirm_answers(&prepared);
-        state.confirm_legacy_migration(&prepared.migration_token, &answers).unwrap();
+        state
+            .confirm_legacy_migration(&prepared.migration_token, &answers)
+            .unwrap();
         assert!(dir.join(migration::V2_DB_FILENAME).is_file());
         cleanup_dir(&dir);
     }
@@ -376,14 +413,22 @@ mod legacy_migration_tests {
             .collect();
         let result = state.confirm_legacy_migration(&prepared.migration_token, &wrong);
         assert!(result.is_err(), "错误确认词必须拒绝");
-        assert!(!dir.join(migration::V2_DB_FILENAME).exists(), "正式 v2 不得存在");
-        assert!(dir.join(migration::V2_TMP_FILENAME).is_file(), "pending 保留可重试");
+        assert!(
+            !dir.join(migration::V2_DB_FILENAME).exists(),
+            "正式 v2 不得存在"
+        );
+        assert!(
+            dir.join(migration::V2_TMP_FILENAME).is_file(),
+            "pending 保留可重试"
+        );
         assert!(state.legacy_migration_status().active, "pending 仍在");
         assert_eq!(file_sha256(&dir.join(LEGACY_DB_FILENAME)), legacy_hash);
 
         // 正确词仍可完成（重试路径有效）
         let answers = confirm_answers(&prepared);
-        state.confirm_legacy_migration(&prepared.migration_token, &answers).unwrap();
+        state
+            .confirm_legacy_migration(&prepared.migration_token, &answers)
+            .unwrap();
         assert!(dir.join(migration::V2_DB_FILENAME).is_file());
         cleanup_dir(&dir);
     }
@@ -400,16 +445,31 @@ mod legacy_migration_tests {
         let phrase: String = prepared.recovery_words.join(" ");
         let answers = confirm_answers(&prepared);
 
-        state.confirm_legacy_migration(&prepared.migration_token, &answers).unwrap();
+        state
+            .confirm_legacy_migration(&prepared.migration_token, &answers)
+            .unwrap();
 
         // 激活与模型切换
-        assert!(dir.join(migration::V2_DB_FILENAME).is_file(), "正式 v2 已就位");
+        assert!(
+            dir.join(migration::V2_DB_FILENAME).is_file(),
+            "正式 v2 已就位"
+        );
         assert!(!dir.join(migration::V2_TMP_FILENAME).exists(), "tmp 已消失");
-        assert!(!dir.join(migration::V2_SETUP_LOCK_FILENAME).exists(), "lock 已清理");
-        let backup = dir.join(format!("{LEGACY_DB_FILENAME}{}", migration::LEGACY_BACKUP_SUFFIX));
+        assert!(
+            !dir.join(migration::V2_SETUP_LOCK_FILENAME).exists(),
+            "lock 已清理"
+        );
+        let backup = dir.join(format!(
+            "{LEGACY_DB_FILENAME}{}",
+            migration::LEGACY_BACKUP_SUFFIX
+        ));
         assert!(backup.is_file(), "legacy 隔离归档存在");
         assert!(!dir.join(LEGACY_DB_FILENAME).exists(), "legacy 原位已移除");
-        assert_eq!(file_sha256(&backup), legacy_hash, "legacy 归档字节级等于原始库");
+        assert_eq!(
+            file_sha256(&backup),
+            legacy_hash,
+            "legacy 归档字节级等于原始库"
+        );
         assert_eq!(state.security_model(), SecurityModel::StableDekV2);
         assert!(state.is_unlocked(), "confirm 后 AppState 安装 Stable DEK");
 
@@ -421,13 +481,22 @@ mod legacy_migration_tests {
         {
             let db = state.db.lock().unwrap();
             let master_dek = migration::unlock_v2_core(&db, MASTER).unwrap();
-            assert_eq!(master_dek.as_slice(), active_dek.as_slice(), "Master unlock DEK 一致");
+            assert_eq!(
+                master_dek.as_slice(),
+                active_dek.as_slice(),
+                "Master unlock DEK 一致"
+            );
             let recovery_dek = migration::recover_v2_core(&db, &phrase).unwrap();
-            assert_eq!(recovery_dek.as_slice(), active_dek.as_slice(), "Recovery unlock DEK 一致");
+            assert_eq!(
+                recovery_dek.as_slice(),
+                active_dek.as_slice(),
+                "Recovery unlock DEK 一致"
+            );
         }
 
         // 12/12（全部行）密码明文等价
-        let checked = verify_password_plaintext_equality(&backup, &state, &legacy_key, active_dek.as_slice());
+        let checked =
+            verify_password_plaintext_equality(&backup, &state, &legacy_key, active_dek.as_slice());
         assert_eq!(checked, 6, "密码明文等价 6/6");
 
         // 重新锁定后 Master unlock 仍有效
@@ -447,13 +516,25 @@ mod legacy_migration_tests {
 
         let state = legacy_state(&dir);
         let prepared = state.prepare_legacy_migration(MASTER).unwrap();
-        state.cancel_legacy_migration(&prepared.migration_token).unwrap();
+        state
+            .cancel_legacy_migration(&prepared.migration_token)
+            .unwrap();
 
         assert!(!state.legacy_migration_status().active, "pending 已清");
         assert!(!dir.join(migration::V2_TMP_FILENAME).exists(), "tmp 已删除");
-        assert!(!dir.join(migration::V2_SETUP_LOCK_FILENAME).exists(), "lock 已删除");
-        assert!(!dir.join(migration::V2_DB_FILENAME).exists(), "正式 v2 不存在");
-        assert_eq!(file_sha256(&dir.join(LEGACY_DB_FILENAME)), legacy_hash, "legacy 不变");
+        assert!(
+            !dir.join(migration::V2_SETUP_LOCK_FILENAME).exists(),
+            "lock 已删除"
+        );
+        assert!(
+            !dir.join(migration::V2_DB_FILENAME).exists(),
+            "正式 v2 不存在"
+        );
+        assert_eq!(
+            file_sha256(&dir.join(LEGACY_DB_FILENAME)),
+            legacy_hash,
+            "legacy 不变"
+        );
 
         // token 失效：旧 token 再 confirm 拒绝
         let answers = confirm_answers(&prepared);
@@ -473,17 +554,25 @@ mod legacy_migration_tests {
         let state = legacy_state(&dir);
         let prepared = state.prepare_legacy_migration(MASTER).unwrap();
         let answers = confirm_answers(&prepared);
-        state.confirm_legacy_migration(&prepared.migration_token, &answers).unwrap();
+        state
+            .confirm_legacy_migration(&prepared.migration_token, &answers)
+            .unwrap();
         assert_eq!(state.security_model(), SecurityModel::StableDekV2);
 
         // 重复 confirm：拒绝（pending 已清、模型已切换）
         let replay = state.confirm_legacy_migration(&prepared.migration_token, &answers);
         assert!(replay.is_err(), "成功后旧 token 必须永久失效");
-        assert_eq!(state.security_model(), SecurityModel::StableDekV2, "状态不被回退");
+        assert_eq!(
+            state.security_model(),
+            SecurityModel::StableDekV2,
+            "状态不被回退"
+        );
         assert!(dir.join(migration::V2_DB_FILENAME).is_file());
 
         // cancel 同样拒绝旧 token
-        assert!(state.cancel_legacy_migration(&prepared.migration_token).is_err());
+        assert!(state
+            .cancel_legacy_migration(&prepared.migration_token)
+            .is_err());
         cleanup_dir(&dir);
     }
 
@@ -515,7 +604,9 @@ mod legacy_migration_tests {
         assert!(cross.is_err(), "活动升级期间跨进程 setup lock 必须不可获得");
         let _ = cross;
 
-        state.cancel_legacy_migration(&first.migration_token).unwrap();
+        state
+            .cancel_legacy_migration(&first.migration_token)
+            .unwrap();
         cleanup_dir(&dir);
     }
 
@@ -531,9 +622,16 @@ mod legacy_migration_tests {
             state.prepare_legacy_migration(MASTER).unwrap();
             // 进程在此崩溃：无任何清理代码执行
         }
-        assert!(dir.join(migration::V2_TMP_FILENAME).is_file(), "orphan tmp 存在");
+        assert!(
+            dir.join(migration::V2_TMP_FILENAME).is_file(),
+            "orphan tmp 存在"
+        );
         assert!(!dir.join(migration::V2_DB_FILENAME).exists(), "无正式 v2");
-        assert_eq!(file_sha256(&dir.join(LEGACY_DB_FILENAME)), legacy_hash, "legacy 完整");
+        assert_eq!(
+            file_sha256(&dir.join(LEGACY_DB_FILENAME)),
+            legacy_hash,
+            "legacy 完整"
+        );
 
         // 下次启动：orphan 清理后回到可升级状态
         assert!(migration::discard_abandoned_migration_tmp(&dir).unwrap());
@@ -567,9 +665,18 @@ mod legacy_migration_tests {
         let v2_path = dir.join(migration::V2_DB_FILENAME);
         let db = migration::open_existing_v2_db(&v2_path).unwrap();
         // security metadata 完整
-        for key in ["kdf_params_m", "wrapped_dek_m", "kdf_params_r", "wrapped_dek_r", "security_version"] {
+        for key in [
+            "kdf_params_m",
+            "wrapped_dek_m",
+            "kdf_params_r",
+            "wrapped_dek_r",
+            "security_version",
+        ] {
             assert!(
-                db.get_setting(key).unwrap().filter(|v| !v.is_empty()).is_some(),
+                db.get_setting(key)
+                    .unwrap()
+                    .filter(|v| !v.is_empty())
+                    .is_some(),
                 "{key} 完整"
             );
         }
@@ -598,13 +705,25 @@ mod legacy_migration_tests {
         assert_eq!(state.security_model(), SecurityModel::StableDekV2);
         state.unlock_v2_and_store(MASTER).unwrap();
         let active = state.stable_dek().unwrap();
-        assert_eq!(active.as_slice(), dek.as_slice(), "运行态 DEK 与解封 DEK 一致");
+        assert_eq!(
+            active.as_slice(),
+            dek.as_slice(),
+            "运行态 DEK 与解封 DEK 一致"
+        );
 
         // 业务数据可用：用 legacy key 对比明文
-        let backup = dir.join(format!("{LEGACY_DB_FILENAME}{}", migration::LEGACY_BACKUP_SUFFIX));
+        let backup = dir.join(format!(
+            "{LEGACY_DB_FILENAME}{}",
+            migration::LEGACY_BACKUP_SUFFIX
+        ));
         // LM10 场景 legacy 尚未归档（崩溃点在归档前），legacy 仍在原位
         let legacy_path = dir.join(LEGACY_DB_FILENAME);
-        let checked = verify_password_plaintext_equality(&legacy_path, &state, &legacy_key, active.as_slice());
+        let checked = verify_password_plaintext_equality(
+            &legacy_path,
+            &state,
+            &legacy_key,
+            active.as_slice(),
+        );
         assert_eq!(checked, 6);
         let _ = backup;
         cleanup_dir(&dir);
@@ -632,21 +751,32 @@ mod legacy_migration_tests {
                 )
                 .unwrap();
             writer
-                .execute("UPDATE settings SET value='8' WHERE key='trash_retention_days'", [])
+                .execute(
+                    "UPDATE settings SET value='8' WHERE key='trash_retention_days'",
+                    [],
+                )
                 .unwrap();
         }
 
         let result = state.confirm_legacy_migration(&prepared.migration_token, &answers);
         assert!(result.is_err(), "source changed 必须 fail closed");
-        assert!(!dir.join(migration::V2_DB_FILENAME).exists(), "stale v2 绝不激活");
-        assert!(!dir.join(migration::V2_TMP_FILENAME).exists(), "stale tmp 已清理");
+        assert!(
+            !dir.join(migration::V2_DB_FILENAME).exists(),
+            "stale v2 绝不激活"
+        );
+        assert!(
+            !dir.join(migration::V2_TMP_FILENAME).exists(),
+            "stale tmp 已清理"
+        );
         assert!(!state.legacy_migration_status().active, "pending 已清");
         assert!(dir.join(LEGACY_DB_FILENAME).is_file(), "legacy 原样保留");
 
         // 用户重新发起 migration：基于新指纹完整走通
         let prepared2 = state.prepare_legacy_migration(MASTER).unwrap();
         let answers2 = confirm_answers(&prepared2);
-        state.confirm_legacy_migration(&prepared2.migration_token, &answers2).unwrap();
+        state
+            .confirm_legacy_migration(&prepared2.migration_token, &answers2)
+            .unwrap();
         assert!(dir.join(migration::V2_DB_FILENAME).is_file());
         // 新数据在 v2 中
         {
@@ -676,12 +806,17 @@ mod legacy_migration_tests {
 
         // 变更类 legacy IPC 的硬闸
         assert!(ensure_not_legacy_startup(&state).is_err(), "改主密码闸");
-        assert!(state.require_legacy_model().is_ok(), "require_legacy_model 本身只查模型");
+        assert!(
+            state.require_legacy_model().is_ok(),
+            "require_legacy_model 本身只查模型"
+        );
 
         // setup lock 未被 bypass 触碰，升级流程不受影响
         let prepared = state.prepare_legacy_migration(MASTER).unwrap();
         let answers = confirm_answers(&prepared);
-        state.confirm_legacy_migration(&prepared.migration_token, &answers).unwrap();
+        state
+            .confirm_legacy_migration(&prepared.migration_token, &answers)
+            .unwrap();
 
         // 升级完成后普通 unlock 恢复（v2 路径）
         let state_v2 = &state;
@@ -700,9 +835,14 @@ mod legacy_migration_tests {
         let state = legacy_state(&dir);
         let prepared = state.prepare_legacy_migration(MASTER).unwrap();
         let answers = confirm_answers(&prepared);
-        state.confirm_legacy_migration(&prepared.migration_token, &answers).unwrap();
+        state
+            .confirm_legacy_migration(&prepared.migration_token, &answers)
+            .unwrap();
 
-        let backup = dir.join(format!("{LEGACY_DB_FILENAME}{}", migration::LEGACY_BACKUP_SUFFIX));
+        let backup = dir.join(format!(
+            "{LEGACY_DB_FILENAME}{}",
+            migration::LEGACY_BACKUP_SUFFIX
+        ));
         assert_business_data_identical(&backup, &state);
 
         let active = state.stable_dek().unwrap();
@@ -730,13 +870,18 @@ mod legacy_migration_tests {
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                 )
                 .unwrap();
-            assert_eq!((use_count, last_used, deleted_at), (9, 987, Some(12345)), "usage state 保留");
+            assert_eq!(
+                (use_count, last_used, deleted_at),
+                (9, 987, Some(12345)),
+                "usage state 保留"
+            );
             let pinned: i64 = conn
                 .query_row("SELECT COUNT(*) FROM pinned_items", [], |r| r.get(0))
                 .unwrap();
             assert_eq!(pinned, 2, "pinned_items 保留");
         }
-        let checked = verify_password_plaintext_equality(&backup, &state, &legacy_key, active.as_slice());
+        let checked =
+            verify_password_plaintext_equality(&backup, &state, &legacy_key, active.as_slice());
         assert_eq!(checked, 6, "12/12 风格全量明文等价 6/6");
         cleanup_dir(&dir);
     }
@@ -756,7 +901,9 @@ mod legacy_migration_tests {
         assert_phrase_never_persisted(&dir, &phrase, entropy.as_slice());
 
         let answers = confirm_answers(&prepared);
-        state.confirm_legacy_migration(&prepared.migration_token, &answers).unwrap();
+        state
+            .confirm_legacy_migration(&prepared.migration_token, &answers)
+            .unwrap();
 
         // Confirm 后（正式 v2 + 归档）：phrase / entropy 不落盘
         assert_phrase_never_persisted(&dir, &phrase, entropy.as_slice());

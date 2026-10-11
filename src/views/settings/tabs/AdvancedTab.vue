@@ -1,11 +1,12 @@
 <script setup lang="ts">
 // ===== Settings UI V2 · 高级与更新 Tab =====
 // 更新走既有 Tauri Updater（通道/签名不动）；图标诊断两个真实动作保留内联确认。
-import { ref, onUnmounted } from "vue";
+import { ref, computed, onUnmounted } from "vue";
 import { getAppVersion, restartApp } from "../../../api";
 import { useAppStore } from "../../../stores/app";
 import { useSoftwareStore } from "../../../stores/software";
 import ConfirmInline from "../../../components/ConfirmInline.vue";
+import { RELEASES_PAGE_URL, VERSION_HISTORY, findInstalledEntry } from "../../../data/version-history";
 import SettingsCard from "../../../components/settings/SettingsCard.vue";
 import StatusLine from "../../../components/settings/StatusLine.vue";
 import { useSettingsOps } from "../ops";
@@ -118,6 +119,23 @@ async function onRestartApp() {
     iconBusy.value = false;
   }
 }
+// ===== v0.4.1 任务 B：版本更新历史（随应用打包的单一源快照，离线可查）=====
+const expandedNotes = ref<Set<string>>(new Set());
+const installedEntry = computed(() => findInstalledEntry(versionInfo.value));
+function toggleNotes(version: string) {
+  const next = new Set(expandedNotes.value);
+  if (next.has(version)) next.delete(version);
+  else next.add(version);
+  expandedNotes.value = next;
+}
+async function openExternal(url: string) {
+  try {
+    const shell = await import("@tauri-apps/plugin-shell");
+    await shell.open(url);
+  } catch (e) {
+    console.error("打开外部链接失败", e);
+  }
+}
 onUnmounted(() => {
   // 该 Tab 不含敏感数据，无清理项；保留钩子位以对齐生命周期约定
 });
@@ -144,6 +162,44 @@ onUnmounted(() => {
         :tone="updateResult.startsWith('✗') ? 'err' : 'ok'"
         :text="updateResult"
       />
+    </SettingsCard>
+
+    <SettingsCard
+      title="版本更新历史"
+      subtitle="随应用打包的历史记录（离线可查）；单一事实源为 GitHub Releases，发布新版本时同步登记。"
+    >
+      <div class="vh-list">
+        <div
+          v-for="entry in VERSION_HISTORY"
+          :key="entry.version"
+          class="vh-item"
+          :class="{ installed: installedEntry?.version === entry.version }"
+        >
+          <div class="vh-row">
+            <div class="vh-info">
+              <div class="vh-version">
+                {{ entry.version }}
+                <span v-if="installedEntry?.version === entry.version" class="vh-now">本机安装</span>
+              </div>
+              <div class="vh-date">{{ entry.date }} · {{ entry.summary }}</div>
+            </div>
+            <div class="vh-actions">
+              <button class="s-btn-mini tap" data-interactive @click="toggleNotes(entry.version)">
+                {{ expandedNotes.has(entry.version) ? "收起详情" : "更新内容" }}
+              </button>
+              <button class="s-btn-mini tap" data-interactive @click="openExternal(entry.url)">
+                GitHub ↗
+              </button>
+            </div>
+          </div>
+          <pre v-if="expandedNotes.has(entry.version)" class="vh-notes">{{ entry.notes }}</pre>
+        </div>
+      </div>
+      <div class="s-action-row" style="border-top: none; padding-top: 0;">
+        <button class="s-btn-secondary" data-interactive @click="openExternal(RELEASES_PAGE_URL)">
+          🔗 在 GitHub 查看全部 Releases
+        </button>
+      </div>
     </SettingsCard>
 
     <SettingsCard
@@ -174,3 +230,39 @@ onUnmounted(() => {
     </SettingsCard>
   </div>
 </template>
+
+<style scoped>
+/* ===== 版本更新历史 ===== */
+.vh-list { display: flex; flex-direction: column; gap: 8px; }
+.vh-item {
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg-secondary);
+  padding: 10px 12px;
+}
+.vh-item.installed { border-color: rgba(16, 185, 129, 0.45); }
+.vh-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.vh-info { min-width: 0; flex: 1; }
+.vh-version { font-size: 13px; font-weight: 700; color: var(--text-primary); display: flex; align-items: center; gap: 8px; }
+.vh-now {
+  font-size: 10.5px; font-weight: 600; padding: 1px 8px; border-radius: 999px;
+  color: #34d399; background: rgba(16, 185, 129, 0.12); border: 1px solid rgba(16, 185, 129, 0.4);
+}
+.vh-date { font-size: 11.5px; color: var(--text-muted); margin-top: 2px; }
+.vh-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.vh-notes {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.7;
+  font-family: inherit;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-secondary);
+  max-height: 320px;
+  overflow-y: auto;
+}
+</style>

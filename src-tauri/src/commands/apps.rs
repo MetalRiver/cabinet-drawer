@@ -1845,6 +1845,164 @@ pub async fn health_check_apps(app: AppHandle) -> Result<usize, String> {
 }
 
 // ============================================================
+// 🛡️ 20b. 失效记录集中治理（v0.4.1 软件失效治理）
+// ============================================================
+
+use serde::Serialize;
+
+/// 单条失效记录：kind 由 db::classify_path_health 给出，
+/// 只有 kind == "fixed_missing" 允许进入批量清退候选；其余类别仅展示（保护）。
+#[derive(Debug, Clone, Serialize)]
+pub struct InvalidAppInfo {
+    pub id: i64,
+    pub name: String,
+    pub path: String,
+    pub app_type: String,
+    pub kind: &'static str,
+    /// .lnk 已解析出的目标路径（自检/目标双检查的展示依据；可能为空）
+    pub lnk_target: Option<String>,
+}
+
+/// 盘符健康探测：GetDriveTypeW + UNC 判定（Windows 专用；非测试路径）
+#[cfg(windows)]
+fn probe_drive(path: &str) -> (u32, bool) {
+    use windows_sys::Win32::Storage::FileSystem::GetDriveTypeW;
+    let is_net = crate::db::is_unc_path(path);
+    // 取盘符根（"C:\"）；UNC 取 \server\share
+    let root: String = if is_net {
+        let rest = path.trim_start_matches(|c| c == '\\' || c == '/');
+        format!(
+            "\\\\{}",
+            rest.split(|c| c == '\\' || c == '/')
+                .take(2)
+                .collect::<Vec<_>>()
+                .join("\\")
+        )
+    } else {
+        let mut chars = path.chars();
+        match (chars.next(), chars.next()) {
+            (Some(d), Some(':')) => format!("{}:\\", d),
+            _ => return (0, is_net),
+        }
+    };
+    let wide: Vec<u16> = root.encode_utf16().chain(std::iter::once(0)).collect();
+    let dt = unsafe { GetDriveTypeW(wide.as_ptr()) };
+    (dt, is_net)
+}
+
+#[cfg(not(windows))]
+fn probe_drive(_path: &str) -> (u32, bool) {
+    (0, false)
+}
+
+/// 单条记录分类（纯编排，分类语义在 db::classify_path_health；OS 探测在此层）
+fn classify_one(path: &str, app_type: &str) -> (&'static str, Option<String>) {
+    if app_type == "url" {
+        // URL（含 steam:// epic:// 等协议）恒可用语义与 Phase 2D 一致
+        return ("ok", None);
+    }
+    let exists = std::path::Path::new(path).exists();
+    if app_type == "folder" {
+        let (dt, net) = probe_drive(path);
+        return (crate::db::classify_path_health(dt, exists, net), None);
+    }
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase())
+        .unwrap_or_default();
+    if ext == "lnk" && exists {
+        // .lnk 双检查：快捷方式自身存在 + 目标程序存在
+        let target = crate::win_icon::resolve_lnk_target(path).unwrap_or_default();
+        if target.is_empty() {
+            // 无法解析目标 → 不确定状态（保护，绝不建议清退）
+            return ("uncertain", None);
+        }
+        let target_exists = std::path::Path::new(&target).exists();
+        let (dt, net) = probe_drive(&target);
+        let kind = crate::db::classify_path_health(dt, target_exists, net);
+        return (kind, Some(target));
+    }
+    if ext == "url" && exists {
+        return ("ok", None);
+    }
+    let (dt, net) = probe_drive(path);
+    (crate::db::classify_path_health(dt, exists, net), None)
+}
+
+/// 列出全部失效记录（含保护分类）。url 恒可用不进入列表。
+#[tauri::command]
+pub async fn list_invalid_apps(app: AppHandle) -> Result<Vec<InvalidAppInfo>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state: tauri::State<AppState> = app.state();
+        let _data_gate = state.data_read()?;
+        let apps: Vec<(i64, String, String, String)> = {
+            let db = state.db.lock().unwrap();
+            let conn = db.conn.lock().unwrap();
+            let mut stmt = conn
+                .prepare("SELECT id, name, path, app_type FROM apps WHERE deleted_at IS NULL")
+                .map_err(|e| e.to_string())?;
+            let v = stmt
+                .query_map([], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })
+                .map_err(|e| e.to_string())?
+                .filter_map(|r| r.ok())
+                .collect();
+            v
+        };
+        let mut out = Vec::new();
+        for (id, name, path, app_type) in apps {
+            let (kind, lnk_target) = classify_one(&path, &app_type);
+            if kind != "ok" {
+                out.push(InvalidAppInfo {
+                    id,
+                    name,
+                    path,
+                    app_type,
+                    kind,
+                    lnk_target,
+                });
+            }
+        }
+        Ok(out)
+    })
+    .await
+    .map_err(|e| format!("失效检查线程失败: {}", e))?
+}
+
+/// 批量移入回收站（软删除）：只删除抽屉柜收录记录，不卸载任何 Windows 程序。
+/// 幂等：已在回收站的 id 记为 skipped；返回成功/跳过/逐条错误（部分失败可见）。
+#[derive(Debug, Serialize)]
+pub struct BatchTrashResult {
+    pub moved: usize,
+    pub skipped: usize,
+    pub errors: Vec<(i64, String)>,
+}
+
+#[tauri::command]
+pub fn batch_move_apps_to_trash(
+    state: State<AppState>,
+    ids: Vec<i64>,
+) -> Result<BatchTrashResult, String> {
+    let _data_gate = state.data_read()?;
+    let mut out = BatchTrashResult {
+        moved: 0,
+        skipped: 0,
+        errors: Vec::new(),
+    };
+    let db = state.db.lock().unwrap();
+    for id in ids {
+        match db.soft_delete("apps", id) {
+            Ok(n) if n > 0 => out.moved += 1,
+            Ok(_) => out.skipped += 1, // 不存在或已在回收站（幂等）
+            Err(e) => out.errors.push((id, e.to_string())),
+        }
+    }
+    Ok(out)
+}
+
+// ============================================================
 // 🛡️ 21. 当前数据存储目录
 // ============================================================
 #[tauri::command]

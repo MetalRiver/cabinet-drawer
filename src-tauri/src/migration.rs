@@ -23,8 +23,11 @@ pub const V2_SETUP_LOCK_FILENAME: &str = "drawer-v2.db.setup.lock";
 pub const SECURITY_VERSION_V2: &str = "1";
 
 /// legacy 库中被视为安全敏感、迁移时**不拷贝**进 v2 的设置键
-const LEGACY_SECURITY_KEYS: [&str; 3] =
-    ["master_password_hash", "master_password_salt", "recovery_phrase_encrypted"];
+const LEGACY_SECURITY_KEYS: [&str; 3] = [
+    "master_password_hash",
+    "master_password_salt",
+    "recovery_phrase_encrypted",
+];
 
 /// v2 库建库 schema（drawer-v2.db / drawer-v2.db.tmp 通用）
 fn init_v2_schema(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
@@ -103,7 +106,9 @@ fn init_v2_schema(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
 pub fn open_v2_db(path: &Path) -> Result<Db, String> {
     let conn = rusqlite::Connection::open(path).map_err(|e| e.to_string())?;
     init_v2_schema(&conn).map_err(|e| e.to_string())?;
-    Ok(Db { conn: std::sync::Mutex::new(conn) })
+    Ok(Db {
+        conn: std::sync::Mutex::new(conn),
+    })
 }
 
 /// 启动仲裁结果
@@ -119,7 +124,9 @@ pub enum DbSelection {
 pub fn open_v2_db_in_memory() -> Result<Db, String> {
     let conn = rusqlite::Connection::open_in_memory().map_err(|e| e.to_string())?;
     init_v2_schema(&conn).map_err(|e| e.to_string())?;
-    Ok(Db { conn: std::sync::Mutex::new(conn) })
+    Ok(Db {
+        conn: std::sync::Mutex::new(conn),
+    })
 }
 
 /// 启动仲裁。只观察文件系统，绝不在启动时迁移、删除或重命名用户数据。
@@ -138,54 +145,134 @@ pub fn resolve_startup_db(app_dir: &Path, allow_fresh_v2: bool) -> StartupArbitr
     let tmp = app_dir.join(V2_TMP_FILENAME);
     let legacy = app_dir.join(LEGACY_DB_FILENAME);
     let backup = app_dir.join(format!("{}{}", LEGACY_DB_FILENAME, LEGACY_BACKUP_SUFFIX));
-    let stray_legacy_present = std::fs::read_dir(app_dir).ok().into_iter().flatten().filter_map(|entry| entry.ok()).any(|entry| entry.file_name().to_string_lossy().starts_with(&format!("{}.stray-", LEGACY_DB_FILENAME)));
+    let stray_legacy_present = std::fs::read_dir(app_dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.ok())
+        .any(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(&format!("{}.stray-", LEGACY_DB_FILENAME))
+        });
 
     if tmp.exists() {
-        return StartupArbitration { selection: DbSelection::Blocked("检测到未完成的 v2 迁移临时库"), migration_required: legacy.exists(), writes_allowed: false, tmp_present: true, legacy_backup_present: backup.exists(), stray_legacy_present };
+        return StartupArbitration {
+            selection: DbSelection::Blocked("检测到未完成的 v2 迁移临时库"),
+            migration_required: legacy.exists(),
+            writes_allowed: false,
+            tmp_present: true,
+            legacy_backup_present: backup.exists(),
+            stray_legacy_present,
+        };
     }
 
     if v2.exists() {
-        return StartupArbitration { selection: DbSelection::V2(v2), migration_required: false, writes_allowed: true, tmp_present: tmp.exists(), legacy_backup_present: backup.exists(), stray_legacy_present };
+        return StartupArbitration {
+            selection: DbSelection::V2(v2),
+            migration_required: false,
+            writes_allowed: true,
+            tmp_present: tmp.exists(),
+            legacy_backup_present: backup.exists(),
+            stray_legacy_present,
+        };
     }
     if legacy.exists() {
         if backup.exists() {
-            return StartupArbitration { selection: DbSelection::Blocked("legacy 与备份并存但 v2 不存在"), migration_required: true, writes_allowed: false, tmp_present: false, legacy_backup_present: true, stray_legacy_present };
+            return StartupArbitration {
+                selection: DbSelection::Blocked("legacy 与备份并存但 v2 不存在"),
+                migration_required: true,
+                writes_allowed: false,
+                tmp_present: false,
+                legacy_backup_present: true,
+                stray_legacy_present,
+            };
         }
-        return StartupArbitration { selection: DbSelection::Legacy(legacy), migration_required: true, writes_allowed: true, tmp_present: tmp.exists(), legacy_backup_present: backup.exists(), stray_legacy_present };
+        return StartupArbitration {
+            selection: DbSelection::Legacy(legacy),
+            migration_required: true,
+            writes_allowed: true,
+            tmp_present: tmp.exists(),
+            legacy_backup_present: backup.exists(),
+            stray_legacy_present,
+        };
     }
     if backup.exists() || stray_legacy_present {
-        return StartupArbitration { selection: DbSelection::Blocked("发现遗留数据库痕迹但正式数据库缺失"), migration_required: false, writes_allowed: false, tmp_present: false, legacy_backup_present: backup.exists(), stray_legacy_present };
+        return StartupArbitration {
+            selection: DbSelection::Blocked("发现遗留数据库痕迹但正式数据库缺失"),
+            migration_required: false,
+            writes_allowed: false,
+            tmp_present: false,
+            legacy_backup_present: backup.exists(),
+            stray_legacy_present,
+        };
     }
     if allow_fresh_v2 {
-        StartupArbitration { selection: DbSelection::FreshV2(v2), migration_required: false, writes_allowed: true, tmp_present: false, legacy_backup_present: false, stray_legacy_present: false }
+        StartupArbitration {
+            selection: DbSelection::FreshV2(v2),
+            migration_required: false,
+            writes_allowed: true,
+            tmp_present: false,
+            legacy_backup_present: false,
+            stray_legacy_present: false,
+        }
     } else {
-        StartupArbitration { selection: DbSelection::Blocked("Phase 2A 不允许正常启动自动创建 v2 数据库"), migration_required: false, writes_allowed: false, tmp_present: false, legacy_backup_present: false, stray_legacy_present: false }
+        StartupArbitration {
+            selection: DbSelection::Blocked("Phase 2A 不允许正常启动自动创建 v2 数据库"),
+            migration_required: false,
+            writes_allowed: false,
+            tmp_present: false,
+            legacy_backup_present: false,
+            stray_legacy_present: false,
+        }
     }
 }
 
 /// 打开已经完成迁移的 v2 库。不开启 CREATE，也不补 schema；异常状态直接拒绝。
 pub fn open_existing_v2_db(path: &Path) -> Result<Db, String> {
-    let conn = rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
-        .map_err(|_| "v2 数据库无法安全打开".to_string())?;
-    let db = Db { conn: std::sync::Mutex::new(conn) };
-    let version = db.get_setting("security_version").map_err(|_| "v2 安全元数据无效".to_string())?;
+    let conn =
+        rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
+            .map_err(|_| "v2 数据库无法安全打开".to_string())?;
+    let db = Db {
+        conn: std::sync::Mutex::new(conn),
+    };
+    let version = db
+        .get_setting("security_version")
+        .map_err(|_| "v2 安全元数据无效".to_string())?;
     if version.as_deref() != Some(SECURITY_VERSION_V2) {
         return Err("v2 安全元数据无效".to_string());
     }
-    for key in ["kdf_params_m", "wrapped_dek_m", "kdf_params_r", "wrapped_dek_r"] {
-        if db.get_setting(key).map_err(|_| "v2 安全元数据无效".to_string())?.filter(|v| !v.is_empty()).is_none() {
+    for key in [
+        "kdf_params_m",
+        "wrapped_dek_m",
+        "kdf_params_r",
+        "wrapped_dek_r",
+    ] {
+        if db
+            .get_setting(key)
+            .map_err(|_| "v2 安全元数据无效".to_string())?
+            .filter(|v| !v.is_empty())
+            .is_none()
+        {
             return Err("v2 安全元数据无效".to_string());
         }
     }
     {
-        let conn = db.conn.lock().map_err(|_| "v2 数据库无法安全打开".to_string())?;
-        let integrity: String = conn.query_row("PRAGMA integrity_check", [], |row| row.get(0))
+        let conn = db
+            .conn
+            .lock()
+            .map_err(|_| "v2 数据库无法安全打开".to_string())?;
+        let integrity: String = conn
+            .query_row("PRAGMA integrity_check", [], |row| row.get(0))
             .map_err(|_| "v2 数据库完整性校验失败".to_string())?;
-        let uuid_columns: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('passwords') WHERE name='record_uuid'",
-            [],
-            |row| row.get(0),
-        ).map_err(|_| "v2 数据库 schema 无效".to_string())?;
+        let uuid_columns: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('passwords') WHERE name='record_uuid'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|_| "v2 数据库 schema 无效".to_string())?;
         if integrity != "ok" || uuid_columns != 1 {
             return Err("v2 数据库完整性或 schema 无效".to_string());
         }
@@ -275,8 +362,7 @@ pub fn prepare_fresh_v2_inject(
 
         let entropy = crypto::generate_recovery_entropy();
         let phrase = Zeroizing::new(
-            crypto::entropy_to_mnemonic(&entropy)
-                .map_err(|_| "无法生成恢复短语".to_string())?,
+            crypto::entropy_to_mnemonic(&entropy).map_err(|_| "无法生成恢复短语".to_string())?,
         );
         let salt_r = crypto::generate_salt();
         let params_r = crypto::KdfParams {
@@ -295,7 +381,9 @@ pub fn prepare_fresh_v2_inject(
 
         {
             let mut conn = v2.conn.lock().map_err(|_| "安全数据库不可用".to_string())?;
-            let tx = conn.transaction().map_err(|_| "无法写入安全元数据".to_string())?;
+            let tx = conn
+                .transaction()
+                .map_err(|_| "无法写入安全元数据".to_string())?;
             tx.execute(
                 "INSERT INTO settings (key, value) VALUES ('kdf_params_m', ?1)",
                 params![serde_json::to_string(&params_m).map_err(|_| "安全元数据无效".to_string())?],
@@ -369,8 +457,7 @@ pub fn finalize_prepared_v2(tmp_path: &Path, v2_path: &Path) -> Result<(), Strin
     let verified = open_existing_v2_db(tmp_path)?;
     drop(verified);
     // Windows 同目录 rename：目标存在时失败，不覆盖现有正式库。
-    std::fs::rename(tmp_path, v2_path)
-        .map_err(|_| "无法完成安全数据库初始化".to_string())
+    std::fs::rename(tmp_path, v2_path).map_err(|_| "无法完成安全数据库初始化".to_string())
 }
 
 /// 仅清理“无 legacy、无正式 v2、无备份/stray”的中断新用户 setup tmp。
@@ -404,8 +491,7 @@ pub fn discard_abandoned_fresh_initialization(app_dir: &Path) -> Result<bool, St
         app_dir.join(format!("{}-journal", V2_TMP_FILENAME)),
     ] {
         if path.exists() {
-            std::fs::remove_file(&path)
-                .map_err(|_| "无法清理未完成的新用户初始化".to_string())?;
+            std::fs::remove_file(&path).map_err(|_| "无法清理未完成的新用户初始化".to_string())?;
             removed = true;
         }
     }
@@ -483,7 +569,10 @@ pub struct PreparedLegacyMigration {
 }
 
 /// 迁移入口（生产）
-pub fn migrate_legacy_to_v2(app_dir: &Path, master_password: &str) -> Result<MigrationOutput, MigrationError> {
+pub fn migrate_legacy_to_v2(
+    app_dir: &Path,
+    master_password: &str,
+) -> Result<MigrationOutput, MigrationError> {
     migrate_legacy_to_v2_inject(app_dir, master_password, None)
 }
 
@@ -531,11 +620,18 @@ pub fn legacy_db_fingerprint(path: &Path) -> Result<[u8; 32], String> {
                      WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name",
                 )
                 .map_err(|_| "无法读取 legacy schema".to_string())?;
-            let mut rows = stmt.query([]).map_err(|_| "无法读取 legacy schema".to_string())?;
-            while let Some(row) = rows.next().map_err(|_| "无法读取 legacy schema".to_string())? {
+            let mut rows = stmt
+                .query([])
+                .map_err(|_| "无法读取 legacy schema".to_string())?;
+            while let Some(row) = rows
+                .next()
+                .map_err(|_| "无法读取 legacy schema".to_string())?
+            {
                 digest.update([0xfa]);
                 for column in 0..4 {
-                    let value = row.get_ref(column).map_err(|_| "无法读取 legacy schema".to_string())?;
+                    let value = row
+                        .get_ref(column)
+                        .map_err(|_| "无法读取 legacy schema".to_string())?;
                     hash_value(&mut digest, value);
                 }
             }
@@ -557,8 +653,13 @@ pub fn legacy_db_fingerprint(path: &Path) -> Result<[u8; 32], String> {
                 .prepare(&format!("SELECT * FROM {quoted} ORDER BY rowid"))
                 .map_err(|_| "无法读取 legacy 数据行".to_string())?;
             let columns = stmt.column_count();
-            let mut rows = stmt.query([]).map_err(|_| "无法读取 legacy 数据行".to_string())?;
-            while let Some(row) = rows.next().map_err(|_| "无法读取 legacy 数据行".to_string())? {
+            let mut rows = stmt
+                .query([])
+                .map_err(|_| "无法读取 legacy 数据行".to_string())?;
+            while let Some(row) = rows
+                .next()
+                .map_err(|_| "无法读取 legacy 数据行".to_string())?
+            {
                 digest.update([0xfe]);
                 for column in 0..columns {
                     let value = row
@@ -657,8 +758,8 @@ pub fn build_migrated_v2_tmp(
     }
 
     // T2 legacy 打开（只读用途）+ 旧 verifier 校验（迁移必须用正确旧主密码）
-    let legacy = Db::open_read_only(&legacy_path)
-        .map_err(|e| format!("legacy 库打开失败: {}", e))?;
+    let legacy =
+        Db::open_read_only(&legacy_path).map_err(|e| format!("legacy 库打开失败: {}", e))?;
     let salt_b64 = legacy
         .get_setting("master_password_salt")
         .map_err(|e| e.to_string())?
@@ -691,11 +792,31 @@ pub fn build_migrated_v2_tmp(
                  FROM passwords ORDER BY id",
             )
             .map_err(|e| e.to_string())?;
-        let rows: Vec<(i64, String, String, String, String, String, i64, i64, i64, i64, Option<i64>)> = stmt
+        let rows: Vec<(
+            i64,
+            String,
+            String,
+            String,
+            String,
+            String,
+            i64,
+            i64,
+            i64,
+            i64,
+            Option<i64>,
+        )> = stmt
             .query_map([], |row| {
                 Ok((
-                    row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?,
-                    row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?, row.get(9)?,
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                    row.get(9)?,
                     row.get(10)?,
                 ))
             })
@@ -716,7 +837,10 @@ pub fn build_migrated_v2_tmp(
                 "INSERT INTO passwords (id, record_uuid, title, username, password, url, notes,
                                         created_at, updated_at, use_count, last_used_at, deleted_at)
                  VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
-                params![id, uuid, title, username, dw2, url, notes, created, updated, usec, lused, deleted],
+                params![
+                    id, uuid, title, username, dw2, url, notes, created, updated, usec, lused,
+                    deleted
+                ],
             )
             .map_err(|e| e.to_string())?;
             migrated += 1;
@@ -735,7 +859,8 @@ pub fn build_migrated_v2_tmp(
         let tx = vconn.transaction().map_err(|e| e.to_string())?;
         // app_categories
         let cats: Vec<(i64, String, String, i64)> = {
-            let mut st = lconn.prepare("SELECT id, name, icon, sort_order FROM app_categories ORDER BY id")?;
+            let mut st = lconn
+                .prepare("SELECT id, name, icon, sort_order FROM app_categories ORDER BY id")?;
             let v = st
                 .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
                 .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -749,7 +874,20 @@ pub fn build_migrated_v2_tmp(
             .map_err(|e| e.to_string())?;
         }
         // apps
-        let apps: Vec<(i64, String, String, String, String, Option<i64>, i64, i64, i64, String, String, Option<i64>)> = {
+        let apps: Vec<(
+            i64,
+            String,
+            String,
+            String,
+            String,
+            Option<i64>,
+            i64,
+            i64,
+            i64,
+            String,
+            String,
+            Option<i64>,
+        )> = {
             let mut st = lconn.prepare(
                 "SELECT id, name, path, icon_path, args, category_id, created_at, use_count,
                         last_used_at, app_type, app_subtype, deleted_at
@@ -758,8 +896,18 @@ pub fn build_migrated_v2_tmp(
             let v = st
                 .query_map([], |r| {
                     Ok((
-                        r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?,
-                        r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?, r.get(11)?,
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                        r.get(7)?,
+                        r.get(8)?,
+                        r.get(9)?,
+                        r.get(10)?,
+                        r.get(11)?,
                     ))
                 })?
                 .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -770,12 +918,25 @@ pub fn build_migrated_v2_tmp(
                 "INSERT INTO apps (id, name, path, icon_path, args, category_id, created_at,
                                    use_count, last_used_at, app_type, app_subtype, deleted_at)
                  VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
-                params![id, name, path, icon, args, cat, created, usec, lused, atype, asub, deleted],
+                params![
+                    id, name, path, icon, args, cat, created, usec, lused, atype, asub, deleted
+                ],
             )
             .map_err(|e| e.to_string())?;
         }
         // snippets
-        let snippets: Vec<(i64, String, String, String, String, i64, i64, i64, i64, Option<i64>)> = {
+        let snippets: Vec<(
+            i64,
+            String,
+            String,
+            String,
+            String,
+            i64,
+            i64,
+            i64,
+            i64,
+            Option<i64>,
+        )> = {
             let mut st = lconn.prepare(
                 "SELECT id, title, content, language, tags, created_at, updated_at,
                         use_count, last_used_at, deleted_at
@@ -784,8 +945,16 @@ pub fn build_migrated_v2_tmp(
             let v = st
                 .query_map([], |r| {
                     Ok((
-                        r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?,
-                        r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?,
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                        r.get(7)?,
+                        r.get(8)?,
+                        r.get(9)?,
                     ))
                 })?
                 .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -805,7 +974,9 @@ pub fn build_migrated_v2_tmp(
             let mut st = lconn
                 .prepare("SELECT id, text, created_at, expires_at, deleted_at FROM temp_contents ORDER BY id")?;
             let v = st
-                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?
+                .query_map([], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+                })?
                 .collect::<std::result::Result<Vec<_>, _>>()?;
             v
         };
@@ -847,8 +1018,11 @@ pub fn build_migrated_v2_tmp(
             if LEGACY_SECURITY_KEYS.contains(&k.as_str()) || k == "security_version" {
                 continue;
             }
-            tx.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)", params![k, v])
-                .map_err(|e| e.to_string())?;
+            tx.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+                params![k, v],
+            )
+            .map_err(|e| e.to_string())?;
         }
         tx.commit().map_err(|e| e.to_string())?;
     }
@@ -874,36 +1048,42 @@ pub fn build_migrated_v2_tmp(
         let mut vconn = v2.conn.lock().map_err(|e| e.to_string())?;
         let tx = vconn.transaction().map_err(|e| e.to_string())?;
         tx.execute(
-                "INSERT OR REPLACE INTO settings (key, value) VALUES ('kdf_params_m', ?1)",
-                params![serde_json::to_string(&params_m).map_err(|e| e.to_string())?],
-            )
-            .map_err(|e| e.to_string())?;
-        tx.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('wrapped_dek_m', ?1)", params![wrapped_m])
-            .map_err(|e| e.to_string())?;
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('kdf_params_m', ?1)",
+            params![serde_json::to_string(&params_m).map_err(|e| e.to_string())?],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('wrapped_dek_m', ?1)",
+            params![wrapped_m],
+        )
+        .map_err(|e| e.to_string())?;
         if fail(MigrationFailPoint::DuringSettingsWrite) {
             return Err("injected:DuringSettingsWrite".into());
         }
         tx.execute(
-                "INSERT OR REPLACE INTO settings (key, value) VALUES ('kdf_params_r', ?1)",
-                params![serde_json::to_string(&crypto::KdfParams {
-                    algo: "hkdf-sha256".into(),
-                    version: 1,
-                    m_cost: 0,
-                    t_cost: 0,
-                    p_cost: 0,
-                    salt: crypto::b64_encode(&salt_r),
-                })
-                .map_err(|e| e.to_string())?],
-            )
-            .map_err(|e| e.to_string())?;
-        tx.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('wrapped_dek_r', ?1)", params![wrapped_r])
-            .map_err(|e| e.to_string())?;
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('kdf_params_r', ?1)",
+            params![serde_json::to_string(&crypto::KdfParams {
+                algo: "hkdf-sha256".into(),
+                version: 1,
+                m_cost: 0,
+                t_cost: 0,
+                p_cost: 0,
+                salt: crypto::b64_encode(&salt_r),
+            })
+            .map_err(|e| e.to_string())?],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('wrapped_dek_r', ?1)",
+            params![wrapped_r],
+        )
+        .map_err(|e| e.to_string())?;
         // security_version 必须最后写（迁移状态机的提交标记）
         tx.execute(
-                "INSERT OR REPLACE INTO settings (key, value) VALUES ('security_version', ?1)",
-                params![SECURITY_VERSION_V2],
-            )
-            .map_err(|e| e.to_string())?;
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('security_version', ?1)",
+            params![SECURITY_VERSION_V2],
+        )
+        .map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
     }
 
@@ -929,11 +1109,14 @@ pub fn build_migrated_v2_tmp(
         }
         // 抽样解密：第一行
         let (uuid, dw2): (String, String) = vconn
-            .query_row("SELECT record_uuid, password FROM passwords ORDER BY id LIMIT 1", [], |r| {
-                Ok((r.get(0)?, r.get(1)?))
-            })
+            .query_row(
+                "SELECT record_uuid, password FROM passwords ORDER BY id LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
             .map_err(|e| e.to_string())?;
-        crypto::decrypt_password_dw2(&dw2, &dek, &uuid).map_err(|_| "v2 抽样解密失败".to_string())?;
+        crypto::decrypt_password_dw2(&dw2, &dek, &uuid)
+            .map_err(|_| "v2 抽样解密失败".to_string())?;
     }
 
     // 关闭连接（指纹计算与调用方激活前，必须全部释放句柄）
@@ -1094,9 +1277,7 @@ pub enum RecoveryRotationFailPoint {
     BeforeCommit,
 }
 
-pub fn prepare_recovery_rotation(
-    dek: &[u8],
-) -> Result<PreparedRecoveryRotation, String> {
+pub fn prepare_recovery_rotation(dek: &[u8]) -> Result<PreparedRecoveryRotation, String> {
     prepare_recovery_rotation_inject(dek, None)
 }
 
@@ -1107,8 +1288,7 @@ pub fn prepare_recovery_rotation_inject(
     let fail = |point| fail_at == Some(point);
     let entropy = crypto::generate_recovery_entropy();
     let mnemonic = Zeroizing::new(
-        crypto::entropy_to_mnemonic(&entropy)
-            .map_err(|_| "无法生成新的恢复短语".to_string())?,
+        crypto::entropy_to_mnemonic(&entropy).map_err(|_| "无法生成新的恢复短语".to_string())?,
     );
     let salt_r = Zeroizing::new(crypto::generate_salt());
     if fail(RecoveryRotationFailPoint::AfterNewSalt) {
@@ -1131,8 +1311,8 @@ pub fn prepare_recovery_rotation_inject(
     if fail(RecoveryRotationFailPoint::AfterWrappedDek) {
         return Err("injected:AfterWrappedDek".to_string());
     }
-    let params_r_json = serde_json::to_string(&params_r)
-        .map_err(|_| "无法建立新的恢复保护".to_string())?;
+    let params_r_json =
+        serde_json::to_string(&params_r).map_err(|_| "无法建立新的恢复保护".to_string())?;
     Ok(PreparedRecoveryRotation {
         params_r_json,
         wrapped_dek_r,
@@ -1156,10 +1336,7 @@ pub fn commit_recovery_rotation_inject(
     fail_at: Option<RecoveryRotationFailPoint>,
 ) -> Result<(), String> {
     let fail = |point| fail_at == Some(point);
-    let mut conn = v2
-        .conn
-        .lock()
-        .map_err(|_| "安全数据库不可用".to_string())?;
+    let mut conn = v2.conn.lock().map_err(|_| "安全数据库不可用".to_string())?;
     let tx = conn
         .transaction()
         .map_err(|_| "无法更新恢复保护".to_string())?;
@@ -1187,8 +1364,7 @@ pub fn commit_recovery_rotation_inject(
     if fail(RecoveryRotationFailPoint::BeforeCommit) {
         return Err("injected:BeforeCommit".to_string());
     }
-    tx.commit()
-        .map_err(|_| "无法更新恢复保护".to_string())?;
+    tx.commit().map_err(|_| "无法更新恢复保护".to_string())?;
     Ok(())
 }
 
@@ -1233,13 +1409,7 @@ pub fn change_v2_master_password(
     new_master_password: &str,
     active_dek: &[u8],
 ) -> Result<(), String> {
-    change_v2_master_password_inject(
-        v2,
-        current_password,
-        new_master_password,
-        active_dek,
-        None,
-    )
+    change_v2_master_password_inject(v2, current_password, new_master_password, active_dek, None)
 }
 
 pub fn change_v2_master_password_inject(
@@ -1255,8 +1425,8 @@ pub fn change_v2_master_password_inject(
     if new_master_password == current_password {
         return Err("新主密码必须与当前主密码不同".to_string());
     }
-    let verified_dek = unlock_v2_core(v2, current_password)
-        .map_err(|_| "当前主密码错误".to_string())?;
+    let verified_dek =
+        unlock_v2_core(v2, current_password).map_err(|_| "当前主密码错误".to_string())?;
     if verified_dek.as_slice() != active_dek {
         return Err("活动密钥与安全数据库不一致".to_string());
     }
@@ -1285,13 +1455,10 @@ fn rewrap_master_dek_inject(
     if fail(MasterRewrapFailPoint::AfterWrappedDek) {
         return Err("injected:AfterWrappedDek".to_string());
     }
-    let params_json = serde_json::to_string(&params_m)
-        .map_err(|_| "无法设置新主密码".to_string())?;
+    let params_json =
+        serde_json::to_string(&params_m).map_err(|_| "无法设置新主密码".to_string())?;
 
-    let mut conn = v2
-        .conn
-        .lock()
-        .map_err(|_| "安全数据库不可用".to_string())?;
+    let mut conn = v2.conn.lock().map_err(|_| "安全数据库不可用".to_string())?;
     let tx = conn
         .transaction()
         .map_err(|_| "无法设置新主密码".to_string())?;
@@ -1319,8 +1486,7 @@ fn rewrap_master_dek_inject(
     if fail(MasterRewrapFailPoint::BeforeCommit) {
         return Err("injected:BeforeCommit".to_string());
     }
-    tx.commit()
-        .map_err(|_| "无法设置新主密码".to_string())?;
+    tx.commit().map_err(|_| "无法设置新主密码".to_string())?;
     Ok(())
 }
 
@@ -1355,16 +1521,21 @@ mod migration_tests {
         let hash = crypto::hash_password(master_password, &salt);
         let key = Zeroizing::new(crypto::derive_key(master_password, &salt));
         db.set_setting("master_password_hash", &hash).unwrap();
-        db.set_setting("master_password_salt", &crypto::b64_encode(&salt)).unwrap();
-        db.set_setting("recovery_phrase_encrypted", &crypto::encrypt("[\"legacy\"]", &key).unwrap())
+        db.set_setting("master_password_salt", &crypto::b64_encode(&salt))
             .unwrap();
+        db.set_setting(
+            "recovery_phrase_encrypted",
+            &crypto::encrypt("[\"legacy\"]", &key).unwrap(),
+        )
+        .unwrap();
         db.set_setting("trash_retention_days", "7").unwrap();
 
         let mut titles = Vec::new();
         for i in 0..3 {
             let title = format!("Legacy-PW-{}", i);
             let enc = crypto::encrypt(&format!("legacy-secret-{}", i), &key).unwrap();
-            db.create_password(&title, "fixture-user", &enc, "https://fixture.test", "n").unwrap();
+            db.create_password(&title, "fixture-user", &enc, "https://fixture.test", "n")
+                .unwrap();
             titles.push(title);
         }
         // 制造真实常见的自增 id 缺口，确保迁移不会重排 password id。
@@ -1394,8 +1565,18 @@ mod migration_tests {
             )
             .unwrap();
         db.create_app_category("fixture-cat", "📁").unwrap();
-        db.create_app("Fixture App", "C:\\fixture\\app.exe", "", "", None, "app", "utility").unwrap();
-        db.create_snippet("Fixture Snippet", "echo fixture", "bash", "fixture").unwrap();
+        db.create_app(
+            "Fixture App",
+            "C:\\fixture\\app.exe",
+            "",
+            "",
+            None,
+            "app",
+            "utility",
+        )
+        .unwrap();
+        db.create_snippet("Fixture Snippet", "echo fixture", "bash", "fixture")
+            .unwrap();
         db.create_temp("fixture temp content", 60).unwrap();
         titles
     }
@@ -1433,7 +1614,15 @@ mod migration_tests {
                         SUM(password LIKE 'DW2:%'), MIN(title), MAX(title)
                  FROM passwords",
                 [],
-                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, String>(3)?, r.get::<_, String>(4)?)),
+                |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, i64>(1)?,
+                        r.get::<_, i64>(2)?,
+                        r.get::<_, String>(3)?,
+                        r.get::<_, String>(4)?,
+                    ))
+                },
             )
             .unwrap();
         assert_eq!(rows.0, 3);
@@ -1448,7 +1637,13 @@ mod migration_tests {
             .unwrap();
         assert_eq!(ids, vec![1, 3, 4], "password id 缺口必须原样保留");
         // security_version 与 legacy verifier 排除
-        let sv: String = conn.query_row("SELECT value FROM settings WHERE key='security_version'", [], |r| r.get(0)).unwrap();
+        let sv: String = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key='security_version'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(sv, "1");
         let legacy_keys: i64 = conn
             .query_row(
@@ -1466,37 +1661,82 @@ mod migration_tests {
             ("temp_contents", 1),
             ("pinned_items", 1),
         ] {
-            let c: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM {}", t), [], |r| r.get(0)).unwrap();
+            let c: i64 = conn
+                .query_row(&format!("SELECT COUNT(*) FROM {}", t), [], |r| r.get(0))
+                .unwrap();
             assert_eq!(c, n, "{} 行数不符", t);
         }
         // 抽样解密：每行用 DEK 解密，明文匹配 fixture
-        let mut stmt = conn.prepare("SELECT title, password, record_uuid FROM passwords ORDER BY title").unwrap();
+        let mut stmt = conn
+            .prepare("SELECT title, password, record_uuid FROM passwords ORDER BY title")
+            .unwrap();
         let mut checked = 0;
         let rows = stmt
-            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })
             .unwrap();
         for row in rows {
             let (title, dw2, uuid) = row.unwrap();
             let plain = crypto::decrypt_password_dw2(&dw2, &out.dek, &uuid).unwrap();
             let idx: String = title.chars().last().unwrap().to_string();
-            assert_eq!(plain, format!("legacy-secret-{}", idx), "行 {} 解密明文不匹配", title);
+            assert_eq!(
+                plain,
+                format!("legacy-secret-{}", idx),
+                "行 {} 解密明文不匹配",
+                title
+            );
             checked += 1;
         }
         assert_eq!(checked, 3);
         // wrapped_dek_m：unwrap 得到同一 DEK
-        let params_json = conn.query_row("SELECT value FROM settings WHERE key='kdf_params_m'", [], |r| r.get::<_, String>(0)).unwrap();
+        let params_json = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key='kdf_params_m'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap();
         let params: crypto::KdfParams = serde_json::from_str(&params_json).unwrap();
-        let wrapped_m = conn.query_row("SELECT value FROM settings WHERE key='wrapped_dek_m'", [], |r| r.get::<_, String>(0)).unwrap();
+        let wrapped_m = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key='wrapped_dek_m'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap();
         let kek = crypto::derive_master_kek(MASTER, &params);
-        assert_eq!(*crypto::unwrap_dek(&wrapped_m, &kek, crypto::AAD_WRAP_MASTER).unwrap(), *out.dek);
+        assert_eq!(
+            *crypto::unwrap_dek(&wrapped_m, &kek, crypto::AAD_WRAP_MASTER).unwrap(),
+            *out.dek
+        );
         // wrapped_dek_r：经短语派生 KEK 解出同一 DEK
-        let params_r_json = conn.query_row("SELECT value FROM settings WHERE key='kdf_params_r'", [], |r| r.get::<_, String>(0)).unwrap();
+        let params_r_json = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key='kdf_params_r'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap();
         let params_r: crypto::KdfParams = serde_json::from_str(&params_r_json).unwrap();
         let entropy = crypto::mnemonic_to_entropy(&out.mnemonic.join(" ")).unwrap();
         let salt_r_bytes = crypto::b64_decode(&params_r.salt).unwrap();
         let kek_r = crypto::derive_recovery_kek(&entropy, &salt_r_bytes);
-        let wrapped_r = conn.query_row("SELECT value FROM settings WHERE key='wrapped_dek_r'", [], |r| r.get::<_, String>(0)).unwrap();
-        assert_eq!(*crypto::unwrap_dek(&wrapped_r, &kek_r, crypto::AAD_WRAP_RECOVERY).unwrap(), *out.dek);
+        let wrapped_r = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key='wrapped_dek_r'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap();
+        assert_eq!(
+            *crypto::unwrap_dek(&wrapped_r, &kek_r, crypto::AAD_WRAP_RECOVERY).unwrap(),
+            *out.dek
+        );
         assert_eq!(checked, 3);
         drop(stmt);
         drop(conn);
@@ -1544,12 +1784,26 @@ mod migration_tests {
             // 启动仲裁只观察：tmp 保留给后续明确的恢复流程，仍识别为 Legacy。
             let sel = resolve_startup_db(&dir, false);
             if dir.join(V2_TMP_FILENAME).exists() {
-                assert!(matches!(sel.selection, DbSelection::Blocked(_)), "注入点 {:?}: tmp 状态必须 fail closed", fp);
+                assert!(
+                    matches!(sel.selection, DbSelection::Blocked(_)),
+                    "注入点 {:?}: tmp 状态必须 fail closed",
+                    fp
+                );
                 assert!(!sel.writes_allowed);
             } else {
-                assert_eq!(sel.selection, DbSelection::Legacy(dir.join(LEGACY_DB_FILENAME)), "注入点 {:?}", fp);
+                assert_eq!(
+                    sel.selection,
+                    DbSelection::Legacy(dir.join(LEGACY_DB_FILENAME)),
+                    "注入点 {:?}",
+                    fp
+                );
             }
-            assert_eq!(sel.tmp_present, dir.join(V2_TMP_FILENAME).exists(), "注入点 {:?}: tmp 状态必须如实报告", fp);
+            assert_eq!(
+                sel.tmp_present,
+                dir.join(V2_TMP_FILENAME).exists(),
+                "注入点 {:?}: tmp 状态必须如实报告",
+                fp
+            );
             cleanup_dir(&dir);
         }
     }
@@ -1566,55 +1820,91 @@ mod migration_tests {
         let d = base.join("c1");
         std::fs::create_dir_all(&d).unwrap();
         mk(&d, LEGACY_DB_FILENAME);
-        let a = resolve_startup_db(&d, false); assert_eq!(a.selection, DbSelection::Legacy(d.join(LEGACY_DB_FILENAME))); assert!(a.migration_required); assert!(!d.join(V2_DB_FILENAME).exists());
+        let a = resolve_startup_db(&d, false);
+        assert_eq!(a.selection, DbSelection::Legacy(d.join(LEGACY_DB_FILENAME)));
+        assert!(a.migration_required);
+        assert!(!d.join(V2_DB_FILENAME).exists());
         // 2. 只有 v2
         let d = base.join("c2");
         std::fs::create_dir_all(&d).unwrap();
         mk(&d, V2_DB_FILENAME);
-        assert_eq!(resolve_startup_db(&d, false).selection, DbSelection::V2(d.join(V2_DB_FILENAME)));
+        assert_eq!(
+            resolve_startup_db(&d, false).selection,
+            DbSelection::V2(d.join(V2_DB_FILENAME))
+        );
         // 3. 两者都有 → v2 胜出，legacy 保留且绝不被启动路径改写
         let d = base.join("c3");
         std::fs::create_dir_all(&d).unwrap();
         mk(&d, LEGACY_DB_FILENAME);
         mk(&d, V2_DB_FILENAME);
-        assert_eq!(resolve_startup_db(&d, false).selection, DbSelection::V2(d.join(V2_DB_FILENAME)));
+        assert_eq!(
+            resolve_startup_db(&d, false).selection,
+            DbSelection::V2(d.join(V2_DB_FILENAME))
+        );
         assert!(d.join(LEGACY_DB_FILENAME).exists(), "legacy 必须保留");
         // 4. 两者皆无
         let d = base.join("c4");
         std::fs::create_dir_all(&d).unwrap();
-        assert!(matches!(resolve_startup_db(&d, false).selection, DbSelection::Blocked(_)));
-        assert_eq!(resolve_startup_db(&d, true).selection, DbSelection::FreshV2(d.join(V2_DB_FILENAME)));
+        assert!(matches!(
+            resolve_startup_db(&d, false).selection,
+            DbSelection::Blocked(_)
+        ));
+        assert_eq!(
+            resolve_startup_db(&d, true).selection,
+            DbSelection::FreshV2(d.join(V2_DB_FILENAME))
+        );
         assert!(!d.join(V2_DB_FILENAME).exists(), "仲裁本身不得创建数据库");
         // 5. 存在 tmp → 不可作为 active DB，也不在启动时删除
         let d = base.join("c5");
         std::fs::create_dir_all(&d).unwrap();
         mk(&d, V2_TMP_FILENAME);
         mk(&d, V2_DB_FILENAME);
-        let a = resolve_startup_db(&d, false); assert!(matches!(a.selection, DbSelection::Blocked(_))); assert!(a.tmp_present); assert!(!a.writes_allowed);
-        assert!(d.join(V2_TMP_FILENAME).exists(), "tmp 必须保留供明确恢复流程处理");
+        let a = resolve_startup_db(&d, false);
+        assert!(matches!(a.selection, DbSelection::Blocked(_)));
+        assert!(a.tmp_present);
+        assert!(!a.writes_allowed);
+        assert!(
+            d.join(V2_TMP_FILENAME).exists(),
+            "tmp 必须保留供明确恢复流程处理"
+        );
         // 6. 存在 legacy backup + v2（正常升级后状态）
         let d = base.join("c6");
         std::fs::create_dir_all(&d).unwrap();
         mk(&d, V2_DB_FILENAME);
-        mk(&d, format!("{}{}", LEGACY_DB_FILENAME, LEGACY_BACKUP_SUFFIX).as_str());
-        assert_eq!(resolve_startup_db(&d, false).selection, DbSelection::V2(d.join(V2_DB_FILENAME)));
+        mk(
+            &d,
+            format!("{}{}", LEGACY_DB_FILENAME, LEGACY_BACKUP_SUFFIX).as_str(),
+        );
+        assert_eq!(
+            resolve_startup_db(&d, false).selection,
+            DbSelection::V2(d.join(V2_DB_FILENAME))
+        );
         // 7. stray 被显式报告，仲裁不重命名任何文件
         let d = base.join("c7");
         std::fs::create_dir_all(&d).unwrap();
         mk(&d, V2_DB_FILENAME);
-        mk(&d, format!("{}{}", LEGACY_DB_FILENAME, LEGACY_BACKUP_SUFFIX).as_str());
+        mk(
+            &d,
+            format!("{}{}", LEGACY_DB_FILENAME, LEGACY_BACKUP_SUFFIX).as_str(),
+        );
         mk(&d, LEGACY_DB_FILENAME);
         mk(&d, format!("{}.stray-fixture", LEGACY_DB_FILENAME).as_str());
         let a = resolve_startup_db(&d, false);
         assert_eq!(a.selection, DbSelection::V2(d.join(V2_DB_FILENAME)));
-        assert!(d.join(LEGACY_DB_FILENAME).exists(), "legacy 不得被启动仲裁改写");
+        assert!(
+            d.join(LEGACY_DB_FILENAME).exists(),
+            "legacy 不得被启动仲裁改写"
+        );
         assert!(a.stray_legacy_present);
 
         // 8. backup + legacy 但无 v2：状态矛盾，禁止猜测 active DB。
         let d = base.join("c8");
         std::fs::create_dir_all(&d).unwrap();
         mk(&d, LEGACY_DB_FILENAME);
-        mk(&d, format!("{}{}", LEGACY_DB_FILENAME, LEGACY_BACKUP_SUFFIX).as_str());
+        mk(
+            &d,
+            format!("{}{}", LEGACY_DB_FILENAME, LEGACY_BACKUP_SUFFIX).as_str(),
+        );
         let a = resolve_startup_db(&d, false);
         assert!(matches!(a.selection, DbSelection::Blocked(_)));
         assert!(!a.writes_allowed);
@@ -1665,7 +1955,11 @@ mod migration_tests {
         let hash_before = file_hash(&output.v2_path);
         assert!(state.unlock_v2_and_store("wrong-password").is_err());
         assert!(state.stable_dek().is_err(), "错误密码不得污染 AppState");
-        assert_eq!(file_hash(&output.v2_path), hash_before, "错误密码不得修改 v2 DB");
+        assert_eq!(
+            file_hash(&output.v2_path),
+            hash_before,
+            "错误密码不得修改 v2 DB"
+        );
         state.unlock_v2_and_store(MASTER).unwrap();
         assert_eq!(state.stable_dek().unwrap().to_vec(), expected);
         assert!(state.legacy_key().is_err());
@@ -1712,10 +2006,17 @@ mod migration_tests {
             "wrapped_dek_r",
             "security_version",
         ] {
-            assert!(db.get_setting(key).unwrap().filter(|v| !v.is_empty()).is_some());
+            assert!(db
+                .get_setting(key)
+                .unwrap()
+                .filter(|v| !v.is_empty())
+                .is_some());
         }
         assert!(db.get_setting("recovery_phrase").unwrap().is_none());
-        assert!(db.get_setting("recovery_phrase_encrypted").unwrap().is_none());
+        assert!(db
+            .get_setting("recovery_phrase_encrypted")
+            .unwrap()
+            .is_none());
 
         let unlocked = unlock_v2_core(&db, MASTER).unwrap();
         assert_eq!(state.stable_dek().unwrap().as_slice(), unlocked.as_slice());
@@ -1733,7 +2034,9 @@ mod migration_tests {
         assert_eq!(crypto::mnemonic_to_entropy(&phrase).unwrap().len(), 16);
         let bytes = std::fs::read(dir.join(V2_TMP_FILENAME)).unwrap();
         assert!(
-            !bytes.windows(phrase.len()).any(|window| window == phrase.as_bytes()),
+            !bytes
+                .windows(phrase.len())
+                .any(|window| window == phrase.as_bytes()),
             "恢复短语不得以明文写入数据库文件"
         );
         let db = open_existing_v2_db(&dir.join(V2_TMP_FILENAME)).unwrap();
@@ -1741,7 +2044,11 @@ mod migration_tests {
             .conn
             .lock()
             .unwrap()
-            .query_row("SELECT COALESCE(GROUP_CONCAT(value, ''), '') FROM settings", [], |r| r.get(0))
+            .query_row(
+                "SELECT COALESCE(GROUP_CONCAT(value, ''), '') FROM settings",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert!(!settings.contains(&phrase));
         drop(db);
@@ -1773,10 +2080,8 @@ mod migration_tests {
         state.finalize_v2_initialization().unwrap();
         let expected = state.stable_dek().unwrap().to_vec();
         let db = open_existing_v2_db(&dir.join(V2_DB_FILENAME)).unwrap();
-        let params: crypto::KdfParams = serde_json::from_str(
-            &db.get_setting("kdf_params_r").unwrap().unwrap(),
-        )
-        .unwrap();
+        let params: crypto::KdfParams =
+            serde_json::from_str(&db.get_setting("kdf_params_r").unwrap().unwrap()).unwrap();
         let wrapped = db.get_setting("wrapped_dek_r").unwrap().unwrap();
         let entropy = crypto::mnemonic_to_entropy(&words.join(" ")).unwrap();
         let salt = crypto::b64_decode(&params.salt).unwrap();
@@ -1891,9 +2196,7 @@ mod migration_tests {
     }
 
     // ===== Phase 2B.2：Recovery Phrase 恢复 + 主密码重包 =====
-    fn completed_v2_state(
-        tag: &str,
-    ) -> (PathBuf, crate::AppState, Vec<String>, Vec<u8>) {
+    fn completed_v2_state(tag: &str) -> (PathBuf, crate::AppState, Vec<String>, Vec<u8>) {
         let dir = temp_app_dir(tag);
         let state = fresh_v2_state(&dir);
         let words = state.prepare_v2_initialization(MASTER).unwrap();
@@ -1930,7 +2233,12 @@ mod migration_tests {
         let other_entropy = crypto::generate_recovery_entropy();
         let other_valid = crypto::entropy_to_mnemonic(&other_entropy).unwrap();
 
-        for invalid in [unknown_word, reordered.join(" "), checksum_invalid, other_valid] {
+        for invalid in [
+            unknown_word,
+            reordered.join(" "),
+            checksum_invalid,
+            other_valid,
+        ] {
             assert!(state.verify_v2_recovery_phrase(&invalid).is_err());
             assert_eq!(file_hash(&v2_path), hash_before, "认证失败不得修改 DB");
             assert!(!state.is_unlocked(), "认证失败不得污染 AppState");
@@ -1953,7 +2261,9 @@ mod migration_tests {
             migration_freeze: std::sync::atomic::AtomicBool::new(false),
             key: std::sync::Mutex::new(None),
         };
-        assert!(legacy_state.verify_v2_recovery_phrase(&words.join(" ")).is_err());
+        assert!(legacy_state
+            .verify_v2_recovery_phrase(&words.join(" "))
+            .is_err());
         assert!(legacy_state
             .recover_v2_with_phrase_and_store(&words.join(" "), "New-Master-Password!")
             .is_err());
@@ -1981,12 +2291,17 @@ mod migration_tests {
         let db = state.db.lock().unwrap();
         assert!(unlock_v2_core(&db, MASTER).is_err(), "旧主密码必须失效");
         assert_eq!(
-            unlock_v2_core(&db, "New-Master-Password!").unwrap().to_vec(),
+            unlock_v2_core(&db, "New-Master-Password!")
+                .unwrap()
+                .to_vec(),
             expected
         );
         assert_eq!(db.get_setting("kdf_params_r").unwrap(), metadata_before.0);
         assert_eq!(db.get_setting("wrapped_dek_r").unwrap(), metadata_before.1);
-        assert_eq!(db.get_setting("security_version").unwrap(), metadata_before.2);
+        assert_eq!(
+            db.get_setting("security_version").unwrap(),
+            metadata_before.2
+        );
         assert_ne!(db.get_setting("wrapped_dek_m").unwrap(), metadata_before.3);
         drop(db);
         drop(state);
@@ -1996,12 +2311,9 @@ mod migration_tests {
         let (crash_dir, crash_state, crash_words, crash_expected) =
             completed_v2_state("r3_post_commit_crash");
         let db = crash_state.db.lock().unwrap();
-        let recovered = recover_v2_with_phrase(
-            &db,
-            &crash_words.join(" "),
-            "Crash-Window-New-Master!",
-        )
-        .unwrap();
+        let recovered =
+            recover_v2_with_phrase(&db, &crash_words.join(" "), "Crash-Window-New-Master!")
+                .unwrap();
         assert_eq!(recovered.to_vec(), crash_expected);
         drop(recovered);
         assert!(!crash_state.is_unlocked());
@@ -2043,7 +2355,15 @@ mod migration_tests {
         }
         let before: Vec<_> = ids
             .iter()
-            .map(|id| state.db.lock().unwrap().get_password_v2_snapshot(*id).unwrap().unwrap())
+            .map(|id| {
+                state
+                    .db
+                    .lock()
+                    .unwrap()
+                    .get_password_v2_snapshot(*id)
+                    .unwrap()
+                    .unwrap()
+            })
             .collect();
 
         state
@@ -2051,7 +2371,15 @@ mod migration_tests {
             .unwrap();
         let after: Vec<_> = ids
             .iter()
-            .map(|id| state.db.lock().unwrap().get_password_v2_snapshot(*id).unwrap().unwrap())
+            .map(|id| {
+                state
+                    .db
+                    .lock()
+                    .unwrap()
+                    .get_password_v2_snapshot(*id)
+                    .unwrap()
+                    .unwrap()
+            })
             .collect();
         for (before, after) in before.iter().zip(after.iter()) {
             assert_eq!(after.record_uuid, before.record_uuid);
@@ -2068,7 +2396,10 @@ mod migration_tests {
             .recover_v2_with_phrase_and_store(&words.join(" "), "New-Master-Password!")
             .unwrap();
         let db = state.db.lock().unwrap();
-        assert_eq!(recover_v2_core(&db, &words.join(" ")).unwrap().to_vec(), expected);
+        assert_eq!(
+            recover_v2_core(&db, &words.join(" ")).unwrap().to_vec(),
+            expected
+        );
         drop(db);
         drop(state);
         cleanup_dir(&dir);
@@ -2126,7 +2457,9 @@ mod migration_tests {
         assert_eq!(state.stable_dek().unwrap().to_vec(), expected);
         let db = state.db.lock().unwrap();
         assert_eq!(
-            unlock_v2_core(&db, "New-Master-Password!").unwrap().to_vec(),
+            unlock_v2_core(&db, "New-Master-Password!")
+                .unwrap()
+                .to_vec(),
             expected
         );
         drop(db);
@@ -2137,7 +2470,13 @@ mod migration_tests {
     // ===== Phase 2B.3a：已知旧主密码 → 普通修改主密码 =====
     fn security_metadata_snapshot(
         db: &Db,
-    ) -> (Option<String>, Option<String>, Option<String>, Option<String>, Option<String>) {
+    ) -> (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) {
         (
             db.get_setting("kdf_params_m").unwrap(),
             db.get_setting("wrapped_dek_m").unwrap(),
@@ -2177,7 +2516,10 @@ mod migration_tests {
             .change_v2_master_password("wrong-old-master", "M2-New-Master!")
             .is_err());
         assert_eq!(file_hash(&path), hash_before);
-        assert_eq!(security_metadata_snapshot(&state.db.lock().unwrap()), metadata_before);
+        assert_eq!(
+            security_metadata_snapshot(&state.db.lock().unwrap()),
+            metadata_before
+        );
         assert_eq!(state.stable_dek().unwrap().to_vec(), expected);
         drop(state);
         cleanup_dir(&dir);
@@ -2214,12 +2556,9 @@ mod migration_tests {
         ];
         let mut ids = Vec::new();
         for (index, record_uuid) in uuids.iter().enumerate() {
-            let ciphertext = crypto::encrypt_password_dw2(
-                &format!("m4-secret-{index}"),
-                &expected,
-                record_uuid,
-            )
-            .unwrap();
+            let ciphertext =
+                crypto::encrypt_password_dw2(&format!("m4-secret-{index}"), &expected, record_uuid)
+                    .unwrap();
             ids.push(
                 state
                     .db
@@ -2231,14 +2570,30 @@ mod migration_tests {
         }
         let before: Vec<_> = ids
             .iter()
-            .map(|id| state.db.lock().unwrap().get_password_v2_snapshot(*id).unwrap().unwrap())
+            .map(|id| {
+                state
+                    .db
+                    .lock()
+                    .unwrap()
+                    .get_password_v2_snapshot(*id)
+                    .unwrap()
+                    .unwrap()
+            })
             .collect();
         state
             .change_v2_master_password(MASTER, "M4-New-Master!")
             .unwrap();
         let after: Vec<_> = ids
             .iter()
-            .map(|id| state.db.lock().unwrap().get_password_v2_snapshot(*id).unwrap().unwrap())
+            .map(|id| {
+                state
+                    .db
+                    .lock()
+                    .unwrap()
+                    .get_password_v2_snapshot(*id)
+                    .unwrap()
+                    .unwrap()
+            })
             .collect();
         for (before, after) in before.iter().zip(after.iter()) {
             assert_eq!(after.record_uuid, before.record_uuid);
@@ -2263,7 +2618,10 @@ mod migration_tests {
         assert_eq!(after.2, before.2, "Recovery KDF metadata 不得变化");
         assert_eq!(after.3, before.3, "Recovery wrap 不得变化");
         assert_eq!(after.4, before.4, "security_version 不得变化");
-        assert_eq!(recover_v2_core(&db, &words.join(" ")).unwrap().to_vec(), expected);
+        assert_eq!(
+            recover_v2_core(&db, &words.join(" ")).unwrap().to_vec(),
+            expected
+        );
         drop(db);
         drop(state);
         cleanup_dir(&dir);
@@ -2346,7 +2704,10 @@ mod migration_tests {
             state.change_v2_master_password(MASTER, MASTER).unwrap_err(),
             "新主密码必须与当前主密码不同"
         );
-        assert_eq!(security_metadata_snapshot(&state.db.lock().unwrap()), before);
+        assert_eq!(
+            security_metadata_snapshot(&state.db.lock().unwrap()),
+            before
+        );
         assert_eq!(state.stable_dek().unwrap().to_vec(), expected);
         drop(state);
         cleanup_dir(&dir);
@@ -2413,7 +2774,9 @@ mod migration_tests {
         assert_eq!(state.stable_dek().unwrap().to_vec(), expected);
         let db = state.db.lock().unwrap();
         assert_eq!(
-            unlock_v2_core(&db, "M9-Normal-New-Master!").unwrap().to_vec(),
+            unlock_v2_core(&db, "M9-Normal-New-Master!")
+                .unwrap()
+                .to_vec(),
             expected
         );
         assert!(unlock_v2_core(&db, MASTER).is_err());
@@ -2452,7 +2815,10 @@ mod migration_tests {
         assert_eq!(state.stable_dek().unwrap().to_vec(), expected);
         let db = state.db.lock().unwrap();
         assert!(recover_v2_core(&db, &old_words.join(" ")).is_err());
-        assert_eq!(recover_v2_core(&db, &new_phrase).unwrap().to_vec(), expected);
+        assert_eq!(
+            recover_v2_core(&db, &new_phrase).unwrap().to_vec(),
+            expected
+        );
         drop(db);
         drop(state);
         cleanup_dir(&dir);
@@ -2470,16 +2836,20 @@ mod migration_tests {
 
         state.clear_key();
         assert!(state
-            .confirm_v2_recovery_rotation(
-                &prepared.rotation_token,
-                &rotation_answers(&prepared),
-            )
+            .confirm_v2_recovery_rotation(&prepared.rotation_token, &rotation_answers(&prepared),)
             .is_err());
         state.unlock_v2_and_store(MASTER).unwrap();
-        assert_eq!(file_hash(&v2_path), hash_before, "pending 阶段不得写正式 DB");
+        assert_eq!(
+            file_hash(&v2_path),
+            hash_before,
+            "pending 阶段不得写正式 DB"
+        );
         let db = state.db.lock().unwrap();
         assert_eq!(security_metadata_snapshot(&db), before);
-        assert_eq!(recover_v2_core(&db, &old_words.join(" ")).unwrap().to_vec(), expected);
+        assert_eq!(
+            recover_v2_core(&db, &old_words.join(" ")).unwrap().to_vec(),
+            expected
+        );
         assert!(recover_v2_core(&db, &new_phrase).is_err());
         drop(db);
         drop(state);
@@ -2502,13 +2872,13 @@ mod migration_tests {
         {
             let db = state.db.lock().unwrap();
             assert_eq!(security_metadata_snapshot(&db), before);
-            assert_eq!(recover_v2_core(&db, &old_words.join(" ")).unwrap().to_vec(), expected);
+            assert_eq!(
+                recover_v2_core(&db, &old_words.join(" ")).unwrap().to_vec(),
+                expected
+            );
         }
         state
-            .confirm_v2_recovery_rotation(
-                &prepared.rotation_token,
-                &rotation_answers(&prepared),
-            )
+            .confirm_v2_recovery_rotation(&prepared.rotation_token, &rotation_answers(&prepared))
             .unwrap();
         drop(state);
         cleanup_dir(&dir);
@@ -2521,10 +2891,7 @@ mod migration_tests {
         let before = security_metadata_snapshot(&state.db.lock().unwrap());
         let prepared = state.prepare_v2_recovery_rotation().unwrap();
         state
-            .confirm_v2_recovery_rotation(
-                &prepared.rotation_token,
-                &rotation_answers(&prepared),
-            )
+            .confirm_v2_recovery_rotation(&prepared.rotation_token, &rotation_answers(&prepared))
             .unwrap();
         let db = state.db.lock().unwrap();
         let after = security_metadata_snapshot(&db);
@@ -2565,18 +2932,31 @@ mod migration_tests {
         }
         let before: Vec<_> = ids
             .iter()
-            .map(|id| state.db.lock().unwrap().get_password_v2_snapshot(*id).unwrap().unwrap())
+            .map(|id| {
+                state
+                    .db
+                    .lock()
+                    .unwrap()
+                    .get_password_v2_snapshot(*id)
+                    .unwrap()
+                    .unwrap()
+            })
             .collect();
         let prepared = state.prepare_v2_recovery_rotation().unwrap();
         state
-            .confirm_v2_recovery_rotation(
-                &prepared.rotation_token,
-                &rotation_answers(&prepared),
-            )
+            .confirm_v2_recovery_rotation(&prepared.rotation_token, &rotation_answers(&prepared))
             .unwrap();
         let after: Vec<_> = ids
             .iter()
-            .map(|id| state.db.lock().unwrap().get_password_v2_snapshot(*id).unwrap().unwrap())
+            .map(|id| {
+                state
+                    .db
+                    .lock()
+                    .unwrap()
+                    .get_password_v2_snapshot(*id)
+                    .unwrap()
+                    .unwrap()
+            })
             .collect();
         for (before, after) in before.iter().zip(after.iter()) {
             assert_eq!(after.record_uuid, before.record_uuid);
@@ -2597,10 +2977,15 @@ mod migration_tests {
             let (dir, state, old_words, expected) = completed_v2_state(&format!("rr6_p_{index}"));
             state.unlock_v2_and_store(MASTER).unwrap();
             let before = security_metadata_snapshot(&state.db.lock().unwrap());
-            assert!(state.prepare_v2_recovery_rotation_inject(Some(fail_point)).is_err());
+            assert!(state
+                .prepare_v2_recovery_rotation_inject(Some(fail_point))
+                .is_err());
             let db = state.db.lock().unwrap();
             assert_eq!(security_metadata_snapshot(&db), before);
-            assert_eq!(recover_v2_core(&db, &old_words.join(" ")).unwrap().to_vec(), expected);
+            assert_eq!(
+                recover_v2_core(&db, &old_words.join(" ")).unwrap().to_vec(),
+                expected
+            );
             drop(db);
             drop(state);
             cleanup_dir(&dir);
@@ -2625,10 +3010,15 @@ mod migration_tests {
                 .is_err());
             let db = state.db.lock().unwrap();
             assert_eq!(security_metadata_snapshot(&db), before);
-            assert_eq!(recover_v2_core(&db, &old_words.join(" ")).unwrap().to_vec(), expected);
+            assert_eq!(
+                recover_v2_core(&db, &old_words.join(" ")).unwrap().to_vec(),
+                expected
+            );
             assert!(recover_v2_core(&db, &new_phrase).is_err());
             drop(db);
-            state.cancel_v2_recovery_rotation(&prepared.rotation_token).unwrap();
+            state
+                .cancel_v2_recovery_rotation(&prepared.rotation_token)
+                .unwrap();
             drop(state);
             cleanup_dir(&dir);
         }
@@ -2651,16 +3041,18 @@ mod migration_tests {
                 state.prepare_v2_recovery_rotation()
             }));
         }
-        let results: Vec<_> = handles.into_iter().map(|handle| handle.join().unwrap()).collect();
+        let results: Vec<_> = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect();
         assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
         assert_eq!(results.iter().filter(|result| result.is_err()).count(), 1);
         let prepared = results.into_iter().find_map(Result::ok).unwrap();
-        state.cancel_v2_recovery_rotation(&prepared.rotation_token).unwrap();
+        state
+            .cancel_v2_recovery_rotation(&prepared.rotation_token)
+            .unwrap();
         assert!(state
-            .confirm_v2_recovery_rotation(
-                &prepared.rotation_token,
-                &rotation_answers(&prepared),
-            )
+            .confirm_v2_recovery_rotation(&prepared.rotation_token, &rotation_answers(&prepared),)
             .is_err());
         drop(state);
         cleanup_dir(&dir);
@@ -2701,7 +3093,10 @@ mod migration_tests {
             .is_err());
         let db = state.db.lock().unwrap();
         assert!(recover_v2_core(&db, &old_words.join(" ")).is_err());
-        assert_eq!(recover_v2_core(&db, &new_phrase).unwrap().to_vec(), expected);
+        assert_eq!(
+            recover_v2_core(&db, &new_phrase).unwrap().to_vec(),
+            expected
+        );
         drop(db);
         drop(state);
         cleanup_dir(&dir);
@@ -2747,7 +3142,10 @@ mod migration_tests {
             expected
         );
         assert!(recover_v2_core(&db, &old_words.join(" ")).is_err());
-        assert_eq!(recover_v2_core(&db, &new_phrase).unwrap().to_vec(), expected);
+        assert_eq!(
+            recover_v2_core(&db, &new_phrase).unwrap().to_vec(),
+            expected
+        );
         drop(db);
         drop(state);
         cleanup_dir(&dir);
@@ -2796,16 +3194,16 @@ mod migration_tests {
 
         state.clear_key();
         assert!(state
-            .confirm_v2_recovery_rotation(
-                &abandoned.rotation_token,
-                &abandoned_answers,
-            )
+            .confirm_v2_recovery_rotation(&abandoned.rotation_token, &abandoned_answers,)
             .is_err());
         state.unlock_v2_and_store(MASTER).unwrap();
         {
             let db = state.db.lock().unwrap();
             assert_eq!(security_metadata_snapshot(&db), before);
-            assert_eq!(recover_v2_core(&db, &old_words.join(" ")).unwrap().to_vec(), expected);
+            assert_eq!(
+                recover_v2_core(&db, &old_words.join(" ")).unwrap().to_vec(),
+                expected
+            );
             assert!(recover_v2_core(&db, &abandoned_phrase).is_err());
         }
 

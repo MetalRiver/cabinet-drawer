@@ -5,6 +5,8 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useAppStore } from "../stores/app";
 import { useSoftwareStore } from "../stores/software";
 import { type ScannedApp, relinkApp, openAppLocation, pickPath } from "../api";
+import ConfirmInline from "../components/ConfirmInline.vue";
+import StatusInline from "../components/settings/StatusLine.vue";
 
 // P0-#Y#FIX#ICON#FOLDER：folder/url/document 没真实图标时显示内置 SVG（Windows 风格）
 // 之前：emoji 📁 / 🔗 / 📄（不真实，看起来像字符而不是图标）
@@ -262,6 +264,82 @@ async function reextractIcons() {
     appStore.showClipToast("info", "重抽失败：" + String(e));
   } finally {
     reextractingIcons.value = false;
+  }
+}
+
+// ===== v0.4.1 软件失效治理：集中列表 + 手动检查 + 批量清退 =====
+const showInvalidPanel = ref(false);
+const selectedInvalidIds = ref<Set<number>>(new Set());
+const invalidChecking = ref(false);
+const invalidBatchConfirm = ref(false);
+const invalidBatchBusy = ref(false);
+const invalidBatchResult = ref<{ moved: number; skipped: number; failed: number } | null>(null);
+const invalidPanelError = ref("");
+
+const KIND_LABELS: Record<string, string> = {
+  fixed_missing: "固定盘缺失 · 可清退",
+  removable_offline: "移动盘/光盘不在位（保护）",
+  network_offline: "网络位置离线（保护）",
+  uncertain: "状态不确定（保护）",
+};
+
+function toggleInvalidPanel() {
+  showInvalidPanel.value = !showInvalidPanel.value;
+  invalidBatchResult.value = null;
+  invalidPanelError.value = "";
+  if (showInvalidPanel.value) {
+    void softwareStore.loadInvalidApps();
+  } else {
+    selectedInvalidIds.value = new Set();
+  }
+}
+
+/** 手动重新检查：先自动重定位（.lnk 目标/常见目录按名），再刷新最新状态 */
+async function runInvalidCheck() {
+  if (invalidChecking.value) return;
+  invalidChecking.value = true;
+  invalidPanelError.value = "";
+  try {
+    const fixed = await softwareStore.runHealthCheck();
+    appStore.showClipToast(
+      "success",
+      fixed > 0 ? `自动重定位 ${fixed} 项，列表已更新` : "检查完成：没有可自动重定位的条目"
+    );
+  } catch (e) {
+    invalidPanelError.value = String(e);
+  } finally {
+    invalidChecking.value = false;
+  }
+}
+
+function toggleSelectInvalid(id: number) {
+  const next = new Set(selectedInvalidIds.value);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  selectedInvalidIds.value = next;
+}
+
+function selectAllClearable() {
+  const next = new Set<number>();
+  for (const it of softwareStore.clearableInvalid) next.add(it.id);
+  selectedInvalidIds.value = next;
+}
+
+async function confirmBatchTrash() {
+  if (invalidBatchBusy.value) return;
+  const ids = Array.from(selectedInvalidIds.value);
+  if (ids.length === 0) return;
+  invalidBatchBusy.value = true;
+  invalidPanelError.value = "";
+  try {
+    const r = await softwareStore.moveAppsToTrash(ids);
+    invalidBatchResult.value = { moved: r.moved, skipped: r.skipped, failed: r.errors.length };
+    selectedInvalidIds.value = new Set();
+    appStore.refreshTrashCount();
+  } catch (e) {
+    invalidPanelError.value = String(e);
+  } finally {
+    invalidBatchBusy.value = false;
   }
 }
 
@@ -1141,11 +1219,87 @@ async function confirmDeleteApp(id: number | null) {
           <span v-if="!reextractingIcons">🎨 重抽 ({{ missingIconCount }})</span>
           <span v-else>抽图中…</span>
         </button>
+        <button
+          v-if="softwareStore.invalidCount > 0"
+          class="action-btn action-btn-warn tap"
+          :title="`${softwareStore.invalidCount} 条失效记录，点击集中治理`"
+          @click="toggleInvalidPanel"
+        >
+          ⚠️ 失效 ({{ softwareStore.invalidCount }})
+        </button>
         <button class="action-btn action-btn-text tap" @click="openScan" title="扫描系统">
           🔍 <span>扫描</span>
         </button>
         <button class="action-btn action-btn-primary tap" @click="openAddForm" title="手动添加">+</button>
       </div>
+    </div>
+
+    <!-- v0.4.1 软件失效治理：集中列表（手动检查 / 自动重定位先行 / 保护分类不可清退 / 批量移入回收站） -->
+    <div v-if="showInvalidPanel" class="invalid-panel">
+      <div class="invalid-panel-head">
+        <b>失效软件治理</b>
+        <span class="invalid-sub">
+          自动重定位优先；只有「固定盘缺失」可批量移入回收站（仅删除收录记录，不卸载程序、可从回收站恢复）
+        </span>
+        <button class="s-btn-mini tap" :disabled="invalidChecking" @click="runInvalidCheck" data-interactive>
+          {{ invalidChecking ? "检查中…" : "🔄 重新检查" }}
+        </button>
+        <button class="s-btn-mini tap" @click="toggleInvalidPanel" data-interactive>收起</button>
+      </div>
+      <div v-if="softwareStore.invalidLoading" class="invalid-empty">检查中…</div>
+      <div v-else-if="softwareStore.invalidItems.length === 0" class="invalid-empty">
+        ✅ 没有失效记录（本次检查未发现路径失效的软件）
+      </div>
+      <template v-else>
+        <div class="invalid-toolbar">
+          <button class="s-btn-mini tap" data-interactive @click="selectAllClearable">
+            全选可清退（{{ softwareStore.clearableInvalid.length }}）
+          </button>
+          <button
+            class="s-btn-mini invalid-trash-btn tap"
+            :disabled="selectedInvalidIds.size === 0 || invalidBatchBusy"
+            data-interactive
+            @click="invalidBatchConfirm = true"
+          >
+            🗑️ 移入回收站（{{ selectedInvalidIds.size }}）
+          </button>
+          <span class="invalid-hint">受保护分类（移动盘/网络/不确定）不可勾选</span>
+        </div>
+        <ConfirmInline
+          v-if="invalidBatchConfirm"
+          :title="`将把选中的 ${selectedInvalidIds.size} 条收录记录移入回收站（可恢复）。不卸载任何 Windows 程序。确定继续吗？`"
+          confirm-text="移入回收站"
+          :loading="invalidBatchBusy"
+          @cancel="invalidBatchConfirm = false"
+          @confirm="confirmBatchTrash"
+        />
+        <StatusInline v-if="invalidBatchResult" tone="ok" :text="`✓ 已移入回收站 ${invalidBatchResult.moved} 条 ｜ 跳过（已在回收站）${invalidBatchResult.skipped} 条${invalidBatchResult.failed ? ` ｜ 失败 ${invalidBatchResult.failed} 条` : ''}`" />
+        <StatusInline v-if="invalidPanelError" tone="err" :text="invalidPanelError" />
+        <div class="invalid-list">
+          <div v-for="it in softwareStore.invalidItems" :key="it.id" class="invalid-row">
+            <label
+              v-if="it.kind === 'fixed_missing'"
+              class="invalid-check"
+              title="勾选后可批量移入回收站"
+            >
+              <input
+                type="checkbox"
+                :checked="selectedInvalidIds.has(it.id)"
+                @change="toggleSelectInvalid(it.id)"
+              />
+            </label>
+            <span v-else class="invalid-shield" title="受保护：不提供清退操作">🛡️</span>
+            <div class="invalid-info">
+              <div class="invalid-name">{{ it.name }}</div>
+              <div class="invalid-path" :title="it.path">{{ it.path }}</div>
+              <div v-if="it.lnk_target" class="invalid-path" :title="it.lnk_target">↳ 目标：{{ it.lnk_target }}</div>
+            </div>
+            <span class="invalid-kind" :class="{ clearable: it.kind === 'fixed_missing' }">
+              {{ KIND_LABELS[it.kind] || it.kind }}
+            </span>
+          </div>
+        </div>
+      </template>
     </div>
 
     <!-- P0-#Y：类型筛选 chips 改为左侧可收缩 sidebar（默认仅图标列、hover 展开） -->
@@ -2994,4 +3148,42 @@ async function confirmDeleteApp(id: number | null) {
   padding: 1px 6px;
   border-radius: 999px;
 }
+
+/* ===== v0.4.1 失效治理面板 ===== */
+.invalid-panel {
+  margin: 0 0 10px;
+  padding: 12px;
+  background: var(--bg-primary);
+  border: 1px solid rgba(245, 158, 11, 0.45);
+  border-radius: 12px;
+}
+.invalid-panel-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.invalid-panel-head b { font-size: 13px; }
+.invalid-sub { font-size: 11.5px; color: var(--text-muted); flex: 1; min-width: 200px; }
+.invalid-empty { font-size: 12.5px; color: var(--text-muted); padding: 12px 4px; }
+.invalid-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+.invalid-hint { font-size: 11px; color: var(--text-muted); }
+.invalid-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.invalid-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+}
+.invalid-check input { width: 15px; height: 15px; accent-color: #f43f5e; cursor: pointer; }
+.invalid-shield { font-size: 14px; width: 15px; text-align: center; }
+.invalid-info { flex: 1; min-width: 0; }
+.invalid-name { font-size: 12.5px; font-weight: 600; color: var(--text-primary); }
+.invalid-path {
+  font-size: 11px; color: var(--text-muted); font-family: Consolas, monospace;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.invalid-kind {
+  flex-shrink: 0; font-size: 10.5px; font-weight: 600;
+  padding: 2px 8px; border-radius: 999px;
+  color: var(--text-muted); background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+}
+.invalid-kind.clearable { color: #fb7185; background: rgba(244,63,94,0.1); border-color: rgba(244,63,94,0.4); }
 </style>

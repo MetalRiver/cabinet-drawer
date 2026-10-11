@@ -19,6 +19,11 @@ import {
   listAppsWithIcons,
   type AppMeta,
   type AppCategoryMeta,
+  listInvalidApps,
+  batchMoveAppsToTrash,
+  healthCheckApps,
+  type InvalidAppInfo,
+  type BatchTrashResult
 } from "../api";
 import { useAppStore } from "./app";
 
@@ -361,7 +366,63 @@ export const useSoftwareStore = defineStore("software", () => {
     await loadItems();
   }
 
+  // ===== v0.4.1 软件失效治理 =====
+  const invalidItems = ref<InvalidAppInfo[]>([]);
+  const invalidLoading = ref(false);
+  const healthChecking = ref(false);
+  const invalidCount = computed(() => invalidItems.value.length);
+  // 可清退候选：仅固定盘确认缺失；移动盘/网络/离线/不确定一律保护
+  const clearableInvalid = computed(() =>
+    invalidItems.value.filter((it) => it.kind === "fixed_missing")
+  );
+  const protectedInvalid = computed(() =>
+    invalidItems.value.filter((it) => it.kind !== "fixed_missing")
+  );
+
+  async function loadInvalidApps() {
+    invalidLoading.value = true;
+    try {
+      invalidItems.value = await listInvalidApps();
+    } catch (e) {
+      console.warn("加载失效列表失败", e);
+    } finally {
+      invalidLoading.value = false;
+    }
+  }
+
+  /**
+   * 手动重新检查：先跑既有安全自动重定位（health_check_apps：.lnk 目标重写 +
+   * Start Menu/Program Files/Steam 库按名重定位），再刷新列表与失效分类，
+   * 让用户看到重定位后的最新状态。
+   */
+  async function runHealthCheck(): Promise<number> {
+    healthChecking.value = true;
+    try {
+      const fixed = await healthCheckApps();
+      await Promise.all([loadItems(), loadInvalidApps()]);
+      return fixed;
+    } finally {
+      healthChecking.value = false;
+    }
+  }
+
+  /** 批量移入回收站（软删除；幂等；结果含成功/跳过/逐条错误） */
+  async function moveAppsToTrash(ids: number[]): Promise<BatchTrashResult> {
+    const result = await batchMoveAppsToTrash(ids);
+    await Promise.all([loadItems(), loadInvalidApps()]);
+    return result;
+  }
+
   return {
+    invalidItems,
+    invalidLoading,
+    healthChecking,
+    invalidCount,
+    clearableInvalid,
+    protectedInvalid,
+    loadInvalidApps,
+    runHealthCheck,
+    moveAppsToTrash,
     items,
     filteredItems,
     categories,

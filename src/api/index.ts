@@ -555,6 +555,33 @@ export const kindToTable = (kind: TrashItem["kind"]): string => {
 // P0-#F：启动健康检查 — 自动修复失效 app path
 export const healthCheckApps = () => invoke<number>("health_check_apps");
 
+// ===== v0.4.1 软件失效治理 =====
+export type InvalidAppKind =
+  | "fixed_missing"      // 固定盘上确认缺失（唯一可清退候选）
+  | "removable_offline"  // 移动盘/光驱不在位（保护）
+  | "network_offline"    // 网络盘离线（保护）
+  | "uncertain";         // 无法判定（保护，如 .lnk 目标不可解析）
+
+export interface InvalidAppInfo {
+  id: number;
+  name: string;
+  path: string;
+  app_type: string;
+  kind: InvalidAppKind;
+  lnk_target?: string | null;
+}
+
+export const listInvalidApps = () => invoke<InvalidAppInfo[]>("list_invalid_apps");
+
+export interface BatchTrashResult {
+  moved: number;
+  skipped: number;
+  errors: [number, string][];
+}
+
+export const batchMoveAppsToTrash = (ids: number[]) =>
+  invoke<BatchTrashResult>("batch_move_apps_to_trash", { ids });
+
 // P0-#T#3：获取数据存储位置（SQLite 数据库路径）
 export const getDataDir = () => invoke<string>("get_data_dir");
 

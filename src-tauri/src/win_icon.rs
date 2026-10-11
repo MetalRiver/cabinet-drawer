@@ -206,10 +206,8 @@ fn write_fallback_icon(cache_path: &Path, source_path: &str) {
         for x in 0..64 {
             // 边框 4px + 圆角简化（4 角少 6px）
             let on_border = x < 3 || x > 60 || y < 3 || y > 60;
-            let in_corner_cut = (x < 6 && y < 6)
-                || (x > 57 && y < 6)
-                || (x < 6 && y > 57)
-                || (x > 57 && y > 57);
+            let in_corner_cut =
+                (x < 6 && y < 6) || (x > 57 && y < 6) || (x < 6 && y > 57) || (x > 57 && y > 57);
             if on_border && !in_corner_cut {
                 img.put_pixel(x, y, fg);
             } else {
@@ -218,7 +216,10 @@ fn write_fallback_icon(cache_path: &Path, source_path: &str) {
         }
     }
     if let Err(e) = img.save_with_format(cache_path, image::ImageFormat::Png) {
-        eprintln!("[win_icon] fallback save failed for {:?}: {}", cache_path, e);
+        eprintln!(
+            "[win_icon] fallback save failed for {:?}: {}",
+            cache_path, e
+        );
     }
 }
 

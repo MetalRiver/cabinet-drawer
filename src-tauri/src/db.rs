@@ -1402,6 +1402,44 @@ pub fn app_path_available(app_type: &str, path: &str) -> bool {
     p.exists()
 }
 
+/// 失效记录分类（软件失效治理 v0.4.1；纯函数，可测）。
+///
+/// 设计红线：**只有 `fixed_missing` 是批量清退候选**——移动盘/网络盘/光驱离线、
+/// 盘符不存在（可能只是暂时离线）、以及无法判定的不确定状态一律保护，
+/// 绝不因"单次路径不存在"进入清退建议。
+///
+/// `drive_type` = Windows GetDriveTypeW 返回值：
+/// 0=UNKNOWN 1=NO_ROOT_DIR 2=REMOVABLE 3=FIXED 4=REMOTE 5=CDROM 6=RAMDISK
+pub fn classify_path_health(
+    drive_type: u32,
+    path_exists: bool,
+    is_network_path: bool,
+) -> &'static str {
+    if path_exists {
+        return "ok";
+    }
+    match drive_type {
+        4 => "network_offline",       // REMOTE：网络盘离线（保护）
+        2 | 5 => "removable_offline", // REMOVABLE / CDROM：移动介质不在位（保护）
+        3 => "fixed_missing",         // FIXED：固定盘上确认缺失（唯一清退候选）
+        0 | 1 => {
+            // 盘符本身不在/未知：可能只是盘暂时离线 → 保护
+            if is_network_path {
+                "network_offline"
+            } else {
+                "uncertain"
+            }
+        }
+        _ => "uncertain",
+    }
+}
+
+/// 网络路径判定：UNC 前缀（\server\... 或 \?\UNC\...）
+pub fn is_unc_path(path: &str) -> bool {
+    let b = path.as_bytes();
+    (b.len() >= 2 && b[0] == 0x5C && b[1] == 0x5C) || (b.len() >= 2 && b[0] == b'/' && b[1] == b'/')
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct AppCategoryMeta {
     pub id: i64,

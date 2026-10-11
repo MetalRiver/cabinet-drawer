@@ -11,8 +11,7 @@
 #[cfg(test)]
 mod v2_verification_tests {
     use crate::commands::auth::{
-        has_second_password_core, verify_legacy_password_for_view,
-        verify_password_for_pw_view_core,
+        has_second_password_core, verify_legacy_password_for_view, verify_password_for_pw_view_core,
     };
     use crate::crypto;
     use crate::db::Db;
@@ -55,8 +54,11 @@ mod v2_verification_tests {
             let db = Db::open(&dir.join(LEGACY_DB_FILENAME)).unwrap();
             let salt = crypto::generate_salt();
             let key = Zeroizing::new(crypto::derive_key(MASTER, &salt));
-            db.set_setting("master_password_hash", &crypto::hash_password(MASTER, &salt))
-                .unwrap();
+            db.set_setting(
+                "master_password_hash",
+                &crypto::hash_password(MASTER, &salt),
+            )
+            .unwrap();
             db.set_setting("master_password_salt", &crypto::b64_encode(&salt))
                 .unwrap();
             for i in 0..3 {
@@ -123,7 +125,11 @@ mod v2_verification_tests {
             .unwrap();
         let rows = stmt
             .query_map([], |r| {
-                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
             })
             .unwrap()
             .collect::<rusqlite::Result<Vec<_>>>()
@@ -160,7 +166,11 @@ mod v2_verification_tests {
         assert!(!verify_password_for_pw_view_core(&state, WRONG));
 
         assert_eq!(file_sha256(&v2_path), before_file, "验证不得改写 v2 库文件");
-        assert_eq!(security_settings_snapshot(&state), before_meta, "security metadata 不得变化");
+        assert_eq!(
+            security_settings_snapshot(&state),
+            before_meta,
+            "security metadata 不得变化"
+        );
         cleanup_dir(&dir);
     }
 
@@ -192,7 +202,11 @@ mod v2_verification_tests {
                 .unwrap();
             let rows = stmt
                 .query_map([], |r| {
-                    Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                    ))
                 })
                 .unwrap()
                 .collect::<rusqlite::Result<Vec<_>>>()
@@ -217,8 +231,14 @@ mod v2_verification_tests {
         let (dir, state, _) = upgraded_v2_state("v6");
         // 前端 reveal 与 copy 两个动作都经由 submitVerify → verifyPasswordForPwView IPC
         // → verify_password_for_pw_view_core。此处以同一入口连续验证两个动作场景。
-        assert!(verify_password_for_pw_view_core(&state, MASTER), "reveal 场景验证");
-        assert!(verify_password_for_pw_view_core(&state, MASTER), "copy 场景验证");
+        assert!(
+            verify_password_for_pw_view_core(&state, MASTER),
+            "reveal 场景验证"
+        );
+        assert!(
+            verify_password_for_pw_view_core(&state, MASTER),
+            "copy 场景验证"
+        );
         cleanup_dir(&dir);
     }
 
@@ -230,8 +250,11 @@ mod v2_verification_tests {
         {
             let db = Db::open(&dir.join(LEGACY_DB_FILENAME)).unwrap();
             let salt = crypto::generate_salt();
-            db.set_setting("master_password_hash", &crypto::hash_password(MASTER, &salt))
-                .unwrap();
+            db.set_setting(
+                "master_password_hash",
+                &crypto::hash_password(MASTER, &salt),
+            )
+            .unwrap();
             db.set_setting("master_password_salt", &crypto::b64_encode(&salt))
                 .unwrap();
             // 未启用独立二次密码：主密码通过
@@ -240,8 +263,10 @@ mod v2_verification_tests {
 
             // 启用独立二次密码：只认它，主密码无效（0.2.0 原语义）
             let s2 = crypto::generate_salt();
-            db.set_setting("pw2nd_hash", &crypto::hash_password(second, &s2)).unwrap();
-            db.set_setting("pw2nd_salt", &crypto::b64_encode(&s2)).unwrap();
+            db.set_setting("pw2nd_hash", &crypto::hash_password(second, &s2))
+                .unwrap();
+            db.set_setting("pw2nd_salt", &crypto::b64_encode(&s2))
+                .unwrap();
             assert!(verify_legacy_password_for_view(&db, second));
             assert!(!verify_legacy_password_for_view(&db, MASTER));
             assert!(!verify_legacy_password_for_view(&db, WRONG));
@@ -267,8 +292,14 @@ mod v2_verification_tests {
         let (dir, state, _) = upgraded_v2_state("v9");
         assert!(verify_password_for_pw_view_core(&state, MASTER));
         state.change_v2_master_password(MASTER, NEW_MASTER).unwrap();
-        assert!(!verify_password_for_pw_view_core(&state, MASTER), "旧主密码必须失效");
-        assert!(verify_password_for_pw_view_core(&state, NEW_MASTER), "新主密码必须通过");
+        assert!(
+            !verify_password_for_pw_view_core(&state, MASTER),
+            "旧主密码必须失效"
+        );
+        assert!(
+            verify_password_for_pw_view_core(&state, NEW_MASTER),
+            "新主密码必须通过"
+        );
         assert!(!verify_password_for_pw_view_core(&state, WRONG));
         cleanup_dir(&dir);
     }
@@ -279,7 +310,11 @@ mod v2_verification_tests {
         let (dir, state, _) = upgraded_v2_state("v10");
         let before = passwords_snapshot(&state);
         state.change_v2_master_password(MASTER, NEW_MASTER).unwrap();
-        assert_eq!(passwords_snapshot(&state), before, "DW2 密文与 record_uuid 必须逐字节不变");
+        assert_eq!(
+            passwords_snapshot(&state),
+            before,
+            "DW2 密文与 record_uuid 必须逐字节不变"
+        );
         cleanup_dir(&dir);
     }
 
@@ -293,7 +328,10 @@ mod v2_verification_tests {
         let recovery_before: Vec<_> = before.iter().filter(|(k, _)| k.ends_with("_r")).collect();
         let recovery_after: Vec<_> = after.iter().filter(|(k, _)| k.ends_with("_r")).collect();
         assert!(!recovery_before.is_empty());
-        assert_eq!(recovery_before, recovery_after, "kdf_params_r / wrapped_dek_r 不得变化");
+        assert_eq!(
+            recovery_before, recovery_after,
+            "kdf_params_r / wrapped_dek_r 不得变化"
+        );
         // master wrap 必须已更新（否则新密码解不开）
         assert_ne!(
             before.iter().find(|(k, _)| k == "wrapped_dek_m").unwrap().1,
@@ -307,7 +345,10 @@ mod v2_verification_tests {
     #[test]
     fn v12_v2_has_no_legacy_second_password() {
         let (dir, state, _) = upgraded_v2_state("v12");
-        assert!(!has_second_password_core(&state), "v2 不得声称存在独立二次密码");
+        assert!(
+            !has_second_password_core(&state),
+            "v2 不得声称存在独立二次密码"
+        );
         // legacy 变更入口在 v2 模型下被正确拒绝（前端同时隐藏该设置区）
         assert!(state.require_legacy_model().is_err());
         cleanup_dir(&dir);

@@ -13,6 +13,8 @@ use std::os::windows::process::CommandExt;
 
 #[cfg(test)]
 mod apps_2d_tests;
+#[cfg(test)]
+mod apps_health_tests;
 mod backup;
 mod backup_v2;
 mod commands;
@@ -1977,6 +1979,8 @@ pub fn run() {
             trash_count,
             // 启动健康检查 + 数据目录
             health_check_apps,
+            list_invalid_apps,
+            batch_move_apps_to_trash,
             get_data_dir,
             // Phase 2C-1：Data Root Blocked 模式查询（前端阻断页数据源）
             data_root::get_data_root_block,
