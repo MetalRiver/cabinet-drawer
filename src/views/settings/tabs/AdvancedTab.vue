@@ -207,7 +207,7 @@ onUnmounted(() => {
                   class="vh-now"
                 >本机安装</span>
               </div>
-              <div class="vh-date">{{ entry.date }} · {{ entry.summary }}</div>
+              <div class="vh-date">{{ entry.date || "未发布" }} · {{ entry.summary }}</div>
             </div>
             <div class="vh-actions">
               <button class="s-btn-mini tap" data-interactive @click="toggleNotes(entry.version)">
@@ -255,7 +255,7 @@ onUnmounted(() => {
                         class="vh-now"
                       >本机安装</span>
                     </div>
-                    <div class="vh-date">{{ entry.date }} · {{ entry.summary }}</div>
+                    <div class="vh-date">{{ entry.date || "未发布" }} · {{ entry.summary }}</div>
                   </div>
                   <div class="vh-actions">
                     <button class="s-btn-mini tap" data-interactive @click="toggleNotes(entry.version)">

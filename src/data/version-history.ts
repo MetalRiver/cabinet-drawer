@@ -19,8 +19,10 @@ export interface VersionHistoryEntry {
   version: string;
   /** Release 标题 */
   name: string;
-  /** 发布日期（UTC，YYYY-MM-DD） */
+  /** 发布日期（UTC，YYYY-MM-DD）；空串 = 未发布（发布时由单一源回填，禁止虚构日期） */
   date: string;
+  /** true = 尚未正式发布（UI 显示"未发布"，不计入已发行版本口径） */
+  unreleased?: boolean;
   /** 一句话摘要（折叠态展示） */
   summary: string;
   /** Release 正文逐字快照（展开态展示） */
@@ -30,6 +32,31 @@ export interface VersionHistoryEntry {
 }
 
 export const VERSION_HISTORY: VersionHistoryEntry[] = [
+  {
+    version: "v0.4.1",
+    name: "抽屉柜 Drawer v0.4.1",
+    date: "",
+    unreleased: true,
+    summary: "设置中心 V2 重构 + 持久化修复 + 便签编辑/续期/永久 + 失效治理 + 版本历史 + 外链修复（发布时回填日期）",
+    url: "https://github.com/MetalRiver/cabinet-drawer/releases/tag/v0.4.1",
+    notes: `## 修复
+
+- **设置持久化**：永不锁定 / 永不过期 / 永久保留等 0 值语义修复，重启不再回退
+- **回收站永久保留**：保留天数设为 0 时绝不自动清理（修复可能误删回收站内容的严重缺陷）
+- **窗口位置**：125%/150% 缩放下恢复不再偏移；位置预设不再改变窗口尺寸
+
+## 新增
+
+- **设置中心 V2**：五分类重构（基础 / 安全与密码 / 窗口与外观 / 数据与备份 / 高级与更新）
+- **便签**：编辑、追加、续期（1/3/7/30 天与自定义）、永不过期
+- **软件失效治理**：失效集中列表、手动重新检查（自动重定位优先）、固定盘缺失批量清退（仅软删除）、移动盘/网络/不确定状态保护
+- **版本更新历史**：应用内查看（离线可用）与 GitHub 直达
+- **深色下拉组件**：全设置页替换原生下拉
+
+## 安全
+
+- 密码加密、主密码验证、恢复短语、备份恢复机制与 v0.4.0 完全一致，未做任何变更`,
+  },
   {
     version: "v0.4.0",
     name: "抽屉柜 Drawer v0.4.0",
