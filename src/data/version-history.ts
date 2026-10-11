@@ -7,9 +7,16 @@
 // 2. 发布流程约束：每个正式版本发布时（打 tag + Release published 后），
 //    必须在同一次发布提交里把该版本条目追加进本文件——应用内历史、
 //    GitHub Release、更新清单 latest.json 三处内容同源，禁止漂移；
-// 3. 未正式发布的版本（如 v0.4.1 候选）**不得**提前登记为本文件的历史条目；
+// 3. 未正式发布的版本允许以 `unreleased: true + date: ""` 登记（UI 显示"未发布"），
+//    但**禁止虚构发布日期**；
 // 4. 离线可用：本文件随应用打包，不依赖网络；联网时的"检查更新"发布说明
-//    来自 updater 的 latest.json（与 Release 正文同源）。
+//    来自 updater 的 latest.json（与 Release 正文同源）；
+// 5. **发布前元数据冻结流程（v0.4.1 定）**——最终安装包内不得残留"未发布"：
+//    ① 确定发布日 D → ② 冻结 commit：回填 date=D、删除 unreleased 标记、
+//    notes 终稿（该 notes 即 GitHub Release 正文与 latest.json notes 的唯一来源）
+//    → ③ 用冻结 commit 构建并签名安装包 → ④ 当日发布 Release（正文=notes）+
+//    上传 latest.json（指向③的安装包与 .sig）。
+//    任何冻结后源码改动 → 必须重新走②③④，禁止发布后只改源码不重建安装包。
 // ======================================================================
 
 export const RELEASES_PAGE_URL = "https://github.com/MetalRiver/cabinet-drawer/releases";
