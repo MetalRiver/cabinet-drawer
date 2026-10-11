@@ -7,6 +7,8 @@ import { useAppStore } from "../../../stores/app";
 import { useSoftwareStore } from "../../../stores/software";
 import ConfirmInline from "../../../components/ConfirmInline.vue";
 import { RELEASES_PAGE_URL, VERSION_HISTORY, findInstalledEntry } from "../../../data/version-history";
+import { getAppEdition } from "../../../api";
+import { openExternalLink } from "../../../lib/external-links";
 import SettingsCard from "../../../components/settings/SettingsCard.vue";
 import StatusLine from "../../../components/settings/StatusLine.vue";
 import { useSettingsOps } from "../ops";
@@ -119,21 +121,39 @@ async function onRestartApp() {
     iconBusy.value = false;
   }
 }
-// ===== v0.4.1 任务 B：版本更新历史（随应用打包的单一源快照，离线可查）=====
+// ===== v0.4.1 任务 B/C：版本更新历史（随应用打包的单一源快照，离线可查）=====
 const expandedNotes = ref<Set<string>>(new Set());
 const installedEntry = computed(() => findInstalledEntry(versionInfo.value));
+// 任务 C：测试版不标"本机正式安装"——版本号与正式版相同只是构建通道相同
+const isTestEdition = ref(false);
+getAppEdition()
+  .then((e) => (isTestEdition.value = e === "acceptance"))
+  .catch(() => {});
+// 任务 C：默认只展示最新 2 条；「查看全部历史版本」打开独立滚动面板
+const showAllHistory = ref(false);
+const visibleHistory = computed(() =>
+  showAllHistory.value ? VERSION_HISTORY : VERSION_HISTORY.slice(0, 2)
+);
+const hiddenHistoryCount = computed(() => Math.max(0, VERSION_HISTORY.length - 2));
 function toggleNotes(version: string) {
   const next = new Set(expandedNotes.value);
   if (next.has(version)) next.delete(version);
   else next.add(version);
   expandedNotes.value = next;
 }
+// v0.4.1 任务 B：外链失败必须可见（旧实现 console.error 吞错 = 用户实测"完全没反应"）
+const linkError = ref("");
+const linkOpening = ref(false);
 async function openExternal(url: string) {
+  if (linkOpening.value) return;
+  linkOpening.value = true;
+  linkError.value = "";
   try {
-    const shell = await import("@tauri-apps/plugin-shell");
-    await shell.open(url);
+    await openExternalLink(url);
   } catch (e) {
-    console.error("打开外部链接失败", e);
+    linkError.value = String(e);
+  } finally {
+    linkOpening.value = false;
   }
 }
 onUnmounted(() => {
@@ -168,18 +188,24 @@ onUnmounted(() => {
       title="版本更新历史"
       subtitle="随应用打包的历史记录（离线可查）；单一事实源为 GitHub Releases，发布新版本时同步登记。"
     >
+      <div v-if="isTestEdition" class="vh-test-banner">
+        🧪 测试构建（验收通道）：版本号可能与正式版相同，但不是正式发行版
+      </div>
       <div class="vh-list">
         <div
-          v-for="entry in VERSION_HISTORY"
+          v-for="entry in visibleHistory"
           :key="entry.version"
           class="vh-item"
-          :class="{ installed: installedEntry?.version === entry.version }"
+          :class="{ installed: installedEntry?.version === entry.version && !isTestEdition }"
         >
           <div class="vh-row">
             <div class="vh-info">
               <div class="vh-version">
                 {{ entry.version }}
-                <span v-if="installedEntry?.version === entry.version" class="vh-now">本机安装</span>
+                <span
+                  v-if="installedEntry?.version === entry.version && !isTestEdition"
+                  class="vh-now"
+                >本机安装</span>
               </div>
               <div class="vh-date">{{ entry.date }} · {{ entry.summary }}</div>
             </div>
@@ -196,10 +222,61 @@ onUnmounted(() => {
         </div>
       </div>
       <div class="s-action-row" style="border-top: none; padding-top: 0;">
+        <button class="s-btn-secondary" data-interactive @click="showAllHistory = true">
+          📜 查看全部历史版本（{{ VERSION_HISTORY.length }}）
+        </button>
         <button class="s-btn-secondary" data-interactive @click="openExternal(RELEASES_PAGE_URL)">
           🔗 在 GitHub 查看全部 Releases
         </button>
       </div>
+      <StatusLine v-if="linkError" tone="err" :text="linkError" />
+
+      <!-- 任务 C：全部历史版本（应用内独立滚动面板，含未展示条目） -->
+      <Teleport to="body">
+        <div v-if="showAllHistory" class="vh-overlay" @click.self="showAllHistory = false">
+          <div class="vh-modal">
+            <div class="vh-modal-head">
+              <b>版本更新历史（全部 {{ VERSION_HISTORY.length }} 条正式版本）</b>
+              <button class="s-btn-mini tap" data-interactive @click="showAllHistory = false">关闭</button>
+            </div>
+            <div class="vh-modal-body">
+              <div
+                v-for="entry in VERSION_HISTORY"
+                :key="entry.version"
+                class="vh-item"
+                :class="{ installed: installedEntry?.version === entry.version && !isTestEdition }"
+              >
+                <div class="vh-row">
+                  <div class="vh-info">
+                    <div class="vh-version">
+                      {{ entry.version }}
+                      <span
+                        v-if="installedEntry?.version === entry.version && !isTestEdition"
+                        class="vh-now"
+                      >本机安装</span>
+                    </div>
+                    <div class="vh-date">{{ entry.date }} · {{ entry.summary }}</div>
+                  </div>
+                  <div class="vh-actions">
+                    <button class="s-btn-mini tap" data-interactive @click="toggleNotes(entry.version)">
+                      {{ expandedNotes.has(entry.version) ? "收起详情" : "更新内容" }}
+                    </button>
+                    <button class="s-btn-mini tap" data-interactive @click="openExternal(entry.url)">
+                      GitHub ↗
+                    </button>
+                  </div>
+                </div>
+                <pre v-if="expandedNotes.has(entry.version)" class="vh-notes">{{ entry.notes }}</pre>
+              </div>
+            </div>
+            <div class="vh-modal-foot">
+              <button class="s-btn-secondary" data-interactive @click="openExternal(RELEASES_PAGE_URL)">
+                🔗 在 GitHub 查看全部 Releases
+              </button>
+            </div>
+          </div>
+        </div>
+      </Teleport>
     </SettingsCard>
 
     <SettingsCard
@@ -264,5 +341,58 @@ onUnmounted(() => {
   color: var(--text-secondary);
   max-height: 320px;
   overflow-y: auto;
+}
+</style>
+
+<style scoped>
+.vh-test-banner {
+  font-size: 11.5px;
+  color: #fbbf24;
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px dashed rgba(245, 158, 11, 0.5);
+  border-radius: 8px;
+  padding: 7px 10px;
+  margin-bottom: 10px;
+}
+.vh-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10001;
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(6px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+.vh-modal {
+  width: min(680px, 94vw);
+  max-height: 86vh;
+  background: #1c2233;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+}
+.vh-modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  color: var(--text-primary);
+}
+.vh-modal-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 16px;
+}
+.vh-modal-foot {
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: flex-end;
 }
 </style>

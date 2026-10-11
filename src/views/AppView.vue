@@ -4,7 +4,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useAppStore } from "../stores/app";
 import { useSoftwareStore } from "../stores/software";
-import { type ScannedApp, relinkApp, openAppLocation, pickPath } from "../api";
+import { type ScannedApp, relinkApp, openAppLocation, pickPath, getAppEdition } from "../api";
 import ConfirmInline from "../components/ConfirmInline.vue";
 import StatusInline from "../components/settings/StatusLine.vue";
 
@@ -275,6 +275,45 @@ const invalidBatchConfirm = ref(false);
 const invalidBatchBusy = ref(false);
 const invalidBatchResult = ref<{ moved: number; skipped: number; failed: number } | null>(null);
 const invalidPanelError = ref("");
+
+const isTestEdition = ref(false);
+void getAppEdition()
+  .then((e) => (isTestEdition.value = e === "acceptance"))
+  .catch(() => {});
+
+// 任务 A：验收测试数据播种 / 重置（仅便携测试版；后端同规则门禁）
+const seedingFixtures = ref(false);
+async function seedFixtures() {
+  if (seedingFixtures.value) return;
+  seedingFixtures.value = true;
+  try {
+    const r = await softwareStore.seedTestFixtures();
+    appStore.showClipToast(
+      "success",
+      `已播种 ${r.inserted} 条验收记录（清理上轮 ${r.cleared_previous} 条），失效面板已刷新`
+    );
+  } catch (e) {
+    appStore.showClipToast("info", "播种失败：" + String(e));
+  } finally {
+    seedingFixtures.value = false;
+  }
+}
+const clearingFixtures = ref(false);
+async function resetFixtures() {
+  if (clearingFixtures.value) return;
+  clearingFixtures.value = true;
+  try {
+    const n = await softwareStore.clearTestFixtures();
+    appStore.showClipToast(
+      "success",
+      n > 0 ? `已重置：${n} 条测试记录移入回收站（可恢复）` : "没有需要重置的测试记录"
+    );
+  } catch (e) {
+    appStore.showClipToast("info", "重置失败：" + String(e));
+  } finally {
+    clearingFixtures.value = false;
+  }
+}
 
 const KIND_LABELS: Record<string, string> = {
   fixed_missing: "固定盘缺失 · 可清退",
@@ -1219,13 +1258,17 @@ async function confirmDeleteApp(id: number | null) {
           <span v-if="!reextractingIcons">🎨 重抽 ({{ missingIconCount }})</span>
           <span v-else>抽图中…</span>
         </button>
+        <!-- 任务 A：健康检查常驻入口（正常=健康态，异常=失效数） -->
         <button
-          v-if="softwareStore.invalidCount > 0"
-          class="action-btn action-btn-warn tap"
-          :title="`${softwareStore.invalidCount} 条失效记录，点击集中治理`"
+          class="action-btn tap"
+          :class="softwareStore.invalidCount > 0 ? 'action-btn-warn' : 'action-btn-text'"
+          :title="softwareStore.invalidCount > 0
+            ? `${softwareStore.invalidCount} 条失效记录，点击集中治理`
+            : '软件健康检查：当前全部正常，点击查看'"
           @click="toggleInvalidPanel"
         >
-          ⚠️ 失效 ({{ softwareStore.invalidCount }})
+          <template v-if="softwareStore.invalidCount > 0">⚠️ 失效 ({{ softwareStore.invalidCount }})</template>
+          <template v-else>🩺 健康</template>
         </button>
         <button class="action-btn action-btn-text tap" @click="openScan" title="扫描系统">
           🔍 <span>扫描</span>
@@ -1246,9 +1289,18 @@ async function confirmDeleteApp(id: number | null) {
         </button>
         <button class="s-btn-mini tap" @click="toggleInvalidPanel" data-interactive>收起</button>
       </div>
+      <div v-if="isTestEdition" class="invalid-toolbar" style="margin-top: 0;">
+        <button class="s-btn-mini tap" :disabled="seedingFixtures" data-interactive @click="seedFixtures">
+          {{ seedingFixtures ? "播种中…" : "🧪 播种验收测试数据" }}
+        </button>
+        <button class="s-btn-mini tap" :disabled="clearingFixtures" data-interactive @click="resetFixtures">
+          {{ clearingFixtures ? "重置中…" : "♻️ 重置测试数据" }}
+        </button>
+        <span class="invalid-hint">仅作用于本测试版数据目录（[TEST] 前缀记录，软删除可恢复），不影响真实软件</span>
+      </div>
       <div v-if="softwareStore.invalidLoading" class="invalid-empty">检查中…</div>
       <div v-else-if="softwareStore.invalidItems.length === 0" class="invalid-empty">
-        ✅ 没有失效记录（本次检查未发现路径失效的软件）
+        ✅ 健康状态正常：没有失效记录（测试版可用上方按钮播种验收数据）
       </div>
       <template v-else>
         <div class="invalid-toolbar">

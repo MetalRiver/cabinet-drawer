@@ -1981,6 +1981,9 @@ pub fn run() {
             health_check_apps,
             list_invalid_apps,
             batch_move_apps_to_trash,
+            open_external_url,
+            seed_test_fixtures,
+            clear_test_fixtures,
             get_data_dir,
             // Phase 2C-1：Data Root Blocked 模式查询（前端阻断页数据源）
             data_root::get_data_root_block,

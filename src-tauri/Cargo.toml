@@ -23,6 +23,8 @@ tauri = { version = "2", features = ["protocol-asset", "tray-icon"] }
 # 不会进入 setup（DB / 托盘 / 快捷键 / AppState 均不重复创建）
 tauri-plugin-single-instance = "2"
 tauri-plugin-shell = "2"
+# v0.4.1：GitHub 外链直达系统默认浏览器（绕开 JS 层 shell open 的静默失败路径，错误可见）
+open = "5"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-clipboard-manager = "2"
 serde = { version = "1", features = ["derive"] }

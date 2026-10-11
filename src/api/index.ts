@@ -582,6 +582,16 @@ export interface BatchTrashResult {
 export const batchMoveAppsToTrash = (ids: number[]) =>
   invoke<BatchTrashResult>("batch_move_apps_to_trash", { ids });
 
+export const openExternalUrl = (url: string) => invoke<void>("open_external_url", { url });
+
+export interface SeedFixturesResult {
+  cleared_previous: number;
+  inserted: number;
+  fixture_dir: string;
+}
+export const seedTestFixtures = () => invoke<SeedFixturesResult>("seed_test_fixtures");
+export const clearTestFixtures = () => invoke<number>("clear_test_fixtures");
+
 // P0-#T#3：获取数据存储位置（SQLite 数据库路径）
 export const getDataDir = () => invoke<string>("get_data_dir");
 

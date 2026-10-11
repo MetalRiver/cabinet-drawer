@@ -2003,6 +2003,144 @@ pub fn batch_move_apps_to_trash(
 }
 
 // ============================================================
+// 🛡️ 20c. 外链打开（v0.4.1 任务 B）：系统默认浏览器，错误可见
+// ============================================================
+#[tauri::command]
+pub fn open_external_url(url: String) -> Result<(), String> {
+    // 防御：只放行 http(s)，其余一律拒绝（ftp/file/自定义协议不走本命令）
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err(format!("已阻止打开非 http(s) 链接：{}", url));
+    }
+    ::open::that_detached(&url).map_err(|e| format!("打开系统浏览器失败：{}", e))
+}
+
+// ============================================================
+// 🛡️ 20d. 验收测试数据播种 / 重置（v0.4.1 任务 A）
+// 仅便携测试版可用（正式版调用直接报错）；数据全部落在便携测试数据根内。
+// ============================================================
+const FIXTURE_NAME_PREFIX: &str = "[TEST]";
+
+#[derive(Debug, Serialize)]
+pub struct SeedFixturesResult {
+    pub cleared_previous: usize,
+    pub inserted: usize,
+    pub fixture_dir: String,
+}
+
+fn seed_one(db: &crate::db::Db, name: &str, path: &str, app_type: &str) -> Result<i64, String> {
+    db.create_app(
+        &format!("{} {}", FIXTURE_NAME_PREFIX, name),
+        path,
+        "",
+        "",
+        None,
+        app_type,
+        "other",
+    )
+    .map_err(|e| e.to_string())
+}
+
+fn stale_fixture_ids(db: &crate::db::Db) -> Vec<i64> {
+    let conn = db.conn.lock().unwrap();
+    let mut stmt = conn
+        .prepare("SELECT id FROM apps WHERE deleted_at IS NULL AND name LIKE ?1")
+        .expect("查询播种记录失败");
+    let pat = format!("{}%", FIXTURE_NAME_PREFIX);
+    let v = stmt
+        .query_map([pat], |row| row.get(0))
+        .expect("读取播种记录失败")
+        .filter_map(|r| r.ok())
+        .collect();
+    v
+}
+
+#[tauri::command]
+pub async fn seed_test_fixtures(app: AppHandle) -> Result<SeedFixturesResult, String> {
+    if !crate::data_root::is_portable_test_edition() {
+        return Err("测试数据播种仅支持便携测试版（正式版禁止注入模拟数据）".to_string());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let state: tauri::State<AppState> = app.state();
+        let _data_gate = state.data_read()?;
+        let data_root = crate::data_root::effective_config_root(&app)?;
+        let fixture_dir = data_root.join("fixtures");
+        std::fs::create_dir_all(&fixture_dir)
+            .map_err(|e| format!("创建 fixtures 目录失败: {}", e))?;
+        // 正常记录用例：真实存在的 fixture 文件（其余为不存在路径，绝不触碰用户真实软件）
+        let normal_exe = fixture_dir.join("normal-app.exe");
+        std::fs::write(&normal_exe, b"MZ").map_err(|e| format!("写 normal fixture 失败: {}", e))?;
+        // .lnk 目标异常用例：写入非法内容（非真实快捷方式）→ 目标解析失败 → uncertain（保护）
+        let broken_lnk = fixture_dir.join("broken.lnk");
+        std::fs::write(&broken_lnk, b"NOT-A-REAL-SHORTCUT")
+            .map_err(|e| format!("写 lnk fixture 失败: {}", e))?;
+
+        let db = state.db.lock().unwrap();
+        // 1) 清理上一轮播种（软删除，回收站可恢复；幂等）
+        let stale = stale_fixture_ids(&db);
+        let cleared = stale.len();
+        for id in stale {
+            let _ = db.soft_delete("apps", id);
+        }
+        // 2) 播种六类覆盖：正常 / 固定盘缺失（唯一清退候选）/ 网络位置（保护）/
+        //    网址 / Steam 协议 / 快捷方式目标异常（保护）
+        let normal = seed_one(
+            &db,
+            "正常软件（固定盘存在）",
+            normal_exe.to_str().unwrap_or(""),
+            "app",
+        )?;
+        let missing = seed_one(
+            &db,
+            "固定盘路径缺失（可清退）",
+            r"C:\drawer-test-fixture\missing-fixed.exe",
+            "app",
+        )?;
+        let network = seed_one(
+            &db,
+            "网络位置失效（保护）",
+            r"\drawer-test-server\share\app.exe",
+            "app",
+        )?;
+        let url = seed_one(&db, "网址（恒可用）", "https://example.com", "url")?;
+        let steam = seed_one(&db, "Steam 协议（恒可用）", "steam://rungame/7", "url")?;
+        let lnk = seed_one(
+            &db,
+            "快捷方式目标异常（保护）",
+            broken_lnk.to_str().unwrap_or(""),
+            "app",
+        )?;
+        let _ = (normal, missing, network, url, steam, lnk);
+        Ok(SeedFixturesResult {
+            cleared_previous: cleared,
+            inserted: 6,
+            fixture_dir: fixture_dir.to_string_lossy().to_string(),
+        })
+    })
+    .await
+    .map_err(|e| format!("播种线程失败: {}", e))?
+}
+
+#[tauri::command]
+pub async fn clear_test_fixtures(app: AppHandle) -> Result<usize, String> {
+    if !crate::data_root::is_portable_test_edition() {
+        return Err("测试数据重置仅支持便携测试版".to_string());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let state: tauri::State<AppState> = app.state();
+        let _data_gate = state.data_read()?;
+        let db = state.db.lock().unwrap();
+        let stale = stale_fixture_ids(&db);
+        let n = stale.len();
+        for id in stale {
+            let _ = db.soft_delete("apps", id);
+        }
+        Ok(n)
+    })
+    .await
+    .map_err(|e| format!("重置线程失败: {}", e))?
+}
+
+// ============================================================
 // 🛡️ 21. 当前数据存储目录
 // ============================================================
 #[tauri::command]

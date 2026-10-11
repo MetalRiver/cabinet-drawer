@@ -1314,6 +1314,7 @@ dependencies = [
  "dirs 5.0.1",
  "hkdf",
  "image",
+ "open",
  "png 0.17.16",
  "rand 0.8.8",
  "rfd",

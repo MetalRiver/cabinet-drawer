@@ -21,6 +21,9 @@ import {
   type AppCategoryMeta,
   listInvalidApps,
   batchMoveAppsToTrash,
+  seedTestFixtures as apiSeedTestFixtures,
+  clearTestFixtures as apiClearTestFixtures,
+  type SeedFixturesResult,
   healthCheckApps,
   type InvalidAppInfo,
   type BatchTrashResult
@@ -413,6 +416,20 @@ export const useSoftwareStore = defineStore("software", () => {
     return result;
   }
 
+  /** 任务 A：播种验收测试数据（仅便携测试版；后端门禁） */
+  async function seedTestFixtures(): Promise<SeedFixturesResult> {
+    const r = await apiSeedTestFixtures();
+    await Promise.all([loadItems(), loadInvalidApps()]);
+    return r;
+  }
+
+  /** 任务 A：重置测试数据（软删除 [TEST] 记录，可从回收站恢复） */
+  async function clearTestFixtures(): Promise<number> {
+    const n = await apiClearTestFixtures();
+    await Promise.all([loadItems(), loadInvalidApps()]);
+    return n;
+  }
+
   return {
     invalidItems,
     invalidLoading,
@@ -423,6 +440,8 @@ export const useSoftwareStore = defineStore("software", () => {
     loadInvalidApps,
     runHealthCheck,
     moveAppsToTrash,
+    seedTestFixtures,
+    clearTestFixtures,
     items,
     filteredItems,
     categories,

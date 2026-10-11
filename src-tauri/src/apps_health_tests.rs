@@ -162,3 +162,61 @@ fn t_ah06_soft_delete_then_readd_keeps_trash_integrity() {
     assert!(trash.iter().any(|t| t.kind == "app" && t.id == id));
     fs::remove_file(&exe).ok();
 }
+
+#[test]
+fn t_ah07_fixture_cleanup_idempotent() {
+    // 播种/重置命令的 db 层语义：按 [TEST] 前缀软删，重复清理幂等
+    let (_dir, db) = temp_db("fixtures");
+    let exe = exe_fixture("fx");
+    let a = db
+        .create_app(
+            "[TEST] 固定盘缺失",
+            r"C:\drawer-test-fixture\missing.exe",
+            "",
+            "",
+            None,
+            "app",
+            "other",
+        )
+        .unwrap();
+    let b = db
+        .create_app(
+            "[TEST] 网络位置",
+            r"\server\share\app.exe",
+            "",
+            "",
+            None,
+            "app",
+            "other",
+        )
+        .unwrap();
+    let real = db
+        .create_app(
+            "真实软件",
+            exe.to_str().unwrap(),
+            "",
+            "",
+            None,
+            "app",
+            "other",
+        )
+        .unwrap();
+
+    // 第一轮清理：只清 [TEST] 前缀
+    let mut cleared = 0;
+    for id in [a, b] {
+        cleared += db.soft_delete("apps", id).unwrap();
+    }
+    assert_eq!(cleared, 2);
+    // 第二轮：幂等（已删 → 0）
+    let mut cleared2 = 0;
+    for id in [a, b] {
+        cleared2 += db.soft_delete("apps", id).unwrap();
+    }
+    assert_eq!(cleared2, 0);
+    // 真实软件不受影响
+    let listed = db.list_apps("", None).unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].id, real);
+    fs::remove_file(&exe).ok();
+}
