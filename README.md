@@ -4,7 +4,7 @@
 
 **一个本地优先的 Windows 桌面「抽屉」：把应用、文件、网址、片段与密码收纳进一个小窗，随手可取。**
 
-![Version](https://img.shields.io/badge/version-v0.4.0-blue)
+![Version](https://img.shields.io/badge/version-v0.4.1-blue)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-lightgrey)
 ![License](https://img.shields.io/badge/license-GPL--3.0--only-green)
 ![Data](https://img.shields.io/badge/data-local--first-orange)
@@ -44,10 +44,19 @@
 
 ## 下载安装（Windows 10/11 x64）
 
-1. 前往 [Releases](https://github.com/MetalRiver/cabinet-drawer/releases) 页面，下载 `Drawer_0.4.0_x64-setup.exe`（约 4.8 MB，Releases 页面显示名）
+当前正式版 **v0.4.1**，安装包约 5.5 MB：
+
+| 渠道 | 用途 | 下载 |
+| :--- | :--- | :--- |
+| **GitHub Releases** | 主渠道 · **应用内自动更新通道** | [Drawer_0.4.1_x64-setup.exe](https://github.com/MetalRiver/cabinet-drawer/releases/download/v0.4.1/Drawer_0.4.1_x64-setup.exe) ｜ [全部版本](https://github.com/MetalRiver/cabinet-drawer/releases) |
+| **Gitee Releases** | 国内镜像 · **仅手动下载** | [Drawer_0.4.1_x64-setup.exe](https://gitee.com/Aa990602/cabinet-drawer/releases/download/v0.4.1/Drawer_0.4.1_x64-setup.exe) ｜ [全部版本](https://gitee.com/Aa990602/cabinet-drawer/releases) |
+
+1. 从上方任一渠道下载 `Drawer_0.4.1_x64-setup.exe`
 2. 双击运行安装向导，一路下一步即可（自动创建开始菜单 + 桌面图标，仅安装到当前用户目录）
 3. 首次启动会引导你设置「主密码」，并生成 **12 个恢复词**——主密码要记好，恢复词请抄在纸上保存
 4. 开始使用
+
+> 🔄 **更新通道说明**：从 v0.4.0 起支持**应用内自动更新**——「设置 → 高级与更新 → 检查更新」即可下载并安装新版本，**无需手动重装**。自动更新固定走 **GitHub Releases**（`releases/latest/download/latest.json`）；**Gitee 只作国内手动下载镜像，不参与应用内更新**。若所在网络无法访问 GitHub，可到 Gitee 手动下载新安装包覆盖安装。
 
 > ⚠️ 安装包当前未做代码签名，Windows Defender / 杀毒软件可能提示"未知发布者"，属正常误报，点「仍要运行」即可。安装器内嵌 WebView2 引导器，若系统缺少 WebView2 运行时会提示联网安装。
 
@@ -66,11 +75,11 @@
 - 主密码与恢复词同时丢失，数据无法恢复——唯一出路是提前导出的备份
 - 支持导出 `.drawerbox` 认证加密备份：导出时校验密码，避免"备份时存得进、恢复时取不出"；恢复同样需要密码验证
 
-## 已知限制（当前版本 v0.4.0）
+## 已知限制（当前版本 v0.4.1）
 
 - 仅支持 Windows 10/11 x64，无 macOS / Linux 版本
 - 无多设备同步、无云备份、无跨平台、无 AI 功能
-- 无应用内自动更新，新版本需手动下载覆盖安装
+- **应用内自动更新固定走 GitHub Releases**；网络无法访问 GitHub 时需到 Gitee 手动下载覆盖安装
 - 安装包未做代码签名，可能触发杀毒软件提示
 - 早期原型曾演示"贴边自动隐藏"，**当前版本不包含该功能**
 - 未强制单实例：请避免同时打开多个抽屉柜窗口
