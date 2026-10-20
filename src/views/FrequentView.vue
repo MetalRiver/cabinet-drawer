@@ -382,7 +382,8 @@ function onIconError(e: Event) {
 /* ===== Top 3 大卡 ===== */
 .top-three {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  /* minmax(0,1fr)：禁止网格项按 nowrap 标题的 min-content 撑宽（否则整页横向溢出被裁） */
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
   margin-bottom: 14px;
 }
@@ -390,6 +391,7 @@ function onIconError(e: Event) {
   position: relative;
   display: flex;
   flex-direction: column;
+  min-width: 0;
   align-items: center;
   gap: 6px;
   padding: 12px 8px 10px;
@@ -481,11 +483,12 @@ function onIconError(e: Event) {
   font-size: 22px;
 }
 .top-icon-img[style*="display: none"] + .top-icon-fallback { display: flex !important; }
-.top-info { text-align: center; width: 100%; min-width: 0; }
+.top-info { text-align: center; width: 100%; min-width: 0; max-width: 100%; }
 .top-title {
   font-size: 12px;
   font-weight: 600;
   color: var(--text-primary);
+  max-width: 100%;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -506,22 +509,30 @@ function onIconError(e: Event) {
 /* ===== 8 列网格 ===== */
 .grid {
   display: grid;
-  grid-template-columns: repeat(8, 1fr);
+  /* 所有档位都用 minmax(0,1fr)：列宽可收缩，标题省略，不再撑破容器 */
+  grid-template-columns: repeat(8, minmax(0, 1fr));
   gap: 6px;
 }
-@media (max-width: 559px) {
-  .grid { grid-template-columns: repeat(6, 1fr); }
+@media (max-width: 419px) {
+  .grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .top-card { padding: 10px 6px 8px; gap: 4px; }
+  .top-icon { width: 42px; height: 42px; }
+  .top-title { font-size: 11px; }
+}
+@media (min-width: 420px) and (max-width: 559px) {
+  .grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
 }
 @media (min-width: 700px) {
-  .grid { grid-template-columns: repeat(8, 1fr); gap: 8px; }
+  .grid { grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 8px; }
 }
 @media (min-width: 900px) {
-  .grid { grid-template-columns: repeat(10, 1fr); gap: 10px; }
+  .grid { grid-template-columns: repeat(10, minmax(0, 1fr)); gap: 10px; }
 }
 .cell {
   position: relative;
   display: flex;
   flex-direction: column;
+  min-width: 0;
   align-items: center;
   gap: 4px;
   padding: 8px 2px 6px;
@@ -580,6 +591,7 @@ function onIconError(e: Event) {
   color: var(--text-secondary);
   text-align: center;
   width: 100%;
+  max-width: 100%;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
