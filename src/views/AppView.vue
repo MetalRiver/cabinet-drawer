@@ -746,9 +746,10 @@ const SCAN_VIEW_KEY = "drawer_scan_view";
 const scanViewMode = ref<"list" | "card">(
   (() => {
     try {
-      return localStorage.getItem(SCAN_VIEW_KEY) === "card" ? "card" : "list";
+      // 默认紧凑图标网格；用户手动切到列表后记住选择
+      return localStorage.getItem(SCAN_VIEW_KEY) === "list" ? "list" : "card";
     } catch {
-      return "list";
+      return "card";
     }
   })()
 );
@@ -1975,25 +1976,14 @@ async function confirmDeleteApp(id: number | null) {
                   v-else
                   class="app-icon-text is-emoji"
                 >{{ typeEmoji(item.app_type) }}</span>
+                <span
+                  v-if="item.available === false && (item.app_type || 'app') !== 'url'"
+                  class="app-icon-warn"
+                  title="路径失效 / 应用不可用"
+                >!</span>
               </div>
-              <!-- U2：名称区（最多两行）+ 次要信息 + 状态 chips（不遮挡名称） -->
-              <div class="app-text">
-                <div class="app-name" :title="item.name">{{ item.name }}</div>
-                <div class="app-subtype">
-                  {{ subtypeLabel(item.app_subtype) || typeLabel(item.app_type) }}
-                </div>
-                <div
-                  v-if="item.use_count > 0 || (item.available === false && (item.app_type || 'app') !== 'url')"
-                  class="app-meta"
-                >
-                  <span v-if="item.use_count > 0" class="app-chip app-chip-hot">🔥 {{ item.use_count }}</span>
-                  <span
-                    v-if="item.available === false && (item.app_type || 'app') !== 'url'"
-                    class="app-chip app-chip-warn"
-                    title="路径失效 / 应用不可用"
-                  >⚠ 路径失效</span>
-                </div>
-              </div>
+              <!-- 图标式网格：名称最多两行；异常仅角标，不遮挡名称 -->
+              <div class="app-name" :title="item.name">{{ item.name }}</div>
               <button
                 class="app-more tap"
                 data-interactive
@@ -2466,12 +2456,12 @@ AppID：${a.target || a.path}`"
           <div class="modal-footer scan-footer">
             <span class="scan-count">已选 <b>{{ selectedPaths.size }}</b> 个</span>
             <div class="scan-footer-actions">
-              <button class="btn-ghost tap" :disabled="scanning || selectedPaths.size === 0" @click="clearScanSelection">
+              <button class="s-btn-secondary tap" :disabled="scanning || selectedPaths.size === 0" @click="clearScanSelection">
                 清除
               </button>
-              <button class="btn-secondary tap" @click="closeScan">取消</button>
+              <button class="s-btn-secondary tap" @click="closeScan">取消</button>
               <button
-                class="btn-primary tap"
+                class="s-btn-primary tap"
                 :disabled="scanning || selectedPaths.size === 0"
                 @click="confirmScan"
               >
@@ -2767,48 +2757,42 @@ AppID：${a.target || a.path}`"
 .empty-icon { font-size: 48px; margin-bottom: 12px; opacity: 0.5; }
 .empty-text { font-size: 13px; }
 
-/* ============ 软件网格（U2：双列中型卡片 → 宽屏自适应加列） ============ */
+/* ============ 软件网格（图标式紧凑网格，容器安全列宽） ============ */
 .app-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
   padding: 4px 0;
 }
-/* 尺寸档位以窗口宽度近似容器宽度（左侧类型栏 42–56px） */
-@media (max-width: 419px) {
-  .app-cell { padding: 8px; gap: 7px; }
-  .app-icon { width: 32px; height: 32px; border-radius: 8px; }
-  .app-name { font-size: 11.5px; }
-  .app-text { padding-right: 14px; }
+@media (min-width: 420px) {
+  .app-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
 }
 @media (min-width: 640px) {
-  .app-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
-  .app-icon { width: 40px; height: 40px; }
+  .app-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; }
 }
 @media (min-width: 900px) {
-  .app-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
-  .app-icon { width: 44px; height: 44px; }
+  .app-grid { grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 10px; }
 }
 @media (min-width: 1200px) {
-  .app-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 14px; }
-  .app-icon { width: 48px; height: 48px; }
+  .app-grid { grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 12px; }
 }
 .app-cell {
   position: relative;
   display: flex;
-  flex-direction: row;
+  flex-direction: column;
   align-items: center;
-  gap: 9px;
-  padding: 10px 10px;
-  text-align: left;
+  gap: 5px;
+  padding: 9px 4px 8px;
+  text-align: center;
   background: var(--bg-secondary);
   border: 1px solid var(--border);
-  border-radius: 14px;
+  border-radius: 12px;
   cursor: pointer;
-  transition: all 0.18s var(--ease-smooth);
+  transition: all 0.16s var(--ease-smooth);
   user-select: none;
   -webkit-app-region: no-drag;
   overflow: hidden;
+  min-width: 0;
 }
 .app-cell::before {
   content: "";
@@ -2827,6 +2811,11 @@ AppID：${a.target || a.path}`"
 }
 .app-cell:hover::before { opacity: 1; }
 .app-cell:active { transform: translateY(0) scale(0.97); }
+@media (max-width: 419px) {
+  .app-cell { padding: 8px 3px 7px; gap: 4px; }
+  .app-icon { width: 34px; height: 34px; border-radius: 8px; }
+  .app-name { font-size: 10.5px; }
+}
 
 .app-icon {
   width: 44px;
@@ -2872,20 +2861,11 @@ AppID：${a.target || a.path}`"
   -webkit-text-fill-color: transparent;
 }
 
-/* U2：卡片文字区（名称两行、状态不遮挡） */
-.app-text {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding-right: 16px; /* 给右上角「···」留位 */
-}
 .app-name {
-  font-size: 12.5px;
-  font-weight: 600;
+  font-size: 11.5px;
+  font-weight: 500;
   color: var(--text-primary);
-  text-align: left;
+  text-align: center;
   width: 100%;
   white-space: normal;
   display: -webkit-box;
@@ -2893,9 +2873,25 @@ AppID：${a.target || a.path}`"
   -webkit-box-orient: vertical;
   overflow: hidden;
   word-break: break-word;
-  line-height: 1.32;
+  line-height: 1.3;
 }
-.app-meta { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
+.app-icon-warn {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 700;
+  color: #1b1205;
+  background: #fbbf24;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+}
 .app-chip {
   font-size: 10px;
   line-height: 1.6;
@@ -2903,22 +2899,12 @@ AppID：${a.target || a.path}`"
   border-radius: 999px;
   white-space: nowrap;
 }
-.app-chip-hot {
-  color: var(--highlight-bright);
-  background: var(--highlight-soft);
-  font-weight: 600;
-}
-.app-chip-warn {
-  color: #fbbf24;
-  background: rgba(245, 158, 11, 0.12);
-  border: 1px solid rgba(245, 158, 11, 0.35);
-}
 .app-more {
   position: absolute;
-  top: 6px;
-  right: 6px;
-  width: 24px;
-  height: 24px;
+  top: 4px;
+  right: 4px;
+  width: 22px;
+  height: 22px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -2926,13 +2912,15 @@ AppID：${a.target || a.path}`"
   border-radius: 6px;
   background: transparent;
   color: var(--text-muted);
-  font-size: 14px;
+  font-size: 13px;
   line-height: 1;
   cursor: pointer;
-  opacity: 0.55;
+  opacity: 0;
   transition: all 0.15s;
 }
-.app-more:hover { opacity: 1; color: var(--text-primary); background: var(--bg-tertiary); }
+.app-cell:hover .app-more,
+.app-cell:focus-within .app-more { opacity: 0.9; }
+.app-more:hover { color: var(--text-primary); background: var(--bg-tertiary); }
 .app-badge {
   font-size: 10px;
   color: var(--highlight-bright);
@@ -3540,53 +3528,81 @@ AppID：${a.target || a.path}`"
   }
 }
 
-/* U2：卡片视图（真实切换；默认列表） */
+/* 默认紧凑图标网格（列表模式保留，用于查看来源/路径/参数） */
 .scan-grid.scan-cards {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+@media (min-width: 360px) {
+  .scan-grid.scan-cards { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+@media (min-width: 560px) {
+  .scan-grid.scan-cards { grid-template-columns: repeat(5, minmax(0, 1fr)); }
 }
 .scan-grid.scan-cards .scan-cell {
   flex-direction: column;
   align-items: center;
   text-align: center;
-  gap: 5px;
-  padding: 12px 8px 10px;
+  gap: 4px;
+  padding: 8px 4px 7px;
+  min-width: 0;
+}
+.scan-grid.scan-cards .scan-cell.selected {
+  border-color: var(--accent);
+  background: rgba(99, 102, 241, 0.16);
 }
 .scan-grid.scan-cards .scan-check {
   position: absolute;
-  top: 6px;
-  right: 6px;
+  top: 4px;
+  left: 4px;
   width: auto;
   height: auto;
   background: none;
   border-radius: 0;
   opacity: 1;
   transform: none;
-  font-size: 10px;
+  font-size: 9.5px;
   font-weight: 600;
   color: #6fd0a0;
+  line-height: 1.5;
+  pointer-events: none;
+}
+.scan-grid.scan-cards .scan-check:not(:empty) {
+  padding: 0 5px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.38);
 }
 .scan-grid.scan-cards .scan-cell.trash .scan-check { color: #f0b45c; }
-.scan-grid.scan-cards .scan-icon { width: 40px; height: 40px; }
-.scan-grid.scan-cards .scan-icon-img { width: 36px; height: 36px; }
-.scan-grid.scan-cards .scan-info { width: 100%; }
+.scan-grid.scan-cards .scan-icon { width: 36px; height: 36px; }
+.scan-grid.scan-cards .scan-icon-img { width: 32px; height: 32px; }
+.scan-grid.scan-cards .scan-info { width: 100%; min-width: 0; }
 .scan-grid.scan-cards .scan-name {
   white-space: normal;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
-  font-size: 12px;
-  line-height: 1.3;
+  font-size: 11px;
+  line-height: 1.28;
   text-align: center;
+  word-break: break-word;
 }
-.scan-grid.scan-cards .scan-source {
-  text-align: center;
-  display: inline-block;
+/* 网格模式不显示来源（列表模式保留，用于查看来源/路径/参数） */
+.scan-grid.scan-cards .scan-source { display: none; }
+.scan-grid.scan-cards .scan-restore {
   align-self: center;
+  margin-top: 2px;
+  padding: 1px 7px;
+  font-size: 10px;
 }
-.scan-grid.scan-cards .scan-restore { align-self: center; }
+@media (max-width: 359px) {
+  .scan-grid.scan-cards { gap: 5px; }
+  .scan-grid.scan-cards .scan-cell { padding: 7px 3px 6px; }
+  .scan-grid.scan-cards .scan-name { font-size: 10.5px; }
+  .scan-grid.scan-cards .scan-icon { width: 32px; height: 32px; }
+  .scan-grid.scan-cards .scan-icon-img { width: 28px; height: 28px; }
+}
 @media (max-width: 419px) {
   .scan-grid.scan-cards { gap: 6px; }
   .scan-grid.scan-cards .scan-cell { padding: 10px 6px 8px; }
@@ -3619,12 +3635,35 @@ AppID：${a.target || a.path}`"
 }
 
 /* U2：底部操作栏（一个主操作 + 两个次级，窄屏可换行） */
-.scan-footer { justify-content: space-between; }
-.scan-footer-actions { display: flex; align-items: center; gap: 8px; }
-@media (max-width: 419px) {
+.scan-footer {
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px;
+  background: var(--bg-tertiary);
+  border-top: 1px solid var(--border);
+  border-radius: 0 0 14px 14px;
+}
+.scan-count {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-right: auto;
+  white-space: nowrap;
+}
+.scan-count b { color: var(--text-primary); font-weight: 600; }
+.scan-footer-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.scan-footer-actions .s-btn-secondary,
+.scan-footer-actions .s-btn-primary {
+  padding: 8px 16px;
+  border-radius: 9px;
+  font-size: 12.5px;
+  min-height: 34px;
+  line-height: 1.2;
+}
+@media (max-width: 359px) {
   .scan-footer { flex-wrap: wrap; row-gap: 8px; }
   .scan-footer-actions { width: 100%; }
-  .scan-footer-actions .btn-primary { flex: 1; }
+  .scan-footer-actions .s-btn-secondary,
+  .scan-footer-actions .s-btn-primary { flex: 1; padding-left: 8px; padding-right: 8px; }
 }
 
 /* 旧多列网格（保留给可能的宽屏场景；默认单列行布局覆盖） */
