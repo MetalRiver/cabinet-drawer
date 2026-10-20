@@ -2,7 +2,7 @@
   "name": "drawer-box",
   "private": true,
   "license": "GPL-3.0-only",
-  "version": "0.4.1",
+  "version": "0.4.3",
   "type": "module",
   "scripts": {
     "dev": "vite",
