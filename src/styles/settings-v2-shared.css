@@ -302,3 +302,38 @@
 /* 分隔与子标题 */
 .s-divider { height: 1px; margin: 16px 0; background: var(--border); opacity: 0.6; }
 .s-sub-title { font-size: 13px; font-weight: 600; color: var(--text-primary); margin: 4px 0 10px; }
+
+/* 真实开关（U1：替代无样式的原生 button；轨道 40x22，滑块 16） */
+.s-switch {
+  position: relative;
+  width: 40px;
+  height: 22px;
+  flex-shrink: 0;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-tertiary);
+  cursor: pointer;
+  transition: background 0.18s, border-color 0.18s;
+}
+.s-switch.on {
+  background: linear-gradient(135deg, #6366f1, #a855f7);
+  border-color: transparent;
+}
+.s-switch:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.28);
+}
+.s-switch-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+  transition: transform 0.18s var(--ease-smooth);
+}
+.s-switch.on .s-switch-thumb { transform: translateX(18px); }
+.s-switch:disabled { opacity: 0.55; cursor: not-allowed; }

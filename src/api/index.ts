@@ -248,13 +248,25 @@ export interface ScannedApp {
   path: string;
   icon_path: string;
   args: string;
-  source: string; // "StartMenu" / "Desktop" / "PATH" / "Folder" / "Document"
-  app_type: string; // "app" / "folder" / "document" / "url"
-  app_subtype: string; // P0-#Y#2：细分（game/office/dev/utility/media/design/other/word/excel/ppt/pdf/text/image/other）
-  // P0-#Y#FIX#SCAN#LAUNCHABLE：能否直接启动
-  // .exe/.lnk/.url/.bat/.cmd/.msi → true
-  // 文件夹/文档/其他 → false
+  source: string; // "开始菜单" / "开始菜单(所有用户)" / "桌面" / "桌面(公共)" / "Program Files" / "Program Files (x86)"
+  app_type: string; // Batch 2.1 起默认扫描仅 "app" / "url"（folder/document 不再产生候选）
+  app_subtype: string;
   is_launchable: boolean;
+  // ---- Batch 2.1：入口身份与状态 ----
+  target: string; // 解析出的实际目标（exe 路径 / 网址）；解析失败为空
+  target_args: string; // 快捷方式自带启动参数（身份的一部分）
+  workdir: string;
+  status: string; // "identified"（已识别）| "needs_confirmation"（需要确认）
+  already_imported: boolean; // 库中已有同身份有效条目
+  in_trash: boolean; // 同身份条目在回收站中（可恢复）
+  trash_id?: number | null; // 回收站命中条目 id（P1-B：显式「恢复此软件」用；无命中为 null/缺省）
+}
+
+export interface ImportSummary {
+  added: number;
+  already_exists: number;
+  in_trash: number;
+  failed: string[];
 }
 
 export interface AppMeta {
@@ -280,8 +292,39 @@ export interface AppCategoryMeta {
   sort_order: number;
 }
 
-export const scanInstalledSoftware = () =>
-  invoke<ScannedApp[]>("scan_installed_software");
+/** Batch 2.3：扫描结果（取消时返回已完成部分；自定义目录超限标记 truncated） */
+export interface ScanOutcome {
+  apps: ScannedApp[];
+  cancelled: boolean;
+  truncated: boolean;
+}
+
+/** Batch 2.1/2.3：扫描软件候选。level="recommended"（默认）| "advanced"（高级）。
+ *  includePath 仅高级模式生效：是否连带扫描 PATH（默认关、不记住）。 */
+export const scanInstalledSoftware = (
+  level: "recommended" | "advanced",
+  includePath = false,
+  includeUwp = false
+) =>
+  invoke<ScanOutcome>("scan_installed_software", {
+    level: level === "advanced" ? "advanced" : null,
+    includePath,
+    includeUwp,
+  });
+
+/** Batch 2.3：自定义目录扫描（便携软件 / 指定磁盘目录） */
+export const scanCustomDir = (path: string) =>
+  invoke<ScanOutcome>("scan_custom_dir", { path });
+
+/** Batch 2.3：真正终止扫描（遍历/解析批边界生效，返回已完成部分） */
+export const cancelScan = () => invoke<void>("cancel_scan");
+
+/** Batch 2.1：批量导入扫描候选（幂等：重复导入返回 already_exists，不重复建） */
+export const importScannedApps = (candidates: ScannedApp[], categoryId?: number) =>
+  invoke<ImportSummary>("import_scanned_apps", {
+    candidates,
+    categoryId: categoryId ?? null,
+  });
 
 /** 关键修复：自动补齐 db 里所有 icon_path 为空的 apps 图标
  *  AppView 加载时调一次，之后从 db 直接拿，不需要重扫 */
@@ -298,6 +341,10 @@ export const getAppVersion = () => invoke<string>("get_app_version");
 // v0.4.1 验收便携测试版："acceptance" = 双击便携 exe（exe 旁有 DRAWER-TEST-EDITION.marker），
 // 数据根固定 exe 旁 drawer-test-data/；"standard" = 正式版
 export const getAppEdition = () => invoke<string>("get_app_edition");
+/** P1-C：滚动测量开关（仅测试版 + DRAWER_PERF_PROBE=1 时为 true，正式版恒 false） */
+export const perfProbeEnabled = () => invoke<boolean>("perf_probe_enabled");
+/** P1-C：写入测量结果（仅测试版；正式版恒报错） */
+export const perfProbeReport = (report: string) => invoke<void>("perf_probe_report", { report });
 
 /// P0-#Y#3：一次性回填所有 app 的 subtype（启动时调用）
 export const rescanSubtypes = () => invoke<number>("rescan_subtypes");
@@ -432,6 +479,9 @@ export const pickPath = (opts: { mode?: "file" | "folder"; title?: string } = {}
 export const hardPurgeTrash = () => invoke<number>("hard_purge_trash");
 
 /** 通用设置存取（key-value，存到 db 的 settings 表） */
+/** U1：在资源管理器中打开当前数据目录（后端只打开自己的数据目录） */
+export const openDataDir = () => invoke<void>("open_data_dir");
+
 export const getSetting = (key: string) => invoke<string | null>("get_setting", { key });
 export const setSetting = (key: string, value: string) =>
   invoke<void>("set_setting", { key, value });
@@ -479,11 +529,21 @@ export const recordSnippetUsage = (id: number) =>
 
 // ===== 临时内容（temp_contents）相关 =====
 
+/** Batch 4：便签分类（删除分类不删除便签） */
+export interface TempCategory {
+  id: number;
+  name: string;
+}
+
 export interface TempMeta {
   id: number;
   text: string;
   created_at: number;
   expires_at: number;
+  // Batch 4：可选标题与分类（undefined = 无标题/未分类）
+  title?: string;
+  category_id?: number;
+  category_name?: string;
 }
 
 // 永不过期哨兵：2100-01-01T00:00:00Z（UTC ms），与 Rust 端 Db::TEMP_NEVER_EXPIRES_MS 一致
@@ -491,8 +551,26 @@ export const TEMP_NEVER_EXPIRES_MS = 4_102_444_800_000;
 export const isTempPermanent = (expiresAt: number) => expiresAt >= TEMP_NEVER_EXPIRES_MS;
 
 // ttlMinutes == 0 = 永不过期（后端换算为哨兵值）；负数会被后端拒绝（可见错误）
-export const createTemp = (text: string, ttlMinutes: number) =>
-  invoke<number>("create_temp", { text, ttlMinutes });
+export const createTemp = (text: string, ttlMinutes: number, title?: string) =>
+  invoke<number>("create_temp", {
+    text,
+    ttlMinutes: ttlMinutes,
+    title: title && title.trim() ? title.trim() : null,
+  });
+
+// ===== Batch 4：便签分类 =====
+export const listTempCategories = () =>
+  invoke<TempCategory[]>("list_temp_categories");
+export const createTempCategory = (name: string) =>
+  invoke<number>("create_temp_category", { name });
+export const renameTempCategory = (id: number, name: string) =>
+  invoke<void>("rename_temp_category", { id, name });
+export const deleteTempCategory = (id: number) =>
+  invoke<number>("delete_temp_category", { id });
+export const setTempCategory = (id: number, categoryId: number | null) =>
+  invoke<void>("set_temp_category", { id, categoryId: categoryId ?? null });
+export const updateTempTitle = (id: number, title: string | null) =>
+  invoke<void>("update_temp_title", { id, title: title && title.trim() ? title.trim() : null });
 
 export const listTemp = () => invoke<TempMeta[]>("list_temp");
 
@@ -529,6 +607,8 @@ export interface TrashItem {
   source: string; // "软件" / "密码" / "命令行" / "便签"
   /** 便签条目专有：到期时间（R6 过期恢复判定）；其他类型 undefined */
   expires_at?: number | null;
+  /** Batch 4：便签条目专有：标题；其他类型 undefined */
+  title?: string | null;
 }
 
 export const listTrash = () => invoke<TrashItem[]>("list_trash");

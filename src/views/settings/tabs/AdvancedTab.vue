@@ -1,8 +1,14 @@
 <script setup lang="ts">
 // ===== Settings UI V2 · 高级与更新 Tab =====
 // 更新走既有 Tauri Updater（通道/签名不动）；图标诊断两个真实动作保留内联确认。
-import { ref, computed, onUnmounted } from "vue";
-import { getAppVersion, restartApp } from "../../../api";
+import { ref, computed, onMounted, onUnmounted } from "vue";
+import {
+  getAppVersion,
+  restartApp,
+  getSetting,
+  setSetting,
+} from "../../../api";
+import { AUTO_CHECK_KEY } from "../../../lib/update-check";
 import { useAppStore } from "../../../stores/app";
 import { useSoftwareStore } from "../../../stores/software";
 import ConfirmInline from "../../../components/ConfirmInline.vue";
@@ -10,6 +16,7 @@ import { RELEASES_PAGE_URL, VERSION_HISTORY, findInstalledEntry } from "../../..
 import { getAppEdition } from "../../../api";
 import { openExternalLink } from "../../../lib/external-links";
 import SettingsCard from "../../../components/settings/SettingsCard.vue";
+import SettingsRow from "../../../components/settings/SettingsRow.vue";
 import StatusLine from "../../../components/settings/StatusLine.vue";
 import { useSettingsOps } from "../ops";
 
@@ -18,6 +25,23 @@ const softwareStore = useSoftwareStore();
 const ops = useSettingsOps();
 
 const versionInfo = ref<string>("");
+// ===== Batch 3：自动检查开关（持久化 settings 表；默认开启）=====
+const autoCheckEnabled = ref(true);
+onMounted(async () => {
+  try {
+    const v = await getSetting(AUTO_CHECK_KEY);
+    autoCheckEnabled.value = v !== "false";
+  } catch { /* 读失败按默认开启 */ }
+});
+async function onToggleAutoCheck() {
+  const next = autoCheckEnabled.value;
+  try {
+    await setSetting(AUTO_CHECK_KEY, next ? "true" : "false");
+  } catch (e) {
+    autoCheckEnabled.value = !next; // 保存失败回滚 UI
+    console.warn("自动检查开关保存失败", e);
+  }
+}
 const updateBusy = ref(false);
 const updateResult = ref("");
 const updateReady = ref<null | { version: string; notes: string; download: () => Promise<void> }>(null);
@@ -168,9 +192,30 @@ onUnmounted(() => {
       subtitle="检查更新通过 GitHub Releases 进行，更新包经签名校验后由你确认安装；Gitee 提供手动下载镜像。"
       :badge="{ text: `v${versionInfo || '…'}`, tone: 'purple' }"
     >
-      <div class="s-action-row" style="border-top: none; padding-top: 0;">
+      <!-- U1：真实开关（深色轨道 + 滑块），状态持久化 -->
+      <SettingsRow
+        icon="🔄"
+        label="自动检查更新"
+        sub="启动后每天最多检查一次，只提醒不自动安装"
+      >
+        <div class="auto-check-control">
+          <span class="auto-check-state">{{ autoCheckEnabled ? "已开启" : "已关闭" }}</span>
+          <button
+            class="s-switch"
+            :class="{ on: autoCheckEnabled }"
+            role="switch"
+            :aria-checked="autoCheckEnabled"
+            aria-label="自动检查更新"
+            data-interactive
+            @click="autoCheckEnabled = !autoCheckEnabled; onToggleAutoCheck()"
+          >
+            <span class="s-switch-thumb"></span>
+          </button>
+        </div>
+      </SettingsRow>
+      <div class="s-action-row">
         <button class="s-btn-primary" @click="onCheckUpdate" :disabled="updateBusy" data-interactive>
-          {{ updateBusy && !updateReady ? "检查中…" : "🔍 检查更新" }}
+          {{ updateBusy && !updateReady ? "检查中…" : `🔍 检查更新（当前 v${versionInfo || "…"}）` }}
         </button>
         <button v-if="updateReady && !updateBusy" class="s-btn-primary s-btn-green" @click="onUpdateInstall" data-interactive>
           ⬇️ 下载并安装 v{{ updateReady.version }}
@@ -309,6 +354,9 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.auto-check-control { display: inline-flex; align-items: center; gap: 10px; }
+.auto-check-state { font-size: 12px; color: var(--text-secondary); white-space: nowrap; }
+
 /* ===== 版本更新历史 ===== */
 .vh-list { display: flex; flex-direction: column; gap: 8px; }
 .vh-item {

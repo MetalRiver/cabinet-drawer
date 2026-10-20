@@ -29,6 +29,13 @@ const TABS = [
 ] as const;
 
 const activeTab = ref<string>("basic");
+// Batch 3：支持 /settings?tab=advanced 直达（顶部更新提醒的点击目标）
+import { useRoute } from "vue-router";
+const route = useRoute();
+const initialTab = route.query.tab;
+if (typeof initialTab === "string" && TABS.some((x) => x.key === initialTab)) {
+  activeTab.value = initialTab;
+}
 const navEl = ref<HTMLElement | null>(null);
 // 左右渐隐提示（仅当导航横向可滚时出现；白色系统滚动条已隐藏，滚动能力保留）
 const canScrollLeft = ref(false);

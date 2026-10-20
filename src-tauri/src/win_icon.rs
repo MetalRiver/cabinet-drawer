@@ -25,8 +25,16 @@ use std::os::windows::process::CommandExt;
 /// 返回：Some(target_path) 或 None（解析失败）
 pub fn resolve_lnk_target(lnk_path: &str) -> Option<String> {
     let escaped = lnk_path.replace('\'', "''");
+    // P0-A（v0.4.3 验收）：与 Batch 1 修复的批量解析器口径对齐——
+    // ① 显式 UTF-8 输出：原先按控制台 OEM 代码页（中文系统=GBK）输出，
+    //    from_utf8_lossy 后中文目标路径变乱码 → exists() 恒 false →
+    //    被 classify_one 误判为 fixed_missing（可清退，数据误判）。
+    // ② 每轮重置 $t + SilentlyContinue：CreateShortcut 失败时旧变量残留会错绑。
     let ps = format!(
-        "$sh = New-Object -ComObject WScript.Shell; \
+        "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; \
+         $ErrorActionPreference='SilentlyContinue'; \
+         $sh = New-Object -ComObject WScript.Shell; \
+         $t = $null; \
          $t = $sh.CreateShortcut('{}').TargetPath; \
          if ($t) {{ [Environment]::ExpandEnvironmentVariables($t) }} else {{ '' }}",
         escaped

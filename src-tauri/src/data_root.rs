@@ -670,7 +670,7 @@ fn normalized_lower(path: &Path) -> String {
     s
 }
 
-fn is_unc_path(path: &Path) -> bool {
+pub(crate) fn is_unc_path(path: &Path) -> bool {
     path.to_string_lossy().starts_with("\\\\")
 }
 
@@ -715,34 +715,35 @@ pub enum PreflightError {
 impl PreflightError {
     pub fn message(&self) -> String {
         match self {
-            PreflightError::NotAbsolute(p) => format!("路径必须是绝对路径：{}", p),
+            // Batch 1.5：错误文案可操作化——每条给出"下一步该做什么"
+            PreflightError::NotAbsolute(p) => format!("路径必须是完整路径（含盘符）：{}。请用「选择位置」按钮重新选择。", p),
             PreflightError::IsConfigRoot(_) => {
-                "不能选择抽屉柜自己的配置目录作为数据位置。".to_string()
+                "不能选择抽屉柜自己的配置目录作为数据位置。请另选一个目录，例如 D:\\抽屉柜数据。".to_string()
             }
             PreflightError::NestedWithConfigRoot(_) => {
-                "该位置与抽屉柜配置目录互相嵌套，请选择其他位置。".to_string()
+                "该位置与抽屉柜配置目录互相嵌套，可能影响数据安全。请另选一个独立目录，例如 D:\\抽屉柜数据。".to_string()
             }
             PreflightError::SyncFolder(_) => {
-                "该位置在云同步目录（OneDrive / Dropbox 等）内，可能损坏数据库，请换一个本地磁盘位置。"
+                "该位置在云同步目录（OneDrive / Dropbox 等）内，云同步可能损坏数据库。请换一个本地磁盘位置，例如 D:\\抽屉柜数据。"
                     .to_string()
             }
             PreflightError::NetworkOrRemovable(_) => {
-                "请选择本地固定磁盘上的目录（暂不支持移动硬盘、U 盘或网络盘）。".to_string()
+                "请选择本地固定磁盘上的目录（暂不支持移动硬盘、U 盘或网络位置），例如 D:\\抽屉柜数据。".to_string()
             }
-            PreflightError::SystemDirectory(_) => "该位置是系统目录，请选择其他位置。".to_string(),
+            PreflightError::SystemDirectory(_) => "该位置是系统目录（如 Program Files、Windows、ProgramData）。系统目录受系统保护，不适合保存个人数据——请换一个普通目录，例如 D:\\抽屉柜数据。".to_string(),
             PreflightError::HasExistingDrawerData(_) => {
-                "该位置已包含一套抽屉柜数据。如需继续使用，请改用「使用已有数据目录」。".to_string()
+                "该位置已包含一套抽屉柜数据。如需继续使用，请回到上一页展开「恢复数据」，用「使用已有数据目录」连接。".to_string()
             }
             PreflightError::NotEmpty(_) => {
-                "该目录不是空目录。请选择一个空目录，或先新建一个专用子目录（例如 抽屉柜数据）。"
+                "该目录不是空目录。请选择一个空目录，或先新建一个专用子目录（例如 D:\\抽屉柜数据）。"
                     .to_string()
             }
-            PreflightError::CreateFailed(e) => format!("无法创建目标目录：{}", e),
-            PreflightError::NotWritable(e) => format!("该目录不可写：{}", e),
-            PreflightError::NoSpace(_) => "该磁盘可用空间不足，无法容纳迁移后的数据。".to_string(),
+            PreflightError::CreateFailed(e) => format!("无法创建目标目录（{}）。请确认路径正确、磁盘可写，或换一个目录。", e),
+            PreflightError::NotWritable(e) => format!("该目录不可写（{}）。请检查文件夹权限，或换一个目录，例如 D:\\抽屉柜数据。", e),
+            PreflightError::NoSpace(_) => "该磁盘可用空间不足（至少需要 100MB）。请清理磁盘或换一个位置。".to_string(),
             PreflightError::SameAsSource(_) => "新位置与当前数据位置相同。".to_string(),
             PreflightError::NestedWithSource(_) => {
-                "新位置与当前数据位置互相嵌套，请选择其他位置。".to_string()
+                "新位置与当前数据位置互相嵌套，可能影响数据安全。请另选一个独立目录。".to_string()
             }
             PreflightError::ConfigRootOccupied(p) => format!(
                 "配置目录中存在意外的数据库文件（{}），为保护数据已停止恢复默认位置。",
@@ -828,28 +829,29 @@ pub enum AttachError {
 impl AttachError {
     pub fn message(&self) -> String {
         match self {
-            AttachError::NotFound(p) => format!("目录不存在：{}", p),
-            AttachError::NotAbsolute(p) => format!("路径必须是绝对路径：{}", p),
+            // Batch 1.5：错误文案可操作化——每条给出"下一步该做什么"
+            AttachError::NotFound(p) => format!("目录不存在：{}。请确认路径是否正确，或用「选择位置」重新选择。", p),
+            AttachError::NotAbsolute(p) => format!("路径必须是完整路径（含盘符）：{}。请用「选择位置」按钮重新选择。", p),
             AttachError::ConfigRootSame(_) => {
-                "该目录就是抽屉柜配置目录，请选择数据所在的其他位置。".to_string()
+                "该目录就是抽屉柜的配置目录，不是数据目录。请选择原来保存数据的位置。".to_string()
             }
             AttachError::SyncFolder(_) => {
-                "该位置在云同步目录内，出于数据库一致性考虑暂不支持。".to_string()
+                "该位置在云同步目录（OneDrive / Dropbox 等）内，云同步可能损坏数据库。请把数据放在本地磁盘的普通目录，例如 D:\\抽屉柜数据。".to_string()
             }
             AttachError::NetworkOrRemovable(_) => {
-                "请选择本地固定磁盘上的目录（暂不支持移动硬盘、U 盘或网络盘）。".to_string()
+                "请选择本地固定磁盘上的目录（暂不支持移动硬盘、U 盘或网络位置），例如 D:\\抽屉柜数据。".to_string()
             }
-            AttachError::NotWritable(e) => format!("该目录不可写：{}", e),
-            AttachError::DbMissing(_) => "该目录内没有找到抽屉柜数据库。".to_string(),
+            AttachError::NotWritable(e) => format!("该目录不可写（{}）。请检查文件夹权限，或换一个目录，例如 D:\\抽屉柜数据。", e),
+            AttachError::DbMissing(_) => "该目录内没有找到抽屉柜数据库（drawer-v2.db）。请确认选的是之前「数据保存位置」指向的目录，而不是程序安装目录。".to_string(),
             AttachError::LegacyOnly(_) => {
-                "检测到旧版数据格式，当前版本暂不能直接连接该目录。".to_string()
+                "检测到旧版数据格式（v0.2 时代），当前版本暂不能直接连接。请先安装 v0.3.2 完成一次启动升级后再连接。".to_string()
             }
             AttachError::MigrationArtifacts(names) => format!(
                 "该目录存在未完成的迁移/初始化痕迹（{}），请先在新版抽屉柜中完成或清理后再连接。",
                 names
             ),
-            AttachError::DbBusy(_) => "该数据目录正在被其他进程使用。".to_string(),
-            AttachError::DbInvalid(e) => format!("该目录中的数据库无效或已损坏：{}", e),
+            AttachError::DbBusy(_) => "该数据目录正在被其他抽屉柜进程使用。请先退出正在运行的抽屉柜（包括托盘图标），再重试。".to_string(),
+            AttachError::DbInvalid(e) => format!("该目录中的数据库无效或已损坏：{}。如你有 .drawerbox 备份，可回到首启页用「从加密备份恢复」。", e),
         }
     }
 }

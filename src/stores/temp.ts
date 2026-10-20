@@ -4,6 +4,12 @@ import { useAppStore } from "./app";
 import { useWidgetStore } from "./widget";
 import {
   listTemp as apiListTemp,
+  listTempCategories as apiListTempCategories,
+  createTempCategory as apiCreateTempCategory,
+  renameTempCategory as apiRenameTempCategory,
+  deleteTempCategory as apiDeleteTempCategory,
+  setTempCategory as apiSetTempCategory,
+  updateTempTitle as apiUpdateTempTitle,
   createTemp as apiCreateTemp,
   deleteTemp as apiDeleteTemp,
   cleanupExpiredTemp as apiCleanupExpired,
@@ -12,6 +18,7 @@ import {
   isTempPermanent,
   copyToClipboardWithTimeout,
   type TempMeta,
+  type TempCategory,
 } from "../api";
 
 export const useTempStore = defineStore("temp", () => {
@@ -21,6 +28,66 @@ export const useTempStore = defineStore("temp", () => {
 
   // 修复 P2-#26：删除 store 端 10s 定时器（`[...items.value]` 啥也没刷，是无意义 setInterval）。
   // 剩余时间倒计时由 view 端 1s 的 `now` ref 驱动即可。
+
+  // ===== Batch 4：分类与搜索 =====
+  const categories = ref<TempCategory[]>([]);
+  const activeCategoryId = ref<number | null>(null); // null = 未分类筛选关（全部）
+  const showUncategorized = ref(false); // 「未分类」筛选
+  const searchQuery = ref("");
+
+  async function loadCategories() {
+    try {
+      categories.value = await apiListTempCategories();
+    } catch (e) {
+      console.warn("加载便签分类失败", e);
+    }
+  }
+
+  async function createCategory(name: string) {
+    await apiCreateTempCategory(name);
+    await loadCategories();
+  }
+  async function renameCategory(id: number, name: string) {
+    await apiRenameTempCategory(id, name);
+    await loadCategories();
+  }
+  /** 删除分类：便签安全回到未分类（后端事务保证），分类列表刷新 */
+  async function deleteCategory(id: number) {
+    await apiDeleteTempCategory(id);
+    if (activeCategoryId.value === id) activeCategoryId.value = null;
+    await loadCategories();
+    await loadItems();
+  }
+  async function setCategory(id: number, categoryId: number | null) {
+    await apiSetTempCategory(id, categoryId);
+    await loadItems();
+  }
+  async function updateTitle(id: number, title: string | null) {
+    await apiUpdateTempTitle(id, title);
+    await loadItems();
+  }
+
+  async function create(text: string, ttlMinutes: number, title?: string) {
+    await apiCreateTemp(text, ttlMinutes, title);
+    await loadItems();
+  }
+
+  /** 客户端过滤：分类筛选 + 标题/正文搜索 */
+  const filteredItems = computed(() => {
+    let list = items.value;
+    if (showUncategorized.value) {
+      list = list.filter((it) => !it.category_id);
+    } else if (activeCategoryId.value != null) {
+      list = list.filter((it) => it.category_id === activeCategoryId.value);
+    }
+    const q = searchQuery.value.trim().toLowerCase();
+    if (!q) return list;
+    return list.filter(
+      (it) =>
+        it.text.toLowerCase().includes(q) ||
+        (it.title || "").toLowerCase().includes(q)
+    );
+  });
 
   async function loadItems() {
     loading.value = true;
@@ -32,11 +99,6 @@ export const useTempStore = defineStore("temp", () => {
     } finally {
       loading.value = false;
     }
-  }
-
-  async function create(text: string, ttlMinutes: number) {
-    await apiCreateTemp(text, ttlMinutes);
-    await loadItems();
   }
 
   /** v0.4.1：编辑/追加便签内容（后端只改 text，到期时间保持不变） */
@@ -109,6 +171,17 @@ export const useTempStore = defineStore("temp", () => {
     items,
     loading,
     error,
+    categories,
+    activeCategoryId,
+    showUncategorized,
+    searchQuery,
+    filteredItems,
+    loadCategories,
+    createCategory,
+    renameCategory,
+    deleteCategory,
+    setCategory,
+    updateTitle,
     loadItems,
     // 导入备份后整体刷新（调用方：SettingsView 导入完成后）
     reloadAll: loadItems,

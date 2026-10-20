@@ -19,7 +19,7 @@ use zeroize::Zeroizing;
 const BACKUP_VERSION: u32 = 2;
 const SECURITY_MODEL: &str = "stable-dek-v2";
 const MAX_BACKUP_BYTES: u64 = 2 * 1024 * 1024 * 1024;
-const REQUIRED_TABLES: [&str; 7] = [
+const REQUIRED_TABLES: [&str; 8] = [
     "settings",
     "passwords",
     "app_categories",
@@ -27,9 +27,10 @@ const REQUIRED_TABLES: [&str; 7] = [
     "snippets",
     "temp_contents",
     "pinned_items",
+    "temp_categories", // Batch 4（v0.4.3）：便签分类（恢复路径先经 compat 迁移再校验）
 ];
 
-const EXPECTED_COLUMNS: [(&str, &[&str]); 7] = [
+const EXPECTED_COLUMNS: [(&str, &[&str]); 8] = [
     ("settings", &["key", "value"]),
     (
         "passwords",
@@ -53,8 +54,12 @@ const EXPECTED_COLUMNS: [(&str, &[&str]); 7] = [
             "use_count", "last_used_at", "deleted_at",
         ],
     ),
-    ("temp_contents", &["id", "text", "created_at", "expires_at", "deleted_at"]),
+    (
+        "temp_contents",
+        &["id", "text", "created_at", "expires_at", "deleted_at", "title", "category_id"],
+    ),
     ("pinned_items", &["id", "item_type", "item_id", "sort_order"]),
+    ("temp_categories", &["id", "name", "sort_order"]),
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -85,7 +85,16 @@ fn init_v2_schema(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
             text TEXT NOT NULL,
             created_at INTEGER NOT NULL,
             expires_at INTEGER NOT NULL,
-            deleted_at INTEGER
+            deleted_at INTEGER,
+            -- Batch 4（v0.4.3）：标题与分类（新建库直接带全量列）
+            title TEXT,
+            category_id INTEGER
+        );
+        -- Batch 4：便签分类（删除分类不删除便签）
+        CREATE TABLE IF NOT EXISTS temp_categories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            sort_order INTEGER DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS pinned_items (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -179,6 +188,12 @@ pub fn open_existing_v2_db(path: &Path) -> Result<Db, String> {
     }
     {
         let conn = db.conn.lock().map_err(|_| "v2 数据库无法安全打开".to_string())?;
+        // Batch 4（v0.4.3）：存量 v2 库的幂等 schema 兼容迁移——
+        // 此前 v2 启动路径从不执行 schema 演进（Batch 4 是首个 post-GA 结构变更），
+        // 故在安全验证通过后补齐（事务内；失败拒绝启动，fail closed）。
+        // 恢复 staging（prepare_restored_staging）同样经此函数 → 旧备份恢复后自动升级。
+        crate::db::Db::migrate_v2_schema_compat(&conn)
+            .map_err(|_| "v2 schema 兼容迁移失败".to_string())?;
         let integrity: String = conn.query_row("PRAGMA integrity_check", [], |row| row.get(0))
             .map_err(|_| "v2 数据库完整性校验失败".to_string())?;
         let uuid_columns: i64 = conn.query_row(

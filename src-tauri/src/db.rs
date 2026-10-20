@@ -90,6 +90,13 @@ impl Db {
                 expires_at INTEGER NOT NULL
             );
 
+            -- Batch 4（v0.4.3）：便签分类（删除分类不删除便签——便签.category_id 置 NULL 回到未分类）
+            CREATE TABLE IF NOT EXISTS temp_categories (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                sort_order INTEGER DEFAULT 0
+            );
+
             CREATE TABLE IF NOT EXISTS pinned_items (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 item_type TEXT NOT NULL,
@@ -134,7 +141,7 @@ impl Db {
     }
 
     /// 迁移辅助：如果列不存在则 ADD COLUMN（PRAGMA table_info 检查）
-    fn migrate_add_column(
+    pub(crate) fn migrate_add_column(
         conn: &Connection,
         table: &str,
         column: &str,
@@ -154,6 +161,26 @@ impl Db {
         Ok(())
     }
 
+    /// Batch 4（v0.4.3）：v2 schema 幂等兼容迁移（单一实现，Db::open 与
+    /// migration::open_existing_v2_db 两条启动路径共用）。
+    /// - temp_categories：IF NOT EXISTS（新建/存量库统一）；
+    /// - title / category_id：pragma 检查后加列（老列保留、老数据 NULL）；
+    /// - 单事务包裹：任一步失败整体回滚，重跑收敛（迁移失败安全回滚）。
+    pub(crate) fn migrate_v2_schema_compat(conn: &Connection) -> Result<()> {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS temp_categories (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                sort_order INTEGER DEFAULT 0
+            );",
+        )?;
+        let tx = conn.unchecked_transaction()?;
+        Self::migrate_add_column(&tx, "temp_contents", "title", "TEXT")?;
+        Self::migrate_add_column(&tx, "temp_contents", "category_id", "INTEGER")?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// 升级迁移：新增列 / 索引（v1 → v1.1 加 app_type 区分 软件/文件夹/文档）
     fn run_migrations(&self) -> Result<()> {
         let conn = self.conn.lock().unwrap();
@@ -169,6 +196,9 @@ impl Db {
         Self::migrate_add_column(&conn, "passwords", "deleted_at", "INTEGER")?;
         Self::migrate_add_column(&conn, "snippets", "deleted_at", "INTEGER")?;
         Self::migrate_add_column(&conn, "temp_contents", "deleted_at", "INTEGER")?;
+        // Batch 4（v0.4.3）：便签标题与分类——共享幂等兼容迁移（存量 v2 启动/恢复路径
+        // 经 migration::open_existing_v2_db 调用同一实现，两条路径永不分叉）。
+        Self::migrate_v2_schema_compat(&conn)?;
         Ok(())
     }
 
@@ -834,6 +864,7 @@ impl Db {
                     sub_detail: row.get::<_, String>(3).unwrap_or_default(),
                     deleted_at: row.get(4)?,
                     expires_at: None,
+                    title: None,
                     source: "软件".to_string(),
                 })
             })?;
@@ -855,6 +886,7 @@ impl Db {
                     sub_detail: row.get::<_, String>(3).unwrap_or_default(),
                     deleted_at: row.get(4)?,
                     expires_at: None,
+                    title: None,
                     source: "密码".to_string(),
                 })
             })?;
@@ -876,6 +908,7 @@ impl Db {
                     sub_detail: row.get::<_, String>(3).unwrap_or_default(),
                     deleted_at: row.get(4)?,
                     expires_at: None,
+                    title: None,
                     source: "命令行".to_string(),
                 })
             })?;
@@ -885,18 +918,26 @@ impl Db {
         }
         {
             let mut stmt = conn.prepare(
-                "SELECT id, text, created_at, expires_at, deleted_at FROM temp_contents WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC LIMIT 500"
+                "SELECT id, text, created_at, expires_at, deleted_at, title FROM temp_contents WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC LIMIT 500"
             )?;
             let rows = stmt.query_map([], |row| {
                 let text: String = row.get(1)?;
-                let preview = if text.chars().count() > 20 {
-                    format!("{}…", text.chars().take(20).collect::<String>())
-                } else {
-                    text
+                let title: Option<String> = row.get(5)?;
+                // Batch 4：列表优先显示标题；无标题回退正文预览（不回写数据库）
+                let name = match &title {
+                    Some(t) if !t.trim().is_empty() => t.clone(),
+                    _ => {
+                        let preview = if text.chars().count() > 20 {
+                            format!("{}…", text.chars().take(20).collect::<String>())
+                        } else {
+                            text.clone()
+                        };
+                        preview
+                    }
                 };
                 Ok(TrashItem {
                     id: row.get(0)?,
-                    name: preview,
+                    name,
                     kind: "temp".to_string(),
                     table_name: "temp_contents".to_string(), // ✅ 真实表名
                     kind_detail: String::new(),
@@ -904,6 +945,7 @@ impl Db {
                     deleted_at: row.get(4)?,
                     source: "便签".to_string(),
                     expires_at: Some(row.get(3)?),
+                    title,
                 })
             })?;
             for r in rows {
@@ -1089,11 +1131,21 @@ impl Db {
     // ===== 临时内容（temp_contents）相关 =====
 
     pub fn create_temp(&self, text: &str, expires_at: i64) -> Result<i64> {
+        self.create_temp_with_title(None, text, expires_at)
+    }
+
+    /// Batch 4：带可选标题创建（title=None 保持与旧调用兼容）
+    pub fn create_temp_with_title(
+        &self,
+        title: Option<&str>,
+        text: &str,
+        expires_at: i64,
+    ) -> Result<i64> {
         let now = chrono::Utc::now().timestamp_millis();
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO temp_contents (text, created_at, expires_at) VALUES (?1, ?2, ?3)",
-            params![text, now, expires_at],
+            "INSERT INTO temp_contents (text, created_at, expires_at, title) VALUES (?1, ?2, ?3, ?4)",
+            params![text, now, expires_at, title],
         )?;
         Ok(conn.last_insert_rowid())
     }
@@ -1102,8 +1154,10 @@ impl Db {
         let now = chrono::Utc::now().timestamp_millis();
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, text, created_at, expires_at FROM temp_contents
-             WHERE expires_at > ?1 AND deleted_at IS NULL ORDER BY expires_at ASC",
+            "SELECT t.id, t.text, t.created_at, t.expires_at, t.title, t.category_id, c.name
+             FROM temp_contents t
+             LEFT JOIN temp_categories c ON c.id = t.category_id
+             WHERE t.expires_at > ?1 AND t.deleted_at IS NULL ORDER BY t.expires_at ASC",
         )?;
         let rows = stmt
             .query_map(params![now], |row| {
@@ -1112,10 +1166,113 @@ impl Db {
                     text: row.get(1)?,
                     created_at: row.get(2)?,
                     expires_at: row.get(3)?,
+                    title: row.get(4)?,
+                    category_id: row.get(5)?,
+                    category_name: row.get(6)?,
                 })
             })?
             .collect::<Result<Vec<_>>>()?;
         Ok(rows)
+    }
+
+    /// Batch 4：更新标题（None = 清除标题；不影响正文与到期时间）
+    pub fn update_temp_title(&self, id: i64, title: Option<&str>) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE temp_contents SET title = ?1 WHERE id = ?2 AND deleted_at IS NULL",
+            params![title, id],
+        )
+    }
+
+    // ===== Batch 4：便签分类 CRUD =====
+
+    /// 分类列表（按 sort_order、id 排序）
+    pub fn list_temp_categories(&self) -> Result<Vec<TempCategory>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, name FROM temp_categories ORDER BY sort_order ASC, id ASC",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(TempCategory {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                })
+            })?
+            .collect::<Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// 新建分类：名称 trim、拒绝空/过长/重复（含大小写不敏感判重）
+    pub fn create_temp_category(&self, name: &str) -> Result<i64> {
+        let name = normalize_category_name(name)?;
+        let conn = self.conn.lock().unwrap();
+        let dup: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM temp_categories WHERE lower(name) = lower(?1)",
+            params![name],
+            |r| r.get(0),
+        )?;
+        if dup > 0 {
+            return Err(rusqlite::Error::InvalidQuery); // 命令层转译为"分类已存在"
+        }
+        conn.execute(
+            "INSERT INTO temp_categories (name) VALUES (?1)",
+            params![name],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// 重命名分类：同校验；排除自身后判重（重命名不造成身份错乱——id 不变）
+    pub fn rename_temp_category(&self, id: i64, name: &str) -> Result<()> {
+        let name = normalize_category_name(name)?;
+        let conn = self.conn.lock().unwrap();
+        let dup: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM temp_categories WHERE lower(name) = lower(?1) AND id != ?2",
+            params![name, id],
+            |r| r.get(0),
+        )?;
+        if dup > 0 {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+        conn.execute(
+            "UPDATE temp_categories SET name = ?1 WHERE id = ?2",
+            params![name, id],
+        )?;
+        Ok(())
+    }
+
+    /// 删除分类：**不删除便签**——相关便签 category_id 置 NULL 回到未分类。
+    /// 单事务：删除与归位原子完成，不改动便签正文/到期时间/删除状态。
+    pub fn delete_temp_category(&self, id: i64) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let tx = conn.unchecked_transaction()?;
+        tx.execute("DELETE FROM temp_categories WHERE id = ?1", params![id])?;
+        let n = tx.execute(
+            "UPDATE temp_contents SET category_id = NULL WHERE category_id = ?1",
+            params![id],
+        )?;
+        tx.commit()?;
+        Ok(n)
+    }
+
+    /// Batch 4：归入分类（None = 移回未分类）。分类不存在时报错（不静默）。
+    pub fn set_temp_category(&self, id: i64, category_id: Option<i64>) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        if let Some(cid) = category_id {
+            let exists: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM temp_categories WHERE id = ?1",
+                params![cid],
+                |r| r.get(0),
+            )?;
+            if exists == 0 {
+                return Err(rusqlite::Error::InvalidQuery);
+            }
+        }
+        conn.execute(
+            "UPDATE temp_contents SET category_id = ?1 WHERE id = ?2 AND deleted_at IS NULL",
+            params![category_id, id],
+        )?;
+        Ok(())
     }
 
     pub fn delete_temp(&self, id: i64) -> Result<()> {
@@ -1467,6 +1624,32 @@ pub struct TempMeta {
     pub text: String,
     pub created_at: i64,
     pub expires_at: i64,
+    // Batch 4：可选标题（NULL=无标题，列表回退用正文预览，不回写数据库）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category_name: Option<String>,
+}
+
+/// Batch 4：便签分类
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TempCategory {
+    pub id: i64,
+    pub name: String,
+}
+
+/// 分类名称规范化：trim；空 → Err；>30 字符 → Err（合理限制，前端同步提示）
+pub(crate) fn normalize_category_name(name: &str) -> Result<String> {
+    let n = name.trim();
+    if n.is_empty() {
+        return Err(rusqlite::Error::InvalidQuery); // 命令层转译为"名称不能为空"
+    }
+    if n.chars().count() > 30 {
+        return Err(rusqlite::Error::InvalidQuery); // 命令层转译为"名称过长"
+    }
+    Ok(n.to_string())
 }
 
 /// 回收站项统一结构（前端显示）
@@ -1483,6 +1666,9 @@ pub struct TrashItem {
     /// 便签条目专有：到期时间（R6 过期恢复判定用）；其他类型为 None
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<i64>,
+    /// Batch 4：便签条目专有：标题（回收站列表展示）；其他类型为 None
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
 }
 
 /// 初始化数据库（兼容旧 API）
@@ -1664,6 +1850,20 @@ pub struct TempRow {
     pub expires_at: i64,
     #[serde(default)]
     pub deleted_at: Option<i64>,
+    // Batch 4：标题（旧备份缺失 → None，导入不丢原有正文、不报错）
+    #[serde(default)]
+    pub title: Option<String>,
+    /// 备份内 temp_categories 的旧 id（导入时映射到新库 id，不假定天然相同）
+    #[serde(default)]
+    pub category_id: Option<i64>,
+}
+
+/// Batch 4：legacy 明文备份中的便签分类行（v0.4.3 起新增；旧备份缺省为空）
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct TempCategoryRow {
+    #[serde(default)]
+    pub id: Option<i64>,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -1693,6 +1893,9 @@ pub struct BackupFullData {
     pub snippets: Vec<SnippetRow>,
     #[serde(default)]
     pub temps: Vec<TempRow>,
+    /// Batch 4：便签分类（旧备份缺失 → 空数组，导入兼容）
+    #[serde(default)]
+    pub temp_categories: Vec<TempCategoryRow>,
 }
 
 impl BackupFullData {
@@ -1874,10 +2077,10 @@ impl Db {
             out.snippets = rows;
         }
 
-        // 6) 便签
+        // 6) 便签（Batch 4：含标题与分类 id；legacy 库经 open 时迁移亦有这些列）
         {
             let mut stmt = conn.prepare(
-                "SELECT id, text, created_at, expires_at, deleted_at FROM temp_contents",
+                "SELECT id, text, created_at, expires_at, deleted_at, title, category_id FROM temp_contents",
             )?;
             let rows = stmt
                 .query_map([], |row| {
@@ -1887,10 +2090,26 @@ impl Db {
                         created_at: row.get(2)?,
                         expires_at: row.get(3)?,
                         deleted_at: row.get::<_, Option<i64>>(4).ok().flatten(),
+                        title: row.get::<_, Option<String>>(5).ok().flatten(),
+                        category_id: row.get::<_, Option<i64>>(6).ok().flatten(),
                     })
                 })?
                 .collect::<Result<Vec<_>>>()?;
             out.temps = rows;
+        }
+
+        // 7) 便签分类（Batch 4）
+        {
+            let mut stmt = conn.prepare("SELECT id, name FROM temp_categories")?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok(TempCategoryRow {
+                        id: Some(row.get(0)?),
+                        name: row.get(1)?,
+                    })
+                })?
+                .collect::<Result<Vec<_>>>()?;
+            out.temp_categories = rows;
         }
 
         Ok(out)
@@ -2198,6 +2417,36 @@ impl Db {
                 }
             }
 
+            // 5b) Batch 4：便签分类恢复（按 name 去重复用本地同名分类；
+            //     建 old_id→new_id 映射——不假定不同数据库的分类 ID 天然相同）
+            let mut temp_cat_old_to_new: HashMap<i64, i64> = HashMap::new();
+            for tc in &data.temp_categories {
+                let tc_name = tc.name.trim();
+                if tc_name.is_empty() {
+                    continue;
+                }
+                let existing: Option<i64> = conn
+                    .query_row(
+                        "SELECT id FROM temp_categories WHERE lower(name) = lower(?1) LIMIT 1",
+                        params![tc_name],
+                        |row| row.get(0),
+                    )
+                    .ok();
+                let new_id = match existing {
+                    Some(id) => id,
+                    None => {
+                        conn.execute(
+                            "INSERT INTO temp_categories (name) VALUES (?1)",
+                            params![tc_name],
+                        )?;
+                        conn.last_insert_rowid()
+                    }
+                };
+                if let Some(old_id) = tc.id {
+                    temp_cat_old_to_new.insert(old_id, new_id);
+                }
+            }
+
             // 6) 便签（冲突判断：同 text + 同 expires_at）
             for t in &data.temps {
                 let dup_id: Option<i64> = {
@@ -2219,22 +2468,26 @@ impl Db {
                         continue;
                     }
                 };
+                // Batch 4：分类 ID 映射（备份内旧 id → 本库新 id；映射不到 → 未分类）
+                let mapped_category: Option<i64> = t
+                    .category_id
+                    .and_then(|old| temp_cat_old_to_new.get(&old).copied());
                 if dup_id.is_some() {
                     match policy {
                         ImportConflictPolicy::Overwrite => {
                             let id = dup_id.unwrap();
-                            // 🔴 【风险4修复】UPDATE 也写 deleted_at
+                            // 🔴 【风险4修复】UPDATE 也写 deleted_at；Batch 4：标题与分类一并覆盖
                             conn.execute(
-                                "UPDATE temp_contents SET text=?1, expires_at=?2, deleted_at=?3 WHERE id=?4",
-                                params![&final_text, t.expires_at, t.deleted_at, id],
+                                "UPDATE temp_contents SET text=?1, expires_at=?2, deleted_at=?3, title=?4, category_id=?5 WHERE id=?6",
+                                params![&final_text, t.expires_at, t.deleted_at, t.title, mapped_category, id],
                             )?;
                             stats.temps_overwritten += 1;
                         }
                         ImportConflictPolicy::Merge => {
                             conn.execute(
-                                "INSERT INTO temp_contents (text, created_at, expires_at, deleted_at)
-                                 VALUES (?1, ?2, ?3, ?4)",
-                                params![&final_text, t.created_at, t.expires_at, t.deleted_at],
+                                "INSERT INTO temp_contents (text, created_at, expires_at, deleted_at, title, category_id)
+                                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                                params![&final_text, t.created_at, t.expires_at, t.deleted_at, t.title, mapped_category],
                             )?;
                             stats.temps_merged += 1;
                         }
@@ -2243,9 +2496,9 @@ impl Db {
                 } else {
                     // 🔴 【风险4修复】INSERT 必须写 deleted_at
                     conn.execute(
-                        "INSERT INTO temp_contents (text, created_at, expires_at, deleted_at)
-                         VALUES (?1, ?2, ?3, ?4)",
-                        params![&final_text, t.created_at, t.expires_at, t.deleted_at],
+                        "INSERT INTO temp_contents (text, created_at, expires_at, deleted_at, title, category_id)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                        params![&final_text, t.created_at, t.expires_at, t.deleted_at, t.title, mapped_category],
                     )?;
                     stats.temps_inserted += 1;
                 }

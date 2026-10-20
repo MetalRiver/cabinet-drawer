@@ -565,12 +565,27 @@ pub fn hard_purge_trash(state: State<AppState>) -> Result<usize, String> {
 // ============================================================
 // ⚙️ 7. 设置 CRUD（注意 map_err！rusqlite::Error → String）100% 原版抄
 // ============================================================
+/// v2 安全格式下允许读写的**非敏感 UI 偏好**键白名单。
+/// v2 库的 secure 设置走 require_legacy_model 拒绝写入（安全设计），但这些
+/// 键不含凭据/密钥，属于界面偏好；不放行会导致开关「看起来点了、重启就回默认」。
+pub(crate) const UI_PREF_KEYS: [&str; 3] = [
+    "auto_check_updates",
+    "update_last_check_at",
+    "trash_retention_days",
+];
+
+pub(crate) fn is_ui_preference(key: &str) -> bool {
+    UI_PREF_KEYS.contains(&key)
+}
+
 #[tauri::command]
 pub fn get_setting(state: State<AppState>, key: String) -> Result<Option<String>, String> {
     // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
     let _data_gate = state.data_read()?;
 
-    state.require_legacy_model()?;
+    if !is_ui_preference(&key) {
+        state.require_legacy_model()?;
+    }
     let db = state.db.lock().unwrap();
     db.get_setting(&key).map_err(|e| e.to_string())
 }
@@ -579,9 +594,27 @@ pub fn set_setting(state: State<AppState>, key: String, value: String) -> Result
     // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
     let _data_gate = state.data_read()?;
 
-    state.require_legacy_model()?;
+    if !is_ui_preference(&key) {
+        state.require_legacy_model()?;
+    }
     let db = state.db.lock().unwrap();
     db.set_setting(&key, &value).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod ui_pref_tests {
+    #[test]
+    fn t_ui_pref_white_list_boundary() {
+        use super::is_ui_preference;
+        assert!(is_ui_preference("auto_check_updates"));
+        assert!(is_ui_preference("update_last_check_at"));
+        assert!(is_ui_preference("trash_retention_days"));
+        // 其它设置键仍然走安全模型校验，不得借白名单绕过
+        assert!(!is_ui_preference("master_password_hash"));
+        assert!(!is_ui_preference("wrapped_dek_m"));
+        assert!(!is_ui_preference("security_version"));
+        assert!(!is_ui_preference(""));
+    }
 }
 
 // 让 imports 不 warning（有的用了有的没用到）

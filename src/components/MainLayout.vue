@@ -16,6 +16,9 @@ import { RouterView } from "vue-router";
 import logo from "@/assets/logo.png";
 
 const router = useRouter();
+// ===== Batch 3（v0.4.3）：顶部新版本提醒（只发现，不下载不安装）=====
+import { autoCheckUpdate } from "../lib/update-check";
+const updateAvailableVersion = ref<string>("");
 const route = useRoute();
 const appStore = useAppStore();
 const widgetStore = useWidgetStore();
@@ -26,6 +29,19 @@ const showTrash = ref(false);
 // P0-#Y#FIX#VERSION#DISPLAY：版本号（启动时调一次）
 // 用户看这个判断 exe 是不是最新的
 const versionInfo = ref<string>("");
+// Batch 3：启动后延迟 5s 做一次节流自动检查（24h 一次、可关闭、失败静默、无网络不影响启动）
+void (async () => {
+  await new Promise((r) => setTimeout(r, 5000));
+  try {
+    const outcome = await autoCheckUpdate();
+    if (outcome && outcome.status === "available" && outcome.version) {
+      updateAvailableVersion.value = outcome.version;
+    }
+    // up-to-date / error（离线/超时/元数据错误）：静默，不显示任何虚假状态
+  } catch (e) {
+    console.warn("[update-check] 自动检查失败（静默）", e);
+  }
+})();
 // 验收便携测试版徽章（R：界面明确标注，防与正式版混淆）
 const isTestEdition = ref(false);
 void getAppEdition().then((e) => { isTestEdition.value = e === "acceptance"; }).catch(() => {});
@@ -83,6 +99,7 @@ const toggleMini = async () => {
 //       拖动中每秒上百次 IPC 调用把 WebView 队列打满 → 主线程卡死 → "未响应"
 // 修复：拖动中完全冻结 IPC，拖动结束统一做一次"位置持久化 + 边缘检测"
 let unlistenMove: (() => void) | null = null;
+let unlistenResize: (() => void) | null = null;
 let unlistenForceExpand: (() => void) | null = null;
 
 // ===== 拖动：使用共享的 useWindowDrag 组合式函数 =====
@@ -181,13 +198,21 @@ onMounted(() => {
     try {
       // 修复 P0-#Y：恢复 tauri://move 监听 + 500ms debounce 保存位置
       // 拖动期间 tauri://move 每秒触发 60+ 次，debounce 500ms 兜住 IPC 风暴
-      let moveDebounce: number | null = null;
-      unlistenMove = await listen("tauri://move", () => {
-        if (moveDebounce) clearTimeout(moveDebounce);
-        moveDebounce = window.setTimeout(() => {
+      // 修复 A1（v0.4.3）：增加 tauri://resize（tauri 2.12.1 源码常量实证）——
+      //   之前只有 move 触发保存，用户"只拖边框改尺寸、不动位置"时新尺寸永不持久化。
+      //   move/resize 共用同一 debounce 防双重 IPC；
+      //   程序化调整（迷你/完整切换）由 widget store 的 geometryTransition 抑制，
+      //   不会把切换过程的几何写进用户保存值（doSavePosition 首行守卫）。
+      let geoDebounce: number | null = null;
+      const scheduleGeometrySave = () => {
+        if (geoDebounce) clearTimeout(geoDebounce);
+        geoDebounce = window.setTimeout(() => {
+          geoDebounce = null;
           widgetStore.savePositionNow();
         }, 500);
-      });
+      };
+      unlistenMove = await listen("tauri://move", scheduleGeometrySave);
+      unlistenResize = await listen("tauri://resize", scheduleGeometrySave);
       unlistenForceExpand = await listen("widget:force-expand", async () => {
         await widgetStore.forceExpand();
       });
@@ -202,6 +227,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   unlistenMove?.();
+  unlistenResize?.();
   unlistenForceExpand?.();
   // ✅ 泄漏修复：与 onMounted 中的 addEventListener 成对移除
   window.removeEventListener("open-trash", onOpenTrash);
@@ -268,6 +294,16 @@ onUnmounted(() => {
           <div class="titlebar-version" :title="`编译时间：${versionInfo || '加载中'}`">
             {{ versionInfo || '...' }}
           </div>
+          <!-- Batch 3：发现新版本 → 轻量提醒（点击进设置「高级与更新」，走既有手动更新流程） -->
+          <button
+            v-if="updateAvailableVersion"
+            class="titlebar-update-badge"
+            data-interactive
+            :title="`发现新版本 v${updateAvailableVersion}，点击前往更新页面`"
+            @click="router.push('/settings?tab=advanced')"
+          >
+            ✨ 发现新版本 v{{ updateAvailableVersion }}
+          </button>
         </div>
         <div class="titlebar-right">
           <button class="titlebar-btn" title="缩小为图标列" @click="toggleMini" data-interactive>
@@ -497,6 +533,18 @@ onUnmounted(() => {
   -webkit-text-fill-color: transparent;
   letter-spacing: 0.3px;
 }
+.titlebar-update-badge {
+  margin-left: 8px;
+  border: 1px solid rgba(111, 208, 160, 0.5);
+  background: rgba(111, 208, 160, 0.12);
+  color: #6fd0a0;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 9px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.titlebar-update-badge:hover { background: rgba(111, 208, 160, 0.22); }
 .titlebar-version {
   margin-left: 8px;
   padding: 1px 6px;

@@ -408,6 +408,12 @@ input, select, button, textarea {
 
 /* ===== View Header 响应式：窗口拉大时标题区更醒目 ===== */
 /* 中等宽度（600+）：icon 大、title 字号略增 */
+/* 窄窗（≤419）：标题独占一行，操作按钮换到第二行，避免标题被挤成竖排 */
+@media (max-width: 419px) {
+  .view-header { flex-wrap: wrap; row-gap: 10px; }
+  .view-header-actions { width: 100%; justify-content: flex-end; }
+}
+
 @media (min-width: 600px) {
   .view-header { margin-bottom: 16px; gap: 14px; }
   .view-icon { width: 44px; height: 44px; font-size: 22px; border-radius: 13px; }

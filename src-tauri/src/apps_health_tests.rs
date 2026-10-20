@@ -220,3 +220,112 @@ fn t_ah07_fixture_cleanup_idempotent() {
     assert_eq!(listed[0].id, real);
     fs::remove_file(&exe).ok();
 }
+
+// ============ P0-A（v0.4.3 验收）：失效判定严格区分「真实失效」与「检测失败」 ============
+
+/// 用 PowerShell 创建真实快捷方式（与生产解析同一 COM 组件）
+fn make_lnk(target: &str, lnk_path: &std::path::Path) {
+    let ps = format!(
+        "$s = (New-Object -ComObject WScript.Shell).CreateShortcut('{}'); $s.TargetPath = '{}'; $s.Save();",
+        lnk_path.to_string_lossy().replace('\'', "''"),
+        target.replace('\'', "''"),
+    );
+    let st = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &ps])
+        .status()
+        .expect("创建 lnk 失败");
+    assert!(st.success());
+}
+
+#[test]
+fn t_ah_p0a1_中文目标_UTF8解析_判定可用() {
+    // 中文目录 + 中文文件名：编码正确时 exists()=true → ok
+    let root = std::env::temp_dir().join(format!("drawer-p0a-cn-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(root.join("中文 目录")).unwrap();
+    let exe = root.join("中文 目录").join("测试程序.exe");
+    fs::write(&exe, b"MZ").unwrap();
+    let lnk = root.join("中文快捷方式.lnk");
+    make_lnk(exe.to_string_lossy().as_ref(), &lnk);
+    let (kind, target) =
+        crate::commands::apps::classify_one(lnk.to_string_lossy().as_ref(), "app");
+    assert_eq!(kind, "ok", "中文目标必须判定可用（编码修复回归），target={:?}", target);
+    let t = target.unwrap();
+    assert!(!t.contains('\u{fffd}'), "解析结果不得含乱码替换符: {}", t);
+    fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn t_ah_p0a2_目标缺失的lnk_归需要确认_绝不推荐清退() {
+    // 真实 .lnk，但目标文件不存在（模拟被卸载或路径变更）
+    let root = std::env::temp_dir().join(format!("drawer-p0a-gone-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let missing = root.join("missing-app.exe");
+    let lnk = root.join("stale.lnk");
+    make_lnk(missing.to_string_lossy().as_ref(), &lnk);
+    let (kind, _) =
+        crate::commands::apps::classify_one(lnk.to_string_lossy().as_ref(), "app");
+    assert_eq!(
+        kind, "uncertain",
+        "lnk 目标缺失必须归「需要确认」，不得 fixed_missing（P0-A 验收红线）"
+    );
+    fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn t_ah_p0a3_非lnk的固定盘缺失_仍为真实失效() {
+    // 直接路径（用户手动添加/扫描直入的 exe）缺失 → 固定盘 → fixed_missing 允许
+    let gone = r"C:\definitely-not-exist-p0a\app.exe";
+    let (kind, _) = crate::commands::apps::classify_one(gone, "app");
+    assert_eq!(kind, "fixed_missing", "非 lnk 的真实缺失仍应可清退");
+}
+
+#[test]
+fn t_ah_p0a4_网络与未知盘_保护() {
+    let (kind, _) = crate::commands::apps::classify_one(r"\\nas\share\app.exe", "app");
+    assert!(
+        matches!(kind, "network_offline" | "uncertain"),
+        "UNC 必须保护，实际 {kind}"
+    );
+    let (kind2, _) = crate::commands::apps::classify_one(r"Q:\apps\gone.exe", "app");
+    assert_eq!(kind2, "uncertain", "盘符不存在 → 不确定，不得清退");
+}
+
+#[test]
+fn t_ah_p0a5_目标可信性判定() {
+    use crate::commands::apps::is_plausible_target;
+    assert!(is_plausible_target(r"C:\Apps\a.exe"));
+    assert!(is_plausible_target(r"d:\中文\程序.exe"));
+    assert!(is_plausible_target(r"\\nas\share\a.exe"));
+    assert!(!is_plausible_target("")); // 空
+    assert!(!is_plausible_target("explorer.exe")); // 相对
+    assert!(!is_plausible_target(r"{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\app.exe")); // CLSID
+    // 乱码：含替换符 U+FFFD（GBK 字节按 UTF-8 解码的典型产物）
+    assert!(!is_plausible_target("D:\\AI\\\u{FFFD}\\\u{FFFD}\\app.exe"));
+    assert!(!is_plausible_target("steam://rungameid/123")); // 协议
+}
+
+#[test]
+fn t_ah_p0a6_协议与网址入口_恒可用() {
+    let (kind, _) = crate::commands::apps::classify_one("https://example.com", "url");
+    assert_eq!(kind, "ok", "URL 恒可用");
+}
+
+#[test]
+fn t_ah_p0a7_解析失败的空目标_归需要确认() {
+    // 不存在该 lnk 文件 → .lnk 分支不触发（exists=false）→ 走通用路径：
+    // 盘符存在但文件缺失 → fixed_missing（真实缺失，允许）。
+    // 这里验证"lnk 文件本身不存在"时不会误入 uncertain 死循环
+    let (kind, _) =
+        crate::commands::apps::classify_one(r"C:\no-such-dir-p0a\x.lnk", "app");
+    assert_eq!(kind, "fixed_missing", "非存在的 lnk 文件路径按普通缺失处理");
+}
+
+#[test]
+fn t_ah_p0a8_快捷方式与网址入口不参与按名重定位() {
+    use crate::commands::apps::is_relocatable_entry;
+    assert!(is_relocatable_entry("exe"));
+    assert!(is_relocatable_entry("ps1"));
+    assert!(is_relocatable_entry("")); // 无扩展名的直接入口
+    assert!(!is_relocatable_entry("lnk"), "快捷方式禁止按名重定位（会错绑其它程序）");
+    assert!(!is_relocatable_entry("url"), "网址入口禁止按名重定位");
+}

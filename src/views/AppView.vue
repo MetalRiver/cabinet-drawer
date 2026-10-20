@@ -4,7 +4,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useAppStore } from "../stores/app";
 import { useSoftwareStore } from "../stores/software";
-import { type ScannedApp, relinkApp, openAppLocation, pickPath, getAppEdition } from "../api";
+import { type ScannedApp, relinkApp, openAppLocation, pickPath, getAppEdition, readIconAsDataUrl, restoreFromTrash, perfProbeEnabled, perfProbeReport } from "../api";
 import ConfirmInline from "../components/ConfirmInline.vue";
 import StatusInline from "../components/settings/StatusLine.vue";
 
@@ -322,6 +322,58 @@ const KIND_LABELS: Record<string, string> = {
   uncertain: "状态不确定（保护）",
 };
 
+// ===== U2：失效治理——用户可读的检查界面 =====
+const invalidReasons = ref<Set<number>>(new Set());
+function toggleInvalidReason(id: number) {
+  const next = new Set(invalidReasons.value);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  invalidReasons.value = next;
+}
+const invalidFixedCount = computed(
+  () => softwareStore.invalidItems.filter((i) => i.kind === "fixed_missing").length
+);
+const invalidProtectedCount = computed(
+  () => softwareStore.invalidItems.length - invalidFixedCount.value
+);
+const invalidSummary = computed(() => {
+  const n = softwareStore.invalidItems.length;
+  if (n === 0) return "未发现需要处理的记录";
+  return `真实缺失 ${invalidFixedCount.value} 条 · 无法确认 ${invalidProtectedCount.value} 条（受保护，不可清退）`;
+});
+function invalidIssue(it: { kind: string }): string {
+  switch (it.kind) {
+    case "fixed_missing":
+      return "程序文件已不存在，点击无法启动";
+    case "network_offline":
+      return "网络位置暂时连不上";
+    case "removable_offline":
+      return "移动盘 / 光盘当前不在位";
+    default:
+      return "无法确认这个入口当前是否可用";
+  }
+}
+function invalidAdvice(it: { kind: string }): string {
+  switch (it.kind) {
+    case "fixed_missing":
+      return "建议：重新关联程序；确认不用了再移入回收站（可恢复）";
+    case "network_offline":
+      return "建议：连上网络后点「重新检查」";
+    case "removable_offline":
+      return "建议：接回磁盘后点「重新检查」";
+    default:
+      return "建议：先重新关联，确认后再处理；不推荐直接清退";
+  }
+}
+async function relinkInvalid(item: unknown) {
+  await relinkMissing(item);
+  await softwareStore.loadInvalidApps();
+}
+function goTrashFromPanel() {
+  showInvalidPanel.value = false;
+  window.dispatchEvent(new CustomEvent("open-trash"));
+}
+
 function toggleInvalidPanel() {
   showInvalidPanel.value = !showInvalidPanel.value;
   invalidBatchResult.value = null;
@@ -414,6 +466,29 @@ const debugSample = computed(() => {
 });
 
 onMounted(() => {
+  // P1-C 测量（仅测试版 + 环境变量开关；正式版恒 false）
+  void perfProbeEnabled()
+    .then((on) => {
+      perfProbe.value = on;
+      if (on && "PerformanceObserver" in window) {
+        try {
+          new PerformanceObserver((list) => {
+            for (const e of list.getEntries()) perfLongTasks.push(Math.round(e.duration));
+          }).observe({ entryTypes: ["longtask"] });
+        } catch {}
+      }
+      // 测量模式：无需手动点「扫描」，进入软件区后自动跑一次默认扫描，
+      // 减少 GUI 操作对帧率的干扰（仅测试版开关生效）
+      if (on) {
+        void perfProbeReport(JSON.stringify({ stage: "enabled", at: new Date().toISOString() })).catch(
+          (e) => console.warn("[perf] enabled-marker failed", e)
+        );
+        setTimeout(() => {
+          if (!showScanModal.value) void openScan();
+        }, 2500);
+      }
+    })
+    .catch(() => {});
   // 修复 P1：fire-and-forget，不再 await，避免首次切到该 tab 时整个 setup 阻塞
   // IPC 慢的 view 不应该让路由组件等数据，应该先渲染骨架（空态）再异步填充
   void softwareStore.loadCategories();
@@ -603,6 +678,54 @@ function iconSrc(iconPath: string | null | undefined): string {
 
 // 用户反馈：hash 颜色难看，删了，改用类型本身辨识
 // 应用 → 💻 灰底、网址 → 🔗 灰底、文件夹 → 📁 灰底、文档 → 📄 灰底、其他 → 📦 灰底
+// Batch 2.2 验收修正：长来源简写（"开始菜单(所有用户)"占两行不可接受）；
+// 完整来源仍保留在 title 悬停与来源徽标原始值中
+const SOURCE_SHORT: Record<string, string> = {
+  "开始菜单": "菜单",
+  "开始菜单(所有用户)": "公共菜单",
+  "桌面": "桌面",
+  "桌面(公共)": "公共桌面",
+  "Program Files": "PF",
+  "Program Files (x86)": "PF x86",
+  "PATH": "PATH",
+  "自定义目录": "自定义",
+  "Store/应用": "Store",
+};
+function shortSource(s: string): string {
+  return SOURCE_SHORT[s] ?? s;
+}
+
+// Batch 2.2 验收修正：扫描弹窗图标改走 data-URL 通道（与软件库同源），
+// 不依赖 asset 协议 scope 配置。
+const scanIconDataUrls = ref<Record<string, string>>({});
+async function loadScanIcons() {
+  const t0 = performance.now();
+  try {
+    const withIcons = scannedApps.value.filter((a) => a.icon_path);
+    const results = await Promise.allSettled(
+      withIcons.map(async (a) => {
+        const url = await readIconAsDataUrl(a.icon_path);
+        return { path: a.path, url };
+      })
+    );
+    const map: Record<string, string> = {};
+    for (const r of results) {
+      if (r.status === "fulfilled" && r.value.url) map[r.value.path] = r.value.url;
+    }
+    scanIconDataUrls.value = map;
+    if (perfProbe.value) {
+      perfIconsReadyMs.value = Math.round(performance.now() - t0);
+      perfIconCount.value = Object.keys(map).length;
+      perfIconBytes.value = Object.values(map).reduce((n, u) => n + u.length, 0);
+    }
+  } catch (e) {
+    console.warn("[scan] 图标 data-URL 加载失败", e);
+  }
+}
+function scanIconUrl(a: ScannedApp): string {
+  return scanIconDataUrls.value[a.path] || iconSrc(a.icon_path);
+}
+
 function scanTypeIcon(a: ScannedApp): string {
   const t = a.app_type || "app";
   if (t === "url") return "🔗";
@@ -612,55 +735,154 @@ function scanTypeIcon(a: ScannedApp): string {
   return a.is_launchable ? "💻" : "📦";
 }
 
-// 用户反馈：扫描顶部加 checkbox
-// 4 种类型：launchable（可启动项）/ folder / document / other
-const SCAN_TYPE_FILTERS = [
-  { key: "launchable", label: "启动项", icon: "💻" },
-  { key: "folder",     label: "文件夹", icon: "📁" },
-  { key: "document",   label: "文档",   icon: "📄" },
-  { key: "other",      label: "其他",   icon: "📦" },
-] as const;
+// ===== Batch 2.2：扫描弹窗（推荐/高级 + 分组 + 状态词）=====
+// 措辞约定：只用「已识别 / 需要确认」描述入口的解析状态，
+// 不使用"可信度/安全等级"字样——分组不构成对软件安全性的判断。
+// 默认零勾选；「选择全部推荐项」是显式按钮。
+const scanMode = ref<"recommended" | "advanced">("recommended");
 
-// 4 个 checkbox 状态（默认全选）
-const scanTypeFilter = ref<Record<string, boolean>>({
-  launchable: true,
-  folder: false,    // 默认**不**显示文件夹（噪音大、用户主要关心启动项）
-  document: false,  // 同上
-  other: false,     // 同上
-});
+// U2：扫描结果视图切换（列表 / 卡片），真实生效并记住选择
+const SCAN_VIEW_KEY = "drawer_scan_view";
+const scanViewMode = ref<"list" | "card">(
+  (() => {
+    try {
+      return localStorage.getItem(SCAN_VIEW_KEY) === "card" ? "card" : "list";
+    } catch {
+      return "list";
+    }
+  })()
+);
+function setScanView(m: "list" | "card") {
+  scanViewMode.value = m;
+  try {
+    localStorage.setItem(SCAN_VIEW_KEY, m);
+  } catch {}
+}
+/** 行/卡状态：✓ 选中 / 在库 / 待恢复 / 需确认 */
+function scanRowStatus(a: ScannedApp): string {
+  if (selectedPaths.value.has(a.path)) return "✓";
+  if (a.already_imported) return "在库";
+  if (a.in_trash) return "待恢复";
+  if (a.status === "needs_confirmation") return "需确认";
+  return "";
+}
+/** 状态色：选中=强调色 / 在库=绿 / 待恢复=琥珀 / 需确认=蓝（一眼可分辨） */
+function scanRowStatusClass(a: ScannedApp): string {
+  if (selectedPaths.value.has(a.path)) return "st-sel";
+  if (a.already_imported) return "st-ok";
+  if (a.in_trash) return "st-trash";
+  if (a.status === "needs_confirmation") return "st-confirm";
+  return "";
+}
 
-// 按类型计数（用于 checkbox 后面的数字）
-const countByType = computed(() => {
-  const c = { launchable: 0, folder: 0, document: 0, other: 0 };
-  for (const a of scannedApps.value) {
-    if (a.is_launchable) c.launchable++;
-    else if (a.app_type === "folder") c.folder++;
-    else if (a.app_type === "document") c.document++;
-    else c.other++;
-  }
-  return c;
-});
-
-// 扫描结果：搜索过滤
-// 扫描结果：搜索 + 类型过滤
-const filteredScannedApps = computed(() => {
-  let list = scannedApps.value;
-  // 用户反馈：checkbox 过滤
-  list = list.filter((a) => {
-    if (a.is_launchable) return scanTypeFilter.value.launchable;
-    if (a.app_type === "folder") return scanTypeFilter.value.folder;
-    if (a.app_type === "document") return scanTypeFilter.value.document;
-    return scanTypeFilter.value.other;
-  });
+function matchesScanSearch(a: ScannedApp): boolean {
   const q = scanSearch.value.trim().toLowerCase();
-  if (!q) return list;
-  return list.filter(
-    (a) =>
-      a.name.toLowerCase().includes(q) ||
-      a.path.toLowerCase().includes(q) ||
-      a.source.toLowerCase().includes(q)
+  if (!q) return true;
+  return (
+    a.name.toLowerCase().includes(q) ||
+    a.path.toLowerCase().includes(q) ||
+    (a.target || "").toLowerCase().includes(q) ||
+    a.source.toLowerCase().includes(q)
   );
-});
+}
+
+// 推荐应用：已识别的软件入口（开始菜单/桌面）
+const recommendedApps = computed(() =>
+  scannedApps.value.filter(
+    (a) =>
+      a.status !== "needs_confirmation" &&
+      a.app_type === "app" &&
+      matchesScanSearch(a)
+  )
+);
+// 网址：独立类型，不混入推荐软件
+const urlCandidates = computed(() =>
+  scannedApps.value.filter((a) => a.app_type === "url" && matchesScanSearch(a))
+);
+// 需要确认：解析失败/失效目标/.ps1 等无法自动确认的入口
+const needsConfirmApps = computed(() =>
+  scannedApps.value.filter(
+    (a) =>
+      a.status === "needs_confirmation" &&
+      a.app_type === "app" &&
+      matchesScanSearch(a)
+  )
+);
+
+// Store 应用：UWP/MSIX 打包应用（Batch 2.4）
+const storeApps = computed(() =>
+  scannedApps.value.filter((a) => a.app_type === "uwp" && matchesScanSearch(a))
+);
+
+const scanAnyVisible = computed(
+  () =>
+    recommendedApps.value.length +
+      urlCandidates.value.length +
+      storeApps.value.length +
+      needsConfirmApps.value.length >
+    0
+);
+
+function selectAllRecommended() {
+  for (const a of recommendedApps.value) {
+    if (isScanSelectable(a)) selectedPaths.value.add(a.path);
+  }
+  selectedPaths.value = new Set(selectedPaths.value); // 触发响应式
+}
+
+function clearScanSelection() {
+  selectedPaths.value = new Set();
+}
+
+function toggleSelect(a: ScannedApp) {
+  if (!isScanSelectable(a)) {
+    // P1-B：已在库 / 在回收站都不参与批量导入，给出明确下一步
+    appStore.showClipToast(
+      "info",
+      a.in_trash
+        ? `「${a.name}」在回收站中，点该行的「↩ 恢复此软件」即可重新入库（保留原分类）`
+        : `「${a.name}」已在软件库中，无需重复导入`
+    );
+    return;
+  }
+  if (selectedPaths.value.has(a.path)) {
+    selectedPaths.value.delete(a.path);
+  } else {
+    selectedPaths.value.add(a.path);
+  }
+  selectedPaths.value = new Set(selectedPaths.value); // 触发响应式
+}
+
+/** P1-B：把扫描命中的回收站条目显式恢复（不自动恢复、不新建重复条目）。
+ *  恢复的是原记录本身：分类 / 使用次数 / 密码关联全部保留。 */
+const restoringPath = ref<string | null>(null);
+async function restoreTrashedCandidate(a: ScannedApp) {
+  if (!a.trash_id) {
+    appStore.showClipToast("info", "未找到对应的回收站记录，请重新扫描后再试");
+    return;
+  }
+  restoringPath.value = a.path;
+  try {
+    const n = await restoreFromTrash("apps", a.trash_id);
+    if (!n) {
+      appStore.showClipToast("info", "该记录已不在回收站（可能已被清理），请重新扫描");
+    } else {
+      appStore.showClipToast("success", `已恢复「${a.name}」到软件库（保留原分类与使用记录）`);
+    }
+    await softwareStore.loadItems();
+    appStore.refreshTrashCount();
+    // 当前候选就地转为「已在库」，避免再被勾选或再次提示恢复
+    a.in_trash = false;
+    a.trash_id = null;
+    a.already_imported = n > 0;
+    selectedPaths.value.delete(a.path);
+    selectedPaths.value = new Set(selectedPaths.value);
+  } catch (e) {
+    appStore.showClipToast("info", "恢复失败：" + String(e));
+  } finally {
+    restoringPath.value = null;
+  }
+}
 
 // 软件区展示：直接用 store 的客户端 filter 结果（搜索/分类/类型都已在 store 内处理）
 const filteredItems = computed(() => softwareStore.filteredItems);
@@ -749,23 +971,191 @@ const showSkeleton = computed(
   () => !softwareStore.hasLoaded || (softwareStore.loading && softwareStore.items.length === 0)
 );
 
-// 打开扫描
+import { mergeScanCandidates, applyScanOutcomeIfCurrent, isScanSelectable } from "../lib/scan-merge";
+// ===== Batch 2.3：扫描进度监听（真实阶段反馈，来自后端 scan:progress 事件）=====
+const scanProgress = ref<{ stage: string; done: number; total: number } | null>(null);
+const advIncludePath = ref(false); // PATH 开关：默认关、不记住（每次进入弹窗重置）
+const advIncludeUwp = ref(false); // Store 应用开关：默认关、不记住（Batch 2.4 受控接入）
+let unlistenScanProgress: (() => void) | null = null;
+// Batch 2.4（D1/D3）：扫描会话令牌 + 在飞守卫——
+// D1 旧缺陷：openScan 无守卫，弹窗关闭后立刻重开会与在飞 IPC 并发；
+// D3 旧缺陷：旧任务迟到结果会合入新任务候选列表。
+let scanSession = 0;
+function nextScanSession(): number {
+  scanSession += 1;
+  return scanSession;
+}
+
+function scanProgressText(): string {
+  const p = scanProgress.value;
+  if (!p) return "正在准备扫描…";
+  if (p.stage === "enumerate") return `枚举入口…已发现 ${p.done} 个`;
+  if (p.stage === "enumerate-path") return `PATH 枚举…已发现 ${p.done} 个`;
+  if (p.stage === "resolve") return `解析快捷方式目标（批 ${p.done}/${p.total}）…`;
+  if (p.stage === "icons") return "提取图标…";
+  return "扫描中…";
+}
+
+async function listenScanProgress() {
+  unlistenScanProgress?.();
+  try {
+    const { listen } = await import("@tauri-apps/api/event");
+    unlistenScanProgress = await listen<{
+      stage: string;
+      done: number;
+      total: number;
+    }>("scan:progress", (e) => {
+      // Batch 2.4 收口：非扫描状态下忽略进度事件（旧任务迟到事件不得覆盖新任务状态）
+      if (!scanning.value) return;
+      scanProgress.value = e.payload;
+    });
+  } catch (e) {
+    console.warn("scan progress 监听失败", e);
+  }
+}
+
+function applyScanOutcome(
+  outcome: {
+    apps: ScannedApp[];
+    cancelled: boolean;
+    truncated: boolean;
+  },
+  session: number
+) {
+  // Batch 2.4（D3）：非当前会话的结果（旧任务迟到返回）直接丢弃
+  const current = applyScanOutcomeIfCurrent(outcome, session, scanSession);
+  if (!current) {
+    console.warn("[scan] 丢弃旧会话的迟到结果（session", session, "≠", scanSession, "）");
+    return;
+  }
+  scannedApps.value = mergeScanCandidates(scannedApps.value, current.apps);
+  if (current.cancelled) {
+    appStore.showClipToast("info", "扫描已取消：保留已完成部分");
+  }
+  if (current.truncated) {
+    appStore.showClipToast(
+      "info",
+      "目录内容超过扫描上限（20000 项），结果可能不完整"
+    );
+  }
+}
+
+// ===== P1-C（v0.4.3 验收）：扫描列表滚动性能测量脚手架 =====
+// 仅测试版 + DRAWER_PERF_PROBE=1 生效（正式版命令恒 false，不执行任何测量代码）。
+// 目的：在真实 WebView2 里拿到「图标加载完成后的滚动帧间隔」基线，
+// 而不是用静态推断代替测量。结果写入 setting perf.scan_probe 供隔离机读取。
+const perfProbe = ref(false);
+const perfIconsReadyMs = ref(0);
+const perfIconCount = ref(0);
+const perfIconBytes = ref(0);
+const perfLongTasks: number[] = [];
+
+function perfPercentile(arr: number[], p: number): number {
+  if (!arr.length) return 0;
+  const a = [...arr].sort((x, y) => x - y);
+  return a[Math.min(a.length - 1, Math.floor(a.length * p))];
+}
+
+function sweepScrollFrames(el: HTMLElement, durationMs: number): Promise<number[]> {
+  return new Promise((resolve) => {
+    const frames: number[] = [];
+    const start = performance.now();
+    let last = start;
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(guard);
+      resolve(frames);
+    };
+    // 兜底：窗口一旦被系统判定遮挡，Chromium 会暂停 rAF（测量循环会挂死）。
+    // 超时后带已采集帧返回，保证结果一定落盘；帧数不足时数据本身会显示 count 偏低。
+    const guard = setTimeout(finish, durationMs + 2000);
+    const max = Math.max(0, el.scrollHeight - el.clientHeight);
+    const step = () => {
+      if (done) return;
+      const now = performance.now();
+      frames.push(now - last);
+      last = now;
+      const p = Math.min(1, (now - start) / durationMs);
+      el.scrollTop = Math.round(max * p);
+      if (p < 1) requestAnimationFrame(step);
+      else finish();
+    };
+    requestAnimationFrame(step);
+  });
+}
+
+async function runScanPerfProbe(scanMs: number) {
+  if (!perfProbe.value) return;
+  const body = document.querySelector<HTMLElement>(".modal-scan .modal-body");
+  if (!body) return;
+  await new Promise((r) => setTimeout(r, 800)); // 等首帧图标解码/布局稳定
+  try {
+    await perfProbeReport(JSON.stringify({ stage: "sweep-start", maxScroll: body.scrollHeight - body.clientHeight }));
+  } catch (e) { console.warn("[perf] marker failed", e); }
+  const warm = await sweepScrollFrames(body, 2400);
+  body.scrollTop = 0;
+  await new Promise((r) => setTimeout(r, 400));
+  const second = await sweepScrollFrames(body, 2400);
+  const frames = [...warm, ...second];
+  const result = {
+    at: new Date().toISOString(),
+    scanMs,
+    iconsReadyMs: perfIconsReadyMs.value,
+    iconCount: perfIconCount.value,
+    iconBytes: perfIconBytes.value,
+    candidates: scannedApps.value.length,
+    domRows: body.querySelectorAll(".scan-cell").length,
+    frames: {
+      count: frames.length,
+      p50: +perfPercentile(frames, 0.5).toFixed(1),
+      p95: +perfPercentile(frames, 0.95).toFixed(1),
+      max: +Math.max(...frames).toFixed(1),
+      over20ms: frames.filter((f) => f > 20).length,
+      over33ms: frames.filter((f) => f > 33).length,
+    },
+    longTasks: perfLongTasks.slice(0, 40),
+  };
+  try {
+    await perfProbeReport(JSON.stringify(result, null, 1));
+  } catch (e) {
+    console.warn("[perf] probe persist failed", e);
+  }
+}
+
+// 打开扫描（默认推荐扫描，自动执行）
 async function openScan() {
+  if (scanning.value) {
+    // Batch 2.4（D1）：上一任务 IPC 仍在飞时拒绝重入
+    appStore.showClipToast("info", "上一次扫描尚未结束，请稍候");
+    return;
+  }
   showScanModal.value = true;
   scanning.value = true;
   scannedApps.value = [];
   selectedPaths.value = new Set();
   scanSearch.value = "";
-  scanTargetCategoryId.value = undefined; // 重置目标分类
-  scanTargetDropdownOpen.value = false; // 关闭下拉
+  scanMode.value = "recommended";
+  advIncludePath.value = false; // PATH 开关默认关、不记住
+  advIncludeUwp.value = false; // Store 开关默认关、不记住
+  scanTargetCategoryId.value = undefined;
+  scanTargetDropdownOpen.value = false;
+  void listenScanProgress();
+  const session = nextScanSession();
+  const scanT0 = performance.now();
   try {
-    const result = await softwareStore.scan();
-    scannedApps.value = result;
+    const outcome = await softwareStore.scan(scanMode.value);
+    applyScanOutcome(outcome, session);
+    void loadScanIcons().then(() =>
+      runScanPerfProbe(Math.round(performance.now() - scanT0))
+    );
   } catch (e) {
     console.error("scan failed", e);
     appStore.showClipToast("info", "扫描失败：" + String(e));
   } finally {
     scanning.value = false;
+    scanProgress.value = null;
   }
 }
 
@@ -773,6 +1163,87 @@ function closeScan() {
   showScanModal.value = false;
   scanSearch.value = "";
   scanTargetDropdownOpen.value = false;
+  // 若扫描仍在进行，通知后端终止（返回后由 finally 收尾）
+  if (scanning.value) {
+    void softwareStore.cancelScan();
+  }
+  unlistenScanProgress?.();
+  unlistenScanProgress = null;
+}
+
+// Batch 2.2/2.3：模式切换。推荐=自动执行；高级=仅显示控制面板，
+// 由用户主动选择扫什么（PF / +PATH / 自定义目录），绝不自动跑。
+async function switchScanMode(mode: "recommended" | "advanced") {
+  if (scanMode.value === mode || scanning.value) return;
+  scanMode.value = mode;
+  selectedPaths.value = new Set();
+  if (mode === "recommended") {
+    scanning.value = true;
+    const session = nextScanSession();
+    try {
+      const outcome = await softwareStore.scan("recommended");
+      applyScanOutcome(outcome, session);
+    void loadScanIcons();
+    } catch (e) {
+      console.error("scan failed", e);
+      appStore.showClipToast("info", "扫描失败：" + String(e));
+    } finally {
+      scanning.value = false;
+      scanProgress.value = null;
+    }
+  }
+}
+
+// Batch 2.3：高级扫描——Program Files（可选连带 PATH）
+async function runAdvancedScan() {
+  if (scanning.value) return;
+  scanning.value = true;
+  scanProgress.value = null;
+  const session = nextScanSession();
+  try {
+    const outcome = await softwareStore.scan(
+      "advanced",
+      advIncludePath.value,
+      advIncludeUwp.value
+    );
+    applyScanOutcome(outcome, session);
+    void loadScanIcons();
+  } catch (e) {
+    console.error("advanced scan failed", e);
+    appStore.showClipToast("info", "高级扫描失败：" + String(e));
+  } finally {
+    scanning.value = false;
+    scanProgress.value = null;
+  }
+}
+
+// Batch 2.3：自定义目录扫描（C/D/E 等本地磁盘；便携软件入口）
+async function runCustomDirScan() {
+  if (scanning.value) return;
+  const p = await pickPath({ mode: "folder", title: "选择要扫描的目录（便携软件所在文件夹）" });
+  if (!p) return;
+  scanning.value = true;
+  scanProgress.value = null;
+  const session = nextScanSession();
+  try {
+    const outcome = await softwareStore.scanCustomDir(p);
+    applyScanOutcome(outcome, session);
+    void loadScanIcons();
+  } catch (e) {
+    appStore.showClipToast("info", "目录扫描失败：" + String(e));
+  } finally {
+    scanning.value = false;
+    scanProgress.value = null;
+  }
+}
+
+// Batch 2.3：取消（真正终止——后端在遍历/解析批边界停止并返回部分结果）
+async function onCancelScan() {
+  try {
+    await softwareStore.cancelScan();
+  } catch (e) {
+    console.warn("cancel scan failed", e);
+  }
 }
 
 function toggleScanTargetDropdown() {
@@ -795,78 +1266,43 @@ const scanTargetLabel = computed(() => {
   return c ? { icon: c.icon, name: c.name } : { icon: "✨", name: "不分类" };
 });
 
-function toggleSelect(path: string) {
-  if (selectedPaths.value.has(path)) {
-    selectedPaths.value.delete(path);
-  } else {
-    selectedPaths.value.add(path);
-  }
-  selectedPaths.value = new Set(selectedPaths.value); // 触发响应式
-}
 
-function toggleSelectAll() {
-  if (selectedPaths.value.size === filteredScannedApps.value.length) {
-    selectedPaths.value = new Set();
-  } else {
-    selectedPaths.value = new Set(filteredScannedApps.value.map((a) => a.path));
-  }
-}
-
+// Batch 2.1：批量导入（幂等）——汇总展示 新增/已存在/回收站/失败
 async function confirmScan() {
-  // 用户反馈：用户只关心"启动项"，默认过滤掉文件夹/文档/其他
-  // 但 checkbox 取消的项也不导入——尊重用户选择
-  const toAdd = scannedApps.value.filter(
-    (a) => selectedPaths.value.has(a.path) && a.is_launchable
+  const selected = scannedApps.value.filter(
+    (a) => selectedPaths.value.has(a.path) && !a.already_imported
   );
-  if (toAdd.length === 0) {
-    appStore.showClipToast("info", "请至少勾选一个可启动的应用（.exe/.lnk/.url）");
+  if (selected.length === 0) {
+    appStore.showClipToast("info", "请先勾选要导入的软件（已在库中的条目无需导入）");
     return;
   }
-  let success = 0;
-  let failed: string[] = [];
-  let skipped: number = 0;
-  for (const a of toAdd) {
-    try {
-      await softwareStore.create({
-        name: a.name,
-        path: a.path,
-        iconPath: a.icon_path,
-        args: a.args,
-        // P0-#Y#FIX#SCAN#IMPORT：传递后端返回的 app_type/subtype，避免 create_app 重新推断时误判
-        appType: a.app_type,
-        appSubtype: a.app_subtype,
-        categoryId: scanTargetCategoryId.value,
-      });
-      success++;
-    } catch (e) {
-      failed.push(`${a.name}: ${e}`);
-    }
-  }
-  // 跳过未启动的（用户勾了但 is_launchable=false）
-  const skippedCount = scannedApps.value.filter(
-    (a) => selectedPaths.value.has(a.path) && !a.is_launchable
-  ).length;
-  if (skippedCount > 0) {
-    appStore.showClipToast(
-      "info",
-      `已导入 ${success} 个应用，跳过 ${skippedCount} 个非启动项（文件夹/文档/其他）`
+  scanning.value = true;
+  try {
+    const summary = await softwareStore.importScanned(
+      selected,
+      scanTargetCategoryId.value
     );
-  }
-  showScanModal.value = false;
-  scanTargetCategoryId.value = undefined; // 重置
-  scanTargetDropdownOpen.value = false; // 关闭下拉
-  // 关键：清空搜索 + 切回"全部"分类（如果目标分类被删则切回全部）
-  appStore.searchQuery = "";
-  if (scanTargetCategoryId.value == null) {
-    softwareStore.setCategory(null);
-  } else {
-    softwareStore.setCategory(scanTargetCategoryId.value);
-  }
-  if (failed.length > 0) {
-    appStore.showClipToast("info", `导入 ${success} 个，失败 ${failed.length} 个`);
-    console.warn("scan import failures:", failed);
-  } else {
-    appStore.showClipToast("success", `已导入 ${success} 个软件`);
+    await softwareStore.loadItems();
+    softwareStore.setCategory(scanTargetCategoryId.value ?? null);
+    const parts = [`新增 ${summary.added} 个`, `已存在跳过 ${summary.already_exists} 个`];
+    if (summary.in_trash > 0)
+      parts.push(`回收站已有 ${summary.in_trash} 个同身份记录（在扫描列表点「↩ 恢复此软件」）`);
+    if (summary.failed.length > 0) {
+      parts.push(`失败 ${summary.failed.length} 个`);
+      appStore.showClipToast("info", "导入完成：" + parts.join(" · "));
+      console.warn("scan import failures:", summary.failed);
+    } else {
+      appStore.showClipToast("success", "导入完成：" + parts.join(" · "));
+    }
+    showScanModal.value = false;
+    scanSearch.value = "";
+    scanTargetCategoryId.value = undefined;
+    scanTargetDropdownOpen.value = false;
+    appStore.searchQuery = "";
+  } catch (e) {
+    appStore.showClipToast("info", "导入失败：" + String(e));
+  } finally {
+    scanning.value = false;
   }
 }
 
@@ -1277,18 +1713,21 @@ async function confirmDeleteApp(id: number | null) {
       </div>
     </div>
 
-    <!-- v0.4.1 软件失效治理：集中列表（手动检查 / 自动重定位先行 / 保护分类不可清退 / 批量移入回收站） -->
+    <!-- U2：软件检查（用户可读；技术原因折叠在「查看原因」） -->
     <div v-if="showInvalidPanel" class="invalid-panel">
       <div class="invalid-panel-head">
-        <b>失效软件治理</b>
-        <span class="invalid-sub">
-          自动重定位优先；只有「固定盘缺失」可批量移入回收站（仅删除收录记录，不卸载程序、可从回收站恢复）
-        </span>
-        <button class="s-btn-mini tap" :disabled="invalidChecking" @click="runInvalidCheck" data-interactive>
-          {{ invalidChecking ? "检查中…" : "🔄 重新检查" }}
-        </button>
-        <button class="s-btn-mini tap" @click="toggleInvalidPanel" data-interactive>收起</button>
+        <div class="invalid-head-text">
+          <b>{{ softwareStore.invalidItems.length ? `${softwareStore.invalidItems.length} 条记录需要处理` : "软件检查" }}</b>
+          <span class="invalid-sub">{{ invalidSummary }}</span>
+        </div>
+        <div class="invalid-head-actions">
+          <button class="s-btn-mini tap" :disabled="invalidChecking" @click="runInvalidCheck" data-interactive>
+            {{ invalidChecking ? "检查中…" : "🔄 重新检查" }}
+          </button>
+          <button class="s-btn-mini tap" @click="toggleInvalidPanel" data-interactive>收起</button>
+        </div>
       </div>
+
       <div v-if="isTestEdition" class="invalid-toolbar" style="margin-top: 0;">
         <button class="s-btn-mini tap" :disabled="seedingFixtures" data-interactive @click="seedFixtures">
           {{ seedingFixtures ? "播种中…" : "🧪 播种验收测试数据" }}
@@ -1296,39 +1735,25 @@ async function confirmDeleteApp(id: number | null) {
         <button class="s-btn-mini tap" :disabled="clearingFixtures" data-interactive @click="resetFixtures">
           {{ clearingFixtures ? "重置中…" : "♻️ 重置测试数据" }}
         </button>
-        <span class="invalid-hint">仅作用于本测试版数据目录（[TEST] 前缀记录，软删除可恢复），不影响真实软件</span>
+        <span class="invalid-hint">仅作用于本测试版数据目录（[TEST] 前缀记录，软删除可恢复）</span>
       </div>
+
       <div v-if="softwareStore.invalidLoading" class="invalid-empty">检查中…</div>
       <div v-else-if="softwareStore.invalidItems.length === 0" class="invalid-empty">
-        ✅ 健康状态正常：没有失效记录（测试版可用上方按钮播种验收数据）
+        ✅ 全部正常：没有发现失效或需要确认的软件
       </div>
       <template v-else>
-        <div class="invalid-toolbar">
-          <button class="s-btn-mini tap" data-interactive @click="selectAllClearable">
-            全选可清退（{{ softwareStore.clearableInvalid.length }}）
-          </button>
-          <button
-            class="s-btn-mini invalid-trash-btn tap"
-            :disabled="selectedInvalidIds.size === 0 || invalidBatchBusy"
-            data-interactive
-            @click="invalidBatchConfirm = true"
-          >
-            🗑️ 移入回收站（{{ selectedInvalidIds.size }}）
-          </button>
-          <span class="invalid-hint">受保护分类（移动盘/网络/不确定）不可勾选</span>
+        <div class="inv-legend">
+          <span class="inv-tag missing">真实缺失 {{ invalidFixedCount }}</span>
+          <span class="inv-tag protected">无法确认 {{ invalidProtectedCount }} · 已保护</span>
         </div>
-        <ConfirmInline
-          v-if="invalidBatchConfirm"
-          :title="`将把选中的 ${selectedInvalidIds.size} 条收录记录移入回收站（可恢复）。不卸载任何 Windows 程序。确定继续吗？`"
-          confirm-text="移入回收站"
-          :loading="invalidBatchBusy"
-          @cancel="invalidBatchConfirm = false"
-          @confirm="confirmBatchTrash"
-        />
-        <StatusInline v-if="invalidBatchResult" tone="ok" :text="`✓ 已移入回收站 ${invalidBatchResult.moved} 条 ｜ 跳过（已在回收站）${invalidBatchResult.skipped} 条${invalidBatchResult.failed ? ` ｜ 失败 ${invalidBatchResult.failed} 条` : ''}`" />
-        <StatusInline v-if="invalidPanelError" tone="err" :text="invalidPanelError" />
         <div class="invalid-list">
-          <div v-for="it in softwareStore.invalidItems" :key="it.id" class="invalid-row">
+          <div
+            v-for="it in softwareStore.invalidItems"
+            :key="it.id"
+            class="inv-row"
+            :class="{ protected: it.kind !== 'fixed_missing' }"
+          >
             <label
               v-if="it.kind === 'fixed_missing'"
               class="invalid-check"
@@ -1340,17 +1765,59 @@ async function confirmDeleteApp(id: number | null) {
                 @change="toggleSelectInvalid(it.id)"
               />
             </label>
-            <span v-else class="invalid-shield" title="受保护：不提供清退操作">🛡️</span>
-            <div class="invalid-info">
-              <div class="invalid-name">{{ it.name }}</div>
-              <div class="invalid-path" :title="it.path">{{ it.path }}</div>
-              <div v-if="it.lnk_target" class="invalid-path" :title="it.lnk_target">↳ 目标：{{ it.lnk_target }}</div>
+            <span v-else class="invalid-shield" title="受保护：不提供清退操作">🛡</span>
+            <div class="inv-main">
+              <div class="inv-name">{{ it.name }}</div>
+              <div class="inv-issue">{{ invalidIssue(it) }}</div>
+              <div class="inv-advice">{{ invalidAdvice(it) }}</div>
+              <button
+                class="inv-reason-btn tap"
+                data-interactive
+                @click.stop="toggleInvalidReason(it.id)"
+              >{{ invalidReasons.has(it.id) ? "收起原因" : "查看原因" }}</button>
+              <div v-if="invalidReasons.has(it.id)" class="inv-details">
+                <div v-if="it.path">路径：<code>{{ it.path }}</code></div>
+                <div v-if="it.lnk_target">目标：<code>{{ it.lnk_target }}</code></div>
+                <div>检查结果：{{ KIND_LABELS[it.kind] || it.kind }}</div>
+              </div>
             </div>
-            <span class="invalid-kind" :class="{ clearable: it.kind === 'fixed_missing' }">
-              {{ KIND_LABELS[it.kind] || it.kind }}
-            </span>
+            <div class="inv-actions">
+              <button class="s-btn-mini tap" data-interactive @click.stop="relinkInvalid(it)">重新关联</button>
+              <button
+                v-if="(it.app_type || 'app') !== 'url'"
+                class="s-btn-mini tap"
+                data-interactive
+                @click.stop="openLocation(it)"
+              >打开位置</button>
+            </div>
           </div>
         </div>
+
+        <div class="inv-foot">
+          <button class="s-btn-mini tap" data-interactive @click="selectAllClearable">
+            全选可清退（{{ softwareStore.clearableInvalid.length }}）
+          </button>
+          <button
+            class="s-btn-mini s-btn-warn tap"
+            :disabled="selectedInvalidIds.size === 0 || invalidBatchBusy"
+            data-interactive
+            @click="invalidBatchConfirm = true"
+          >移入回收站（{{ selectedInvalidIds.size }}）</button>
+          <button class="s-btn-mini tap" data-interactive @click="goTrashFromPanel">
+            🗑️ 去回收站恢复
+          </button>
+          <span class="invalid-hint">只删除收录记录，不卸载任何 Windows 程序</span>
+        </div>
+        <ConfirmInline
+          v-if="invalidBatchConfirm"
+          :title="`将把选中的 ${selectedInvalidIds.size} 条收录记录移入回收站（可恢复）。不卸载任何 Windows 程序。确定继续吗？`"
+          confirm-text="移入回收站"
+          :loading="invalidBatchBusy"
+          @cancel="invalidBatchConfirm = false"
+          @confirm="confirmBatchTrash"
+        />
+        <StatusInline v-if="invalidBatchResult" tone="ok" :text="`✓ 已移入回收站 ${invalidBatchResult.moved} 条 ｜ 跳过（已在回收站）${invalidBatchResult.skipped} 条${invalidBatchResult.failed ? ` ｜ 失败 ${invalidBatchResult.failed} 条` : ''}`" />
+        <StatusInline v-if="invalidPanelError" tone="err" :text="invalidPanelError" />
       </template>
     </div>
 
@@ -1509,29 +1976,30 @@ async function confirmDeleteApp(id: number | null) {
                   class="app-icon-text is-emoji"
                 >{{ typeEmoji(item.app_type) }}</span>
               </div>
-              <div class="app-name" :title="item.name">{{ item.name }}</div>
-              <!-- P0-#Y#FIX#LABEL#FALLBACK：副标显示逻辑
-                   1. 有 subtype（细分）→ 显示细分 label（游戏 / Word / PDF / 工具...）
-                   2. 没 subtype（自动判失败或 url/folder）→ 显示一级 label（应用 / 网址 / 文件夹 / 文档）
-                   之前：url/folder 卡片下面完全是空（因为没 subtype）
-                   现在：url 卡片显示"网址"、folder 显示"文件夹"、document 显示"文档"或细分类（Word/Excel/...） -->
-              <div class="app-subtype">
-                {{ subtypeLabel(item.app_subtype) || typeLabel(item.app_type) }}
+              <!-- U2：名称区（最多两行）+ 次要信息 + 状态 chips（不遮挡名称） -->
+              <div class="app-text">
+                <div class="app-name" :title="item.name">{{ item.name }}</div>
+                <div class="app-subtype">
+                  {{ subtypeLabel(item.app_subtype) || typeLabel(item.app_type) }}
+                </div>
+                <div
+                  v-if="item.use_count > 0 || (item.available === false && (item.app_type || 'app') !== 'url')"
+                  class="app-meta"
+                >
+                  <span v-if="item.use_count > 0" class="app-chip app-chip-hot">🔥 {{ item.use_count }}</span>
+                  <span
+                    v-if="item.available === false && (item.app_type || 'app') !== 'url'"
+                    class="app-chip app-chip-warn"
+                    title="路径失效 / 应用不可用"
+                  >⚠ 路径失效</span>
+                </div>
               </div>
-              <div v-if="item.use_count > 0" class="app-badge">🔥 {{ item.use_count }}</div>
-              <!-- Phase 2D：路径失效状态角标（不自动删除，仅标示） -->
-              <div v-if="item.available === false && (item.app_type || 'app') !== 'url'" class="app-badge app-badge-missing" title="路径失效 / 应用不可用">⚠️ 路径失效</div>
-              <div class="app-actions" @click.stop>
-                <template v-if="item.available === false && (item.app_type || 'app') !== 'url'">
-                  <button class="app-action-btn" title="重新关联程序" @click.stop="relinkMissing(item)">🔗</button>
-                  <button class="app-action-btn" title="打开原位置" @click.stop="openLocation(item)">📂</button>
-                  <button class="app-action-btn" title="从抽屉柜移除" @click.stop="askDeleteApp(item.id, item.name)">🗑️</button>
-                </template>
-                <template v-else>
-                  <button class="app-action-btn" title="编辑" @click.stop="startEdit(item)">✏️</button>
-                  <button class="app-action-btn" title="从抽屉柜移除" @click.stop="askDeleteApp(item.id, item.name)">🗑️</button>
-                </template>
-              </div>
+              <button
+                class="app-more tap"
+                data-interactive
+                title="更多操作（启动 / 编辑 / 打开位置 / 重新关联 / 移除）"
+                @click.stop="openContextMenu($event, item)"
+              >···</button>
             </template>
           </div>
         </div>
@@ -1599,10 +2067,39 @@ async function confirmDeleteApp(id: number | null) {
             <span v-if="ctxMenu.item?.app_type === t.key" class="ctx-menu-check">✓</span>
           </button>
           <div class="ctx-menu-divider"></div>
+          <!-- P1 修复（v0.4.3 验收轮）：正常软件卡补「打开所在位置」——
+               该入口原先只在失效卡上，正常软件查看实际路径不方便（用户原始反馈缺口） -->
+          <button
+            v-if="ctxMenu.item && (ctxMenu.item.app_type || 'app') !== 'url'"
+            class="ctx-menu-item tap"
+            @click="(closeContextMenu(), openAppLocation(ctxMenu.item.id))"
+          >
+            <span class="ctx-menu-emoji">📂</span>
+            <span>打开所在位置</span>
+          </button>
           <button class="ctx-menu-item tap" @click="(closeContextMenu(), startEdit(ctxMenu.item))">
             <span class="ctx-menu-emoji">✏️</span>
             <span>编辑名称/路径</span>
           </button>
+          <template v-if="ctxMenu.item">
+            <div class="ctx-menu-divider"></div>
+            <button
+              v-if="ctxMenu.item.available === false && (ctxMenu.item.app_type || 'app') !== 'url'"
+              class="ctx-menu-item tap"
+              @click="(closeContextMenu(), relinkMissing(ctxMenu.item))"
+            >
+              <span class="ctx-menu-emoji">🔗</span>
+              <span>重新关联程序</span>
+            </button>
+            <button class="ctx-menu-item tap" @click="(closeContextMenu(), launchApp(ctxMenu.item.id))">
+              <span class="ctx-menu-emoji">▶️</span>
+              <span>启动</span>
+            </button>
+            <button class="ctx-menu-item danger tap" @click="(closeContextMenu(), askDeleteApp(ctxMenu.item.id, ctxMenu.item.name))">
+              <span class="ctx-menu-emoji">🗑️</span>
+              <span>从抽屉柜移除</span>
+            </button>
+          </template>
         </div>
       </Transition>
     </Teleport>
@@ -1727,8 +2224,49 @@ async function confirmDeleteApp(id: number | null) {
       <div v-if="showScanModal" class="modal-mask" @click.self="closeScan">
         <div class="modal modal-scan">
           <div class="modal-header">
-            <span>{{ scanning ? "正在扫描系统…" : `找到 ${scannedApps.length} 个软件` }}</span>
+            <span>{{ scanning ? "正在扫描系统…" : `找到 ${scannedApps.length} 个入口` }}</span>
             <button class="modal-close tap" @click="closeScan">×</button>
+          </div>
+          <!-- Batch 2.2：推荐/高级模式切换（均为真实扫描；未实现的入口不提供按钮） -->
+          <div class="scan-mode-tabs">
+            <button
+              class="scan-mode-tab"
+              :class="{ active: scanMode === 'recommended' }"
+              :disabled="scanning"
+              @click="switchScanMode('recommended')"
+            >
+              ⭐ 推荐扫描
+            </button>
+            <button
+              class="scan-mode-tab"
+              :class="{ active: scanMode === 'advanced' }"
+              :disabled="scanning"
+              @click="switchScanMode('advanced')"
+            >
+              🔍 高级扫描
+            </button>
+            <span class="scan-mode-hint">{{
+              scanMode === "recommended"
+                ? "开始菜单与桌面的应用入口"
+                : "按需选择扫描范围；结果累积显示"
+            }}</span>
+          </div>
+          <!-- Batch 2.3：高级扫描控制（全部真实入口；PATH 默认关、不记住） -->
+          <div v-if="!scanning && scanMode === 'advanced'" class="scan-adv-controls">
+            <button class="scan-adv-btn" data-interactive @click="runAdvancedScan">
+              📁 扫描 Program Files
+            </button>
+            <label class="scan-adv-path-toggle">
+              <input type="checkbox" v-model="advIncludePath" />
+              连带 PATH 目录（开发命令较多，默认关）
+            </label>
+            <label class="scan-adv-path-toggle">
+              <input type="checkbox" v-model="advIncludeUwp" />
+              连带 Store 应用（UWP/MSIX，启动走系统激活接口）
+            </label>
+            <button class="scan-adv-btn" data-interactive @click="runCustomDirScan">
+              📂 扫描指定目录…（便携软件 / D 盘等）
+            </button>
           </div>
           <!-- 搜索框（全宽，置顶） -->
           <div v-if="!scanning" class="scan-search-row">
@@ -1738,86 +2276,208 @@ async function confirmDeleteApp(id: number | null) {
               placeholder="🔍 搜索软件名 / 路径 / 来源"
               autofocus
             />
-            <span class="scan-filtered">显示 {{ filteredScannedApps.length }} 个</span>
-          </div>
-          <!-- 用户反馈：顶部加 checkbox 让用户选择看哪些类型
-               之前：全部 800+ 项堆一起，无法快速筛
-               现在：4 个 checkbox（启动项/文件夹/文档/其他），默认全选
-               - 启动项 = is_launchable=true（.exe/.lnk/.url/.bat/.cmd/.msi）
-               - 文件夹 = app_type=folder
-               - 文档   = app_type=document
-               - 其他   = 其他不能启动的杂项（.ini/.dat/.log 等） -->
-          <div v-if="!scanning" class="scan-type-filter">
-            <label
-              v-for="f in SCAN_TYPE_FILTERS"
-              :key="f.key"
-              class="scan-type-chip"
-              :class="{ active: scanTypeFilter[f.key] }"
-            >
-              <input type="checkbox" v-model="scanTypeFilter[f.key]" />
-              <span class="scan-type-icon">{{ f.icon }}</span>
-              <span class="scan-type-label">{{ f.label }}</span>
-              <span class="scan-type-count">{{ countByType[f.key] }}</span>
-            </label>
+            <div class="scan-view-toggle" role="group" aria-label="扫描结果视图">
+              <button
+                class="scan-view-btn tap"
+                :class="{ active: scanViewMode === 'list' }"
+                :aria-pressed="scanViewMode === 'list'"
+                title="列表视图"
+                data-interactive
+                @click="setScanView('list')"
+              >☰</button>
+              <button
+                class="scan-view-btn tap"
+                :class="{ active: scanViewMode === 'card' }"
+                :aria-pressed="scanViewMode === 'card'"
+                title="卡片视图"
+                data-interactive
+                @click="setScanView('card')"
+              >▦</button>
+            </div>
           </div>
           <div class="modal-body">
             <div v-if="scanning" class="scan-loading">
               <div class="spinner"></div>
-              <div>扫描开始菜单 / 桌面 / PATH…</div>
+              <div>{{ scanProgressText() }}</div>
+              <button class="scan-cancel-btn" data-interactive @click="onCancelScan">
+                取消扫描
+              </button>
             </div>
-            <div v-else class="scan-grid">
-              <div
-                v-for="a in filteredScannedApps"
-                :key="a.path"
-                class="scan-cell tap"
-                :class="{ selected: selectedPaths.has(a.path) }"
-                :title="`${a.name}\n${a.path}`"
-                @click="toggleSelect(a.path)"
-              >
-                <div class="scan-check">{{ selectedPaths.has(a.path) ? "✓" : "" }}</div>
-                <div class="scan-icon">
-                  <img
-                    v-if="a.icon_path && !scanIconError[a.path]"
-                    :src="iconSrc(a.icon_path)"
-                    :alt="a.name"
-                    class="scan-icon-img"
-                    @error="onScanIconError(a.path)"
-                  />
-                  <!-- 用户反馈：不要 hash 颜色块，改用类型本身辨识
-                       之前：hash 颜色花花绿绿 → 用户："丑，无法区分"
-                       现在：按 a.is_launchable / a.app_type 显示对应的"灰底+类型符号"
-                       应用 → 💻、网址 → 🔗、文件夹 → 📁、文档 → 📄、其他 → 📦 -->
-                  <span v-else class="scan-icon-text" :class="`scan-icon-${a.app_type || 'app'}`">
-                    {{ scanTypeIcon(a) }}
-                  </span>
+            <template v-else>
+              <!-- 推荐应用：已识别的软件入口 -->
+              <div v-if="recommendedApps.length" class="scan-group-head">
+                ⭐ 推荐应用
+                <span class="scan-group-count">{{ recommendedApps.length }}</span>
+                <span class="scan-group-tag">已识别</span>
+                <button class="scan-group-select tap" data-interactive @click="selectAllRecommended">
+                  全选推荐项
+                </button>
+              </div>
+              <div v-if="recommendedApps.length" class="scan-grid" :class="scanViewMode === 'list' ? 'scan-list' : 'scan-cards'">
+                <div
+                  v-for="a in recommendedApps"
+                  :key="a.path"
+                  class="scan-cell tap"
+                  :class="{ selected: selectedPaths.has(a.path), added: a.already_imported, trash: a.in_trash }"
+                  :title="`${a.name}\n入口：${a.path}${a.target ? `\n目标：${a.target}` : ''}${a.target_args ? `\n参数：${a.target_args}` : ''}`"
+                  @click="toggleSelect(a)"
+                >
+                  <div class="scan-check" :class="scanRowStatusClass(a)">{{ scanRowStatus(a) }}</div>
+                  <div class="scan-icon">
+                    <img
+                      v-if="scanIconDataUrls[a.path]"
+                      :src="scanIconDataUrls[a.path]"
+                      :alt="a.name"
+                      class="scan-icon-img"
+                      @error="onScanIconError(a.path)"
+                    />
+                    <span v-else class="scan-icon-text" :class="`scan-icon-${a.app_type || 'app'}`">
+                      {{ scanTypeIcon(a) }}
+                    </span>
+                  </div>
+                  <div class="scan-info">
+                    <div class="scan-name">{{ a.name }}</div>
+                    <div class="scan-source">{{ shortSource(a.source) }}</div>
+                    <button
+                      v-if="a.in_trash"
+                      class="scan-restore tap"
+                      data-interactive
+                      :disabled="restoringPath === a.path"
+                      @click.stop="restoreTrashedCandidate(a)"
+                    >{{ restoringPath === a.path ? "恢复中…" : "↩ 恢复此软件" }}</button>
+                  </div>
                 </div>
-                <div class="scan-name">{{ a.name }}</div>
-                <div class="scan-source">{{ a.source }}</div>
               </div>
-              <div v-if="filteredScannedApps.length === 0" class="scan-empty">
-                没有匹配 "{{ scanSearch }}" 的软件
+              <!-- 网址：独立类型 -->
+              <div v-if="urlCandidates.length" class="scan-group-head">
+                🔗 网址
+                <span class="scan-group-count">{{ urlCandidates.length }}</span>
               </div>
-            </div>
+              <div v-if="urlCandidates.length" class="scan-grid" :class="scanViewMode === 'list' ? 'scan-list' : 'scan-cards'">
+                <div
+                  v-for="a in urlCandidates"
+                  :key="a.path"
+                  class="scan-cell tap"
+                  :class="{ selected: selectedPaths.has(a.path), added: a.already_imported, trash: a.in_trash }"
+                  :title="`${a.name}\n${a.target || a.path}`"
+                  @click="toggleSelect(a)"
+                >
+                  <div class="scan-check" :class="scanRowStatusClass(a)">{{ scanRowStatus(a) }}</div>
+                  <div class="scan-icon">
+                    <img
+                      v-if="scanIconDataUrls[a.path]"
+                      :src="scanIconDataUrls[a.path]"
+                      :alt="a.name"
+                      class="scan-icon-img"
+                      @error="onScanIconError(a.path)"
+                    />
+                    <span v-else class="scan-icon-text scan-icon-url">🔗</span>
+                  </div>
+                  <div class="scan-info">
+                    <div class="scan-name">{{ a.name }}</div>
+                    <div class="scan-source">{{ shortSource(a.source) }}</div>
+                    <button
+                      v-if="a.in_trash"
+                      class="scan-restore tap"
+                      data-interactive
+                      :disabled="restoringPath === a.path"
+                      @click.stop="restoreTrashedCandidate(a)"
+                    >{{ restoringPath === a.path ? "恢复中…" : "↩ 恢复此软件" }}</button>
+                  </div>
+                </div>
+              </div>
+              <!-- Store 应用：UWP/MSIX（Batch 2.4 受控接入；图标用通用占位） -->
+              <div v-if="storeApps.length" class="scan-group-head">
+                🛍 Store 应用
+                <span class="scan-group-count">{{ storeApps.length }}</span>
+                <span class="scan-group-tag">系统激活接口启动</span>
+              </div>
+              <div v-if="storeApps.length" class="scan-grid" :class="scanViewMode === 'list' ? 'scan-list' : 'scan-cards'">
+                <div
+                  v-for="a in storeApps"
+                  :key="a.path"
+                  class="scan-cell tap"
+                  :class="{ selected: selectedPaths.has(a.path), added: a.already_imported, trash: a.in_trash }"
+                  :title="`${a.name}
+AppID：${a.target || a.path}`"
+                  @click="toggleSelect(a)"
+                >
+                  <div class="scan-check" :class="scanRowStatusClass(a)">{{ scanRowStatus(a) }}</div>
+                  <div class="scan-icon">
+                    <span class="scan-icon-text scan-icon-app">🛍</span>
+                  </div>
+                  <div class="scan-info">
+                    <div class="scan-name">{{ a.name }}</div>
+                    <div class="scan-source">{{ shortSource(a.source) }}</div>
+                    <button
+                      v-if="a.in_trash"
+                      class="scan-restore tap"
+                      data-interactive
+                      :disabled="restoringPath === a.path"
+                      @click.stop="restoreTrashedCandidate(a)"
+                    >{{ restoringPath === a.path ? "恢复中…" : "↩ 恢复此软件" }}</button>
+                  </div>
+                </div>
+              </div>
+              <!-- 需要确认：解析失败/失效目标/.ps1 等（可见可选，不静默丢弃） -->
+              <div v-if="needsConfirmApps.length" class="scan-group-head warn">
+                ❓ 需要确认
+                <span class="scan-group-count">{{ needsConfirmApps.length }}</span>
+                <span class="scan-group-tag">无法自动确认，请自行判断</span>
+              </div>
+              <div v-if="needsConfirmApps.length" class="scan-grid" :class="scanViewMode === 'list' ? 'scan-list' : 'scan-cards'">
+                <div
+                  v-for="a in needsConfirmApps"
+                  :key="a.path"
+                  class="scan-cell tap"
+                  :class="{ selected: selectedPaths.has(a.path), added: a.already_imported, trash: a.in_trash }"
+                  :title="`${a.name}\n入口：${a.path}\n状态：无法自动识别目标（可能已失效或为特殊入口）`"
+                  @click="toggleSelect(a)"
+                >
+                  <div class="scan-check" :class="scanRowStatusClass(a)">{{ scanRowStatus(a) }}</div>
+                  <div class="scan-icon">
+                    <img
+                      v-if="scanIconDataUrls[a.path]"
+                      :src="scanIconDataUrls[a.path]"
+                      :alt="a.name"
+                      class="scan-icon-img"
+                      @error="onScanIconError(a.path)"
+                    />
+                    <span v-else class="scan-icon-text scan-icon-app">❓</span>
+                  </div>
+                  <div class="scan-info">
+                    <div class="scan-name">{{ a.name }}</div>
+                    <div class="scan-source">{{ shortSource(a.source) }}</div>
+                    <button
+                      v-if="a.in_trash"
+                      class="scan-restore tap"
+                      data-interactive
+                      :disabled="restoringPath === a.path"
+                      @click.stop="restoreTrashedCandidate(a)"
+                    >{{ restoringPath === a.path ? "恢复中…" : "↩ 恢复此软件" }}</button>
+                  </div>
+                </div>
+              </div>
+              <div v-if="!scanAnyVisible" class="scan-empty">
+                {{ scanSearch ? `没有匹配 “${scanSearch}” 的入口` : "没有发现可用入口" }}
+              </div>
+            </template>
           </div>
-          <div class="modal-footer">
-            <span class="scan-count">已选 {{ selectedPaths.size }} 个</span>
-            <!-- P0-#Y#FIX#AUTO：移除"导入到"分类下拉框
-                 分类全部由后端 detect_subtype_from_path 自动判（game/office/dev/...） -->
-            <div class="scan-auto-hint" v-if="!scanning">
-              <span class="auto-icon">✨</span>
-              <span>分类自动识别</span>
+          <div class="modal-footer scan-footer">
+            <span class="scan-count">已选 <b>{{ selectedPaths.size }}</b> 个</span>
+            <div class="scan-footer-actions">
+              <button class="btn-ghost tap" :disabled="scanning || selectedPaths.size === 0" @click="clearScanSelection">
+                清除
+              </button>
+              <button class="btn-secondary tap" @click="closeScan">取消</button>
+              <button
+                class="btn-primary tap"
+                :disabled="scanning || selectedPaths.size === 0"
+                @click="confirmScan"
+              >
+                导入已选
+              </button>
             </div>
-            <button class="btn-ghost tap" @click="toggleSelectAll">
-              {{ selectedPaths.size === filteredScannedApps.length && filteredScannedApps.length > 0 ? "取消全选" : "全选" }}
-            </button>
-            <button class="btn-secondary tap" @click="closeScan">取消</button>
-            <button
-              class="btn-primary tap"
-              :disabled="selectedPaths.size === 0"
-              @click="confirmScan"
-            >
-              导入
-            </button>
           </div>
         </div>
       </div>
@@ -2107,43 +2767,40 @@ async function confirmDeleteApp(id: number | null) {
 .empty-icon { font-size: 48px; margin-bottom: 12px; opacity: 0.5; }
 .empty-text { font-size: 13px; }
 
-/* ============ 软件网格（默认 6 列，整体紧凑） ============ */
+/* ============ 软件网格（U2：双列中型卡片 → 宽屏自适应加列） ============ */
 .app-grid {
   display: grid;
-  grid-template-columns: repeat(6, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
   padding: 4px 0;
 }
-/* 窄屏：5 列 */
-@media (max-width: 559px) {
-  .app-grid { grid-template-columns: repeat(5, 1fr); gap: 6px; }
-  .app-icon { width: 36px; height: 36px; }
-  .app-name { font-size: 11px; }
+/* 尺寸档位以窗口宽度近似容器宽度（左侧类型栏 42–56px） */
+@media (max-width: 419px) {
+  .app-cell { padding: 8px; gap: 7px; }
+  .app-icon { width: 32px; height: 32px; border-radius: 8px; }
+  .app-name { font-size: 11.5px; }
+  .app-text { padding-right: 14px; }
 }
-/* 中等宽度：6 列 + 略大按钮 */
-@media (min-width: 700px) {
-  .app-grid { gap: 10px; }
+@media (min-width: 640px) {
+  .app-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
   .app-icon { width: 40px; height: 40px; }
-  .app-name { font-size: 12px; }
 }
-/* 宽屏：6 列更大 + 间距 */
 @media (min-width: 900px) {
-  .app-grid { grid-template-columns: repeat(6, 1fr); gap: 14px; }
-  .app-icon { width: 48px; height: 48px; }
-  .app-name { font-size: 13px; }
+  .app-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+  .app-icon { width: 44px; height: 44px; }
 }
-/* 超大：8 列 */
 @media (min-width: 1200px) {
-  .app-grid { grid-template-columns: repeat(8, 1fr); gap: 16px; }
-  .app-icon { width: 52px; height: 52px; }
+  .app-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 14px; }
+  .app-icon { width: 48px; height: 48px; }
 }
 .app-cell {
   position: relative;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: center;
-  gap: 6px;
-  padding: 12px 6px 10px;
+  gap: 9px;
+  padding: 10px 10px;
+  text-align: left;
   background: var(--bg-secondary);
   border: 1px solid var(--border);
   border-radius: 14px;
@@ -2215,17 +2872,67 @@ async function confirmDeleteApp(id: number | null) {
   -webkit-text-fill-color: transparent;
 }
 
-.app-name {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--text-primary);
-  text-align: center;
-  width: 100%;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  line-height: 1.3;
+/* U2：卡片文字区（名称两行、状态不遮挡） */
+.app-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-right: 16px; /* 给右上角「···」留位 */
 }
+.app-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+  text-align: left;
+  width: 100%;
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+  line-height: 1.32;
+}
+.app-meta { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
+.app-chip {
+  font-size: 10px;
+  line-height: 1.6;
+  padding: 0 6px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.app-chip-hot {
+  color: var(--highlight-bright);
+  background: var(--highlight-soft);
+  font-weight: 600;
+}
+.app-chip-warn {
+  color: #fbbf24;
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+}
+.app-more {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.55;
+  transition: all 0.15s;
+}
+.app-more:hover { opacity: 1; color: var(--text-primary); background: var(--bg-tertiary); }
 .app-badge {
   font-size: 10px;
   color: var(--highlight-bright);
@@ -2738,16 +3445,315 @@ async function confirmDeleteApp(id: number | null) {
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* 扫描网格：6 列（关键修复：之前 4 列明显不够） */
+/* Batch 2.2 验收修正：扫描结果默认紧凑单列行布局（480px 小窗主场景）。
+   行 = 勾选 | 36px 图标 | 名称+来源 | （整行可点）。宽屏仍可用网格但不拥挤。 */
+.scan-grid.scan-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.scan-grid.scan-list .scan-cell {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border: 1px solid #232b42;
+  border-radius: 8px;
+  background: #131a2a;
+  overflow: visible;
+  transform: none;
+}
+.scan-grid.scan-list .scan-cell.selected {
+  border-color: #3b6ef5;
+  background: #1d2a4a;
+}
+.scan-grid.scan-list .scan-cell.added { opacity: 0.55; cursor: default; }
+/* P1-B：回收站命中行——弱化但仍可交互，恢复按钮独立可见 */
+.scan-grid.scan-list .scan-cell.trash { opacity: 0.85; }
+.scan-restore {
+  margin-top: 4px;
+  align-self: flex-start;
+  padding: 2px 9px;
+  font-size: 11px;
+  line-height: 1.5;
+  border-radius: 999px;
+  border: 1px solid rgba(120, 180, 255, 0.45);
+  background: rgba(80, 140, 255, 0.14);
+  color: #a8cfff;
+  cursor: pointer;
+}
+.scan-restore:hover { background: rgba(80, 140, 255, 0.26); }
+.scan-restore:disabled { opacity: 0.6; cursor: default; }
+.scan-grid.scan-list .scan-check {
+  position: static;
+  width: 44px;
+  flex-shrink: 0;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: #6fd0a0;
+  /* 旧多列网格的勾选圆点默认 opacity:0（只在选中时出现）；
+     行列表里这一列是常驻状态列（✓ / 在库 / 待恢复），必须可见 */
+  background: none;
+  border-radius: 0;
+  opacity: 1;
+  transform: none;
+}
+.scan-grid.scan-list .scan-cell.added .scan-check { color: #6fd0a0; }
+.scan-grid.scan-list .scan-cell.trash .scan-check { color: #f0b45c; }
+.scan-check.st-ok { color: #6fd0a0 !important; }
+.scan-check.st-trash { color: #f0b45c !important; }
+.scan-check.st-confirm { color: #7ea6ff !important; }
+.scan-check.st-sel { color: var(--accent-bright, #8b9dff) !important; }
+.scan-grid.scan-list .scan-icon {
+  position: static;
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+}
+.scan-grid.scan-list .scan-icon-img { width: 32px; height: 32px; }
+.scan-grid.scan-list .scan-info {
+  flex: 1;
+  min-width: 0;
+}
+.scan-grid.scan-list .scan-name {
+  font-size: 13px;
+  color: #e8ecf3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: left;
+}
+.scan-grid.scan-list .scan-source {
+  font-size: 10px;
+  color: #7c8aa8;
+  margin-top: 1px;
+  display: inline-block;
+  align-self: flex-start;
+}
+/* 宽窗口（≥640px）：行卡改两列网格，仍为横向行布局 */
+@media (min-width: 640px) {
+  .scan-grid.scan-list {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+/* U2：卡片视图（真实切换；默认列表） */
+.scan-grid.scan-cards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.scan-grid.scan-cards .scan-cell {
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 5px;
+  padding: 12px 8px 10px;
+}
+.scan-grid.scan-cards .scan-check {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: auto;
+  height: auto;
+  background: none;
+  border-radius: 0;
+  opacity: 1;
+  transform: none;
+  font-size: 10px;
+  font-weight: 600;
+  color: #6fd0a0;
+}
+.scan-grid.scan-cards .scan-cell.trash .scan-check { color: #f0b45c; }
+.scan-grid.scan-cards .scan-icon { width: 40px; height: 40px; }
+.scan-grid.scan-cards .scan-icon-img { width: 36px; height: 36px; }
+.scan-grid.scan-cards .scan-info { width: 100%; }
+.scan-grid.scan-cards .scan-name {
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 1.3;
+  text-align: center;
+}
+.scan-grid.scan-cards .scan-source {
+  text-align: center;
+  display: inline-block;
+  align-self: center;
+}
+.scan-grid.scan-cards .scan-restore { align-self: center; }
+@media (max-width: 419px) {
+  .scan-grid.scan-cards { gap: 6px; }
+  .scan-grid.scan-cards .scan-cell { padding: 10px 6px 8px; }
+}
+
+/* U2：搜索行视图切换 */
+.scan-view-toggle {
+  display: flex;
+  flex-shrink: 0;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+}
+.scan-view-btn {
+  width: 28px;
+  height: 24px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.scan-view-btn.active {
+  background: rgba(99, 102, 241, 0.22);
+  color: var(--text-primary);
+}
+
+/* U2：底部操作栏（一个主操作 + 两个次级，窄屏可换行） */
+.scan-footer { justify-content: space-between; }
+.scan-footer-actions { display: flex; align-items: center; gap: 8px; }
+@media (max-width: 419px) {
+  .scan-footer { flex-wrap: wrap; row-gap: 8px; }
+  .scan-footer-actions { width: 100%; }
+  .scan-footer-actions .btn-primary { flex: 1; }
+}
+
+/* 旧多列网格（保留给可能的宽屏场景；默认单列行布局覆盖） */
 .scan-grid {
   display: grid;
   grid-template-columns: repeat(6, 1fr);
   gap: 8px;
 }
-/* 窄屏：5 列 */
-@media (max-width: 559px) {
-  .scan-grid { grid-template-columns: repeat(5, 1fr); }
+
+/* ===== Batch 2.3：高级控制面板 / 进度取消 ===== */
+.scan-adv-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px 0;
+  flex-wrap: wrap;
 }
+.scan-adv-btn {
+  border: 1px solid #3a4568;
+  background: #232b42;
+  color: #e8ecf3;
+  border-radius: 8px;
+  padding: 7px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.scan-adv-btn:hover { border-color: #3b6ef5; }
+.scan-adv-path-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: #9aa5bd;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.scan-cancel-btn {
+  margin-top: 10px;
+  border: 1px solid #3a4568;
+  background: #232b42;
+  color: #e8ecf3;
+  border-radius: 8px;
+  padding: 6px 16px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.scan-cancel-btn:hover { border-color: #ff8fa3; }
+
+/* ===== Batch 2.2：模式切换 + 分组头 + 条目状态徽标 ===== */
+.scan-mode-tabs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px 0;
+}
+.scan-mode-tab {
+  border: 1px solid #2c3550;
+  background: #161c2c;
+  color: #9aa5bd;
+  border-radius: 8px;
+  padding: 7px 14px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.scan-mode-tab.active {
+  border-color: #3b6ef5;
+  background: #1d2a4a;
+  color: #e8ecf3;
+  font-weight: 600;
+}
+.scan-mode-tab:disabled { opacity: 0.6; cursor: default; }
+.scan-mode-hint {
+  font-size: 11px;
+  color: #7c8aa8;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scan-group-head {
+  margin: 12px 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #e8ecf3;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.scan-group-head:first-child { margin-top: 0; }
+.scan-group-head.warn { color: #e8c268; }
+.scan-group-count {
+  font-size: 11px;
+  color: #7c8aa8;
+  background: #0f1422;
+  border-radius: 6px;
+  padding: 1px 7px;
+}
+.scan-group-tag {
+  font-size: 10px;
+  color: #7c8aa8;
+  font-weight: 400;
+}
+/* 组头「全选推荐项」按钮（Batch 2.2 验收修正：补齐深色样式，
+   之前缺 CSS 导致浏览器默认白底空白块） */
+.scan-group-select {
+  margin-left: auto;
+  border: 1px solid #3a4568;
+  background: #232b42;
+  color: #c6cede;
+  border-radius: 6px;
+  padding: 2px 10px;
+  font-size: 10px;
+  font-weight: 400;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.scan-group-select:hover:not(:disabled) {
+  border-color: #3b6ef5;
+  color: #e8ecf3;
+}
+.scan-group-select:disabled { opacity: 0.5; cursor: default; }
+.scan-cell.added { opacity: 0.55; cursor: default; }
+.scan-cell.added .scan-check {
+  font-size: 9px;
+  color: #6fd0a0;
+}
+
 .scan-cell {
   position: relative;
   display: flex;
@@ -2911,11 +3917,15 @@ async function confirmDeleteApp(id: number | null) {
 
 /* 类型细分标签（替代原 app-type-badge，写在 app-name 下方一行） */
 .app-subtype {
-  font-size: 10px;
+  font-size: 10.5px;
   font-weight: 500;
   color: var(--text-muted);
-  line-height: 1;
-  margin-top: -2px;
+  line-height: 1.2;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 0;
   letter-spacing: 0.2px;
   opacity: 0.85;
   max-width: 100%;
@@ -3001,6 +4011,9 @@ async function confirmDeleteApp(id: number | null) {
   z-index: 9999;
   min-width: 180px;
   max-width: 220px;
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   background: rgba(20, 20, 32, 0.96);
   backdrop-filter: blur(20px) saturate(160%);
   -webkit-backdrop-filter: blur(20px) saturate(160%);
@@ -3209,33 +4222,82 @@ async function confirmDeleteApp(id: number | null) {
   border: 1px solid rgba(245, 158, 11, 0.45);
   border-radius: 12px;
 }
-.invalid-panel-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
-.invalid-panel-head b { font-size: 13px; }
-.invalid-sub { font-size: 11.5px; color: var(--text-muted); flex: 1; min-width: 200px; }
+.invalid-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.invalid-head-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
+.invalid-panel-head b { font-size: 13.5px; }
+.invalid-sub { font-size: 11.5px; color: var(--text-muted); line-height: 1.5; }
+.invalid-head-actions { display: flex; gap: 6px; flex-shrink: 0; }
 .invalid-empty { font-size: 12.5px; color: var(--text-muted); padding: 12px 4px; }
 .invalid-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
 .invalid-hint { font-size: 11px; color: var(--text-muted); }
-.invalid-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
-.invalid-row {
-  display: flex; align-items: center; gap: 10px;
-  padding: 8px 10px;
+.inv-legend { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0 4px; }
+.inv-tag {
+  font-size: 10.5px; font-weight: 600;
+  padding: 2px 8px; border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  background: var(--bg-secondary);
+}
+.inv-tag.missing { color: #fb7185; border-color: rgba(244, 63, 94, 0.4); background: rgba(244, 63, 94, 0.1); }
+.inv-tag.protected { color: #fbbf24; border-color: rgba(245, 158, 11, 0.35); background: rgba(245, 158, 11, 0.08); }
+.invalid-list { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
+.inv-row {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 10px;
   background: var(--bg-secondary);
   border: 1px solid var(--border);
-  border-radius: 9px;
+  border-radius: 10px;
 }
-.invalid-check input { width: 15px; height: 15px; accent-color: #f43f5e; cursor: pointer; }
-.invalid-shield { font-size: 14px; width: 15px; text-align: center; }
-.invalid-info { flex: 1; min-width: 0; }
-.invalid-name { font-size: 12.5px; font-weight: 600; color: var(--text-primary); }
-.invalid-path {
-  font-size: 11px; color: var(--text-muted); font-family: Consolas, monospace;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+.inv-row.protected { border-color: rgba(245, 158, 11, 0.25); }
+.invalid-check { padding-top: 2px; }
+.invalid-check input { width: 16px; height: 16px; accent-color: #f43f5e; cursor: pointer; }
+.invalid-shield { font-size: 14px; width: 16px; text-align: center; opacity: 0.8; padding-top: 1px; }
+.inv-main { flex: 1; min-width: 0; }
+.inv-name { font-size: 13px; font-weight: 600; color: var(--text-primary); }
+.inv-issue { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
+.inv-advice { font-size: 11.5px; color: var(--text-muted); margin-top: 3px; line-height: 1.5; }
+.inv-reason-btn {
+  margin-top: 4px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: #7ea6ff;
+  font-size: 11.5px;
+  cursor: pointer;
 }
-.invalid-kind {
-  flex-shrink: 0; font-size: 10.5px; font-weight: 600;
-  padding: 2px 8px; border-radius: 999px;
-  color: var(--text-muted); background: var(--bg-tertiary);
+.inv-reason-btn:hover { text-decoration: underline; }
+.inv-details {
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--bg-primary);
   border: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.7;
+  word-break: break-all;
 }
-.invalid-kind.clearable { color: #fb7185; background: rgba(244,63,94,0.1); border-color: rgba(244,63,94,0.4); }
+.inv-details code { font-family: Consolas, monospace; color: var(--text-secondary); }
+.inv-actions { display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; }
+.inv-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+@media (max-width: 419px) {
+  .inv-row { flex-wrap: wrap; }
+  .inv-actions { flex-direction: row; width: 100%; }
+  .inv-actions .s-btn-mini { flex: 1; }
+}
 </style>

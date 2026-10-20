@@ -592,17 +592,17 @@ export const useWidgetStore = defineStore("widget", () => {
   }
 
   /**
-   * 强制切回完整模式（380×560）
-   * 使用场景：Alt+Q 快捷键弹窗时调用，避免上次的迷你模式被记住
-   * 修复：之前 Alt+Q → win.show() 不改尺寸，如果 miniMode=true 就还是 56×320 简单版
+   * Alt+Q 唤出时的完整模式恢复动作（widget:force-expand 事件驱动）。
+   * v0.4.3 产品决策：Alt+Q 只显示/隐藏**当前模式**，不自动切换完整/迷你
+   * → 后端 Alt+Q 已不再 emit 本事件，此函数当前**无触发方**（inert）。
+   * 保留原因：恢复/迁移流程复用 + 语义已被单测钉死
+   * （widget-force-expand.test.ts），删除与否待 Batch 2 一并裁剪。
+   * mini_mode 不持久化：重启后恒为完整模式（产品约定）。
    */
   async function forceExpand() {
-    if (miniMode.value) {
-      miniMode.value = false;
-      // 不再持久化 mini_mode，下次启动默认完整
-      // 用户在本会话内可自由切换迷你模式，重启后归位
-    }
-    // R3：恢复 min 约束 + 用户原有完整几何（后端处理），切换期间抑制几何保存
+    if (!miniMode.value) return;
+    miniMode.value = false;
+    // 恢复 min 约束 + 用户原有完整几何（后端处理），切换期间抑制几何保存
     beginGeometryTransition();
     try {
       await setMiniModeWithPos(false);

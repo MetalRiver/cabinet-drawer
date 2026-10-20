@@ -23,11 +23,19 @@ mod data_root;
 mod data_root_restore_tests;
 mod db;
 #[cfg(test)]
+mod launch_count_tests;
+#[cfg(test)]
+mod lnk_resolve_tests;
+#[cfg(test)]
+mod scan_identity_tests;
+#[cfg(test)]
 mod legacy_migration_tests;
 pub mod migration;
 #[cfg(test)]
 mod phase2d;
 #[cfg(test)]
+mod p0_acceptance_tests;
+mod temp_category_tests;
 mod temp_edit_tests;
 #[cfg(test)]
 mod trash_retention_tests;
@@ -1796,17 +1804,19 @@ pub fn run() {
                             if win.is_visible().unwrap_or(false) {
                                 let _ = win.hide();
                             } else {
-                                // 关键修复：Alt+Q 弹窗直接 setSize(480, 720) + show + focus
-                                // 之前流程：setSize(380, 560) + emit "force-expand" → 前端 forceExpand
-                                //         → setMiniModeWithPos(false) → setSize(480, 720)
-                                //   步骤多，emit 失败 / event listener 没注册好 → Alt+Q 完全不灵
-                                // 现在：一次性 setSize(480, 720) + show，**不依赖前端事件**
-                                // 位置由 OS 保留（hide 不会改 position）
-                                let _ = win.set_size(tauri::PhysicalSize::new(480, 720));
+                                // 修复 A1（v0.4.3）：Alt+Q 只负责显示/隐藏，几何零改动。
+                                // 旧实现在此无条件 set_size(Physical 480×720)，三个缺陷：
+                                //   ① 物理像素固定值 → 125%/150% DPI 下逻辑尺寸漂移（384×576 / 320×480）；
+                                //   ② 锁屏时 MainLayout 已卸载、widget:force-expand 监听器不存在
+                                //      → 尺寸永久落定 480×720；
+                                //   ③ 之后 Alt+M 的 snapshot_full_geometry 会把 480×720 快照成
+                                //      "完整几何"写库，永久覆盖用户保存值。
+                                // 产品决策（2026-10 验收轮定）：Alt+Q 只显示或隐藏**当前模式**，
+                                // 不自动切换完整/迷你——因此这里也**不再 emit force-expand**
+                                // （迷你态唤出保持迷你视图，Alt+M 手动切回；锁屏+迷你态的
+                                //  可用性为验收观察项，若不可用按缺陷记录，不擅自改模式策略）。
                                 let _ = win.show();
                                 let _ = win.set_focus();
-                                // 仍 emit 一次让前端知道 miniMode 状态可清
-                                let _ = h.emit("widget:force-expand", ());
                             }
                         }
                     }
@@ -1932,6 +1942,8 @@ pub fn run() {
             force_dock_reveal,
             // 软件区
             scan_installed_software,
+            scan_custom_dir,
+            cancel_scan,
             list_apps,
             fill_missing_icons,
             // P0-#Y#FIX#ICON#REEXTRACT/RESTART/VERSION：用户反馈"图标不对"时用
@@ -1954,6 +1966,7 @@ pub fn run() {
             record_app_usage,
             launch_app,
             import_paths,
+            import_scanned_apps,
             // 片段区
             list_snippets,
             create_snippet,
@@ -1963,6 +1976,12 @@ pub fn run() {
             record_snippet_usage,
             // 临时区
             create_temp,
+            update_temp_title,
+            list_temp_categories,
+            create_temp_category,
+            rename_temp_category,
+            delete_temp_category,
+            set_temp_category,
             list_temp,
             delete_temp,
             cleanup_expired_temp,
@@ -1970,6 +1989,8 @@ pub fn run() {
             renew_temp,
             restore_temp_expired,
             commands::window::get_app_edition,
+            commands::window::perf_probe_enabled,
+            commands::window::perf_probe_report,
             // 回收站（P0-#T）
             list_trash,
             restore_from_trash,
@@ -1985,6 +2006,7 @@ pub fn run() {
             seed_test_fixtures,
             clear_test_fixtures,
             get_data_dir,
+            open_data_dir,
             // Phase 2C-1：Data Root Blocked 模式查询（前端阻断页数据源）
             data_root::get_data_root_block,
             // Phase 2C-2：首次初始化 / 已有数据重连

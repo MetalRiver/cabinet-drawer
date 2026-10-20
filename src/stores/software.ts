@@ -7,17 +7,20 @@ import {
   updateApp as apiUpdateApp,
   deleteApp as apiDeleteApp,
   launchApp as apiLaunchApp,
-  recordAppUsage as apiRecordAppUsage,
   scanInstalledSoftware as apiScanInstalled,
   createAppCategory as apiCreateCategory,
   updateAppCategory as apiUpdateCategory,
   deleteAppCategory as apiDeleteCategory,
   importPaths as apiImportPaths,
+  importScannedApps as apiImportScanned,
+  scanCustomDir as apiScanCustomDir,
+  cancelScan as apiCancelScan,
   readIconAsDataUrl,
   fillMissingIcons as apiFillMissingIcons,
   forceReextractIcons as apiForceReextractIcons,
   listAppsWithIcons,
   type AppMeta,
+  type ScannedApp,
   type AppCategoryMeta,
   listInvalidApps,
   batchMoveAppsToTrash,
@@ -255,7 +258,9 @@ export const useSoftwareStore = defineStore("software", () => {
   }
 
   async function launch(id: number) {
-    await apiRecordAppUsage(id);
+    // C1（v0.4.3）：使用次数改由后端在启动请求受理成功后计数——
+    // 旧实现此处先 record 再 launch，失败（文件缺失/重定位仍失败/ShellExecute 报错）
+    // 也 +1，统计口径失真。删除前端预调用，避免双计数。
     try {
       // P0-#F#RUNTIME：后端可能返回 "ok" / "ok:auto-relocated:旧 → 新" / "ok:steam-fallback"
       const result: string = await apiLaunchApp(id);
@@ -290,8 +295,28 @@ export const useSoftwareStore = defineStore("software", () => {
     }
   }
 
-  async function scan() {
-    return await apiScanInstalled();
+  /** Batch 2.1/2.3：扫描候选（返回 ScanOutcome：apps + cancelled/truncated） */
+  async function scan(
+    level: "recommended" | "advanced",
+    includePath = false,
+    includeUwp = false
+  ) {
+    return await apiScanInstalled(level, includePath, includeUwp);
+  }
+
+  /** Batch 2.3：自定义目录扫描（便携软件 / 指定磁盘目录） */
+  async function scanCustomDir(path: string) {
+    return await apiScanCustomDir(path);
+  }
+
+  /** Batch 2.3：真正终止扫描 */
+  async function cancelScan() {
+    return await apiCancelScan();
+  }
+
+  /** Batch 2.1：批量导入扫描候选（幂等，返回 新增/已存在/回收站/失败 汇总） */
+  async function importScanned(candidates: ScannedApp[], categoryId?: number) {
+    return await apiImportScanned(candidates, categoryId);
   }
 
   async function createCategory(name: string, icon?: string) {
@@ -466,6 +491,9 @@ export const useSoftwareStore = defineStore("software", () => {
     remove,
     launch,
     scan,
+    scanCustomDir,
+    cancelScan,
+    importScanned,
     importPaths,
     createCategory,
     updateCategory,

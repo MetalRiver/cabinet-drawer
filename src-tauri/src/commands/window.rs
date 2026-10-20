@@ -324,6 +324,41 @@ pub fn apply_widget_config(window: Window, state: State<AppState>) -> Result<(),
 // ============================================================
 // 🪟 应用版本形态（v0.4.1 验收便携测试版："测试版"徽章依据）
 // ============================================================
+/// P1-C 测量结果落盘（测试版专用）：写 DRAWER_PERF_OUT 指定的文件。
+/// 不走 settings 表——v2 安全格式下 set_setting 被设计为拒绝写入，
+/// 测量脚手架不应绕过安全模型的既有约束。
+#[tauri::command]
+pub fn perf_probe_report(report: String) -> Result<(), String> {
+    #[cfg(feature = "test-edition")]
+    {
+        if std::env::var("DRAWER_PERF_PROBE").ok().as_deref() != Some("1") {
+            return Err("perf probe disabled".to_string());
+        }
+        let path = std::env::var("DRAWER_PERF_OUT")
+            .map_err(|_| "DRAWER_PERF_OUT 未设置".to_string())?;
+        return std::fs::write(path, report).map_err(|e| e.to_string());
+    }
+    #[cfg(not(feature = "test-edition"))]
+    {
+        let _ = report;
+        Err("perf probe disabled".to_string())
+    }
+}
+
+/// P1-C（v0.4.3 验收）：滚动卡顿测量开关。
+/// 只有测试版 + 显式环境变量 DRAWER_PERF_PROBE=1 才返回 true；
+/// 正式版恒 false（测量脚手架不在生产路径上执行任何代码）。
+#[tauri::command]
+pub fn perf_probe_enabled() -> bool {
+    #[cfg(feature = "test-edition")]
+    {
+        if std::env::var("DRAWER_PERF_PROBE").ok().as_deref() == Some("1") {
+            return true;
+        }
+    }
+    false
+}
+
 #[tauri::command]
 pub fn get_app_edition() -> Result<String, String> {
     #[cfg(feature = "test-edition")]

@@ -1,14 +1,16 @@
 <script setup lang="ts">
 // ===== Settings UI V2 · 数据与备份 Tab =====
-// 层级：A 当前数据位置 → 回收站 → B 加密备份·导出（折叠） → C 备份恢复（折叠）
-//       → D 迁移与历史副本（按实际状态显示） → E 重置所有数据（折叠，页面最末）。
+// U1 层级：① 当前数据位置（路径/复制/打开/更换位置，次级） → ② 回收站（数量/期限/入口）
+//       → ③ 备份与恢复（导出 / 恢复，折叠） → ④ 迁移与旧副本（按状态显示，折叠）
+//       → ⑤ 危险操作（清空回收站 + 重置，页尾）。
 // 全部业务逻辑从旧 SettingsView 逐字迁移（迁移/恢复/副本/备份/重置语义零改动）。
 // 长操作通过 ops 总线上报：切换到其他分类时容器顶部显示"后台操作进行中"横幅；
 // 离开本分类时清理敏感输入（备份密码），但执行中状态保留（Tab 常驻挂载）。
-import { ref, computed, watch } from "vue";
+import { ref, computed, watch, onMounted } from "vue";
 import { useRouter } from "vue-router";
 import {
   getDataDir,
+  openDataDir,
   getSecurityStatus,
   setupBeginMigration,
   getDataRootSummary,
@@ -63,6 +65,13 @@ async function loadDataDir() {
   }
 }
 loadDataDir();
+async function openFolder() {
+  try {
+    await openDataDir();
+  } catch (e) {
+    appStore.showClipToast("info", "打开数据目录失败：" + String(e));
+  }
+}
 async function copyDataDir() {
   try {
     await navigator.clipboard.writeText(dataDir.value);
@@ -88,6 +97,11 @@ async function loadMigrationInfo() {
   }
 }
 loadMigrationInfo();
+// U1：迁移与旧副本默认折叠
+const migrationMoreOpen = ref(false);
+onMounted(() => {
+  void appStore.refreshTrashCount();
+});
 async function migrationPick() {
   const p = await pickPath({ mode: "folder", title: "选择新的数据存储位置（需为空目录）" });
   if (p) {
@@ -420,38 +434,39 @@ watch(
 
 <template>
   <div class="tab-pane">
-    <!-- A. 当前数据位置 -->
+    <!-- 1. 当前数据位置：路径 → 操作 → 更换位置（次级） -->
     <SettingsCard
       title="当前数据位置"
-      subtitle="所有数据的家。重装软件不会移动它；建议定期加密备份到非系统盘。"
-      :badge="{ text: '位置', tone: 'blue' }"
+      subtitle="所有数据都存放在这里；重装应用不会移动它。"
     >
-      <div class="s-data-dir-row">
-        <span class="s-data-dir-label">路径</span>
-        <code class="s-data-dir-path" :class="{ expanded: dataDirExpanded }" :title="dataDir">{{ dataDir }}</code>
-        <div class="dir-actions">
-          <button class="s-btn-mini tap" data-interactive @click="dataDirExpanded = !dataDirExpanded">
-            {{ dataDirExpanded ? "收起" : "展开" }}
-          </button>
+      <div class="data-path-block">
+        <code class="data-path" :class="{ expanded: dataDirExpanded }" :title="dataDir">{{ dataDir }}</code>
+        <div class="data-path-actions">
           <button class="s-btn-mini tap" data-interactive @click="copyDataDir">
             {{ dataDirCopied ? "✓ 已复制" : "📋 复制" }}
           </button>
+          <button class="s-btn-mini tap" data-interactive @click="openFolder">📂 打开</button>
+          <button
+            v-if="dataDir.length > 42"
+            class="s-btn-mini tap"
+            data-interactive
+            @click="dataDirExpanded = !dataDirExpanded"
+          >{{ dataDirExpanded ? "收起" : "完整路径" }}</button>
         </div>
+      </div>
+      <div class="data-secondary">
+        <button class="s-btn-mini tap" data-interactive :disabled="migrationBusy" @click="migrationPick">
+          🚚 更换数据位置
+        </button>
+        <span class="data-secondary-hint">先校验新位置，成功后才切换；原数据保留</span>
       </div>
       <StatusLine v-if="migrationError" tone="err" :text="migrationError" />
       <StatusLine v-if="restoreError && !restoreRunning" tone="err" :text="restoreError" />
 
-      <!-- 更改位置（迁移确认面板，按需展开） -->
-      <div v-if="!migrationRunning" class="mig-trigger">
-        <button class="s-btn-mini tap" data-interactive :disabled="migrationBusy" @click="migrationPick">
-          🚚 更改数据存储位置
-        </button>
-      </div>
       <div v-if="migrationTarget && !migrationRunning" class="mig-panel">
-        <p><b>当前位置：</b><code>{{ dataDir }}</code></p>
         <p><b>新位置：</b><code>{{ migrationTarget }}</code></p>
         <p class="s-hint">
-          迁移期间暂停数据操作；验证成功前不会删除原数据；完成后应用自动重启；异常时保留原数据并阻止继续写入。
+          迁移期间暂停数据操作；验证成功前不会删除原数据；完成后应用自动重启。
         </p>
         <div class="s-action-row">
           <button class="s-btn-secondary" data-interactive @click="migrationTarget = ''">取消</button>
@@ -462,38 +477,33 @@ watch(
         ⏳ 正在迁移数据：复制 → 验证一致性 → 完成后自动重启。请勿关闭抽屉柜。
       </div>
       <div v-if="migrationDone" class="mig-done">
-        ✅ 数据已迁移到 {{ migrationDone.target }}；原位置（{{ migrationDone.source }}）已保留为安全副本（{{ migrationDone.archive }}）。
+        ✅ 数据已迁移到 {{ migrationDone.target }}；原位置已保留为安全副本。
       </div>
     </SettingsCard>
 
-    <!-- 回收站（自基础迁入，统一模块） -->
+    <!-- 2. 回收站：数量 + 保留期限 + 管理入口（清空在危险区） -->
     <SettingsCard
       title="回收站"
-      subtitle="删除的软件/密码/命令/便签先进回收站，超过保留期限后下次启动时自动清理。"
-      :badge="{ text: '可恢复', tone: 'blue' }"
+      :badge="{ text: `${appStore.trashCount} 项`, tone: 'blue' }"
+      subtitle="删除的软件、密码、命令、便签先放这里，可随时恢复。"
     >
-      <SettingsRow icon="🕐" label="删除项保留期限" sub="0 = 永久保留，绝不自动清理">
+      <SettingsRow
+        icon="🕐"
+        label="保留期限"
+        :sub="trashRetentionDays === 0 ? '永久保留' : '到期自动清理'"
+      >
         <DarkSelect v-model="trashRetentionDays" :options="trashRetentionOptions" aria-label="删除项保留天数" />
       </SettingsRow>
       <div class="s-action-row">
-        <button class="s-btn-secondary" data-interactive @click="onOpenTrash">🗑️ 打开回收站（查看 / 恢复 / 彻底删除）</button>
-        <button class="s-btn-secondary s-btn-warn" data-interactive @click="onClearTrash">🧹 立即清空</button>
+        <button class="s-btn-primary" data-interactive @click="onOpenTrash">🗑️ 打开回收站</button>
       </div>
-      <ConfirmInline
-        v-if="clearTrashConfirmOpen"
-        title="确定要立即清空回收站吗？所有已删除项将被永久删除，不可恢复。"
-        confirm-text="立即清空"
-        :loading="trashActionBusy"
-        @cancel="clearTrashConfirmOpen = false"
-        @confirm="doClearTrash"
-      />
-      <StatusLine :tone="trashActionMsg.startsWith('✓') ? 'ok' : trashActionMsg ? 'err' : 'info'" :text="trashActionMsg" />
     </SettingsCard>
 
-    <!-- B. 加密备份·导出（折叠） -->
+    <!-- 3. 备份与恢复：集中为独立区域 -->
+    <h4 class="s-sub-title section-title">备份与恢复</h4>
     <SettingsCard
       title="导出加密备份"
-      subtitle="打包为 .drawerbox 单文件（主密码 + AES-256-GCM + zstd），纯离线。"
+      subtitle="打包为 .drawerbox 单文件（AES-256-GCM + zstd），纯离线。"
       :badge="{ text: '跨设备', tone: 'green' }"
       collapsible
       v-model:open="exportOpen"
@@ -510,10 +520,9 @@ watch(
       <StatusLine :tone="exportResult.startsWith('✓') ? 'ok' : exportResult ? 'err' : 'info'" :text="exportResult" />
     </SettingsCard>
 
-    <!-- C. 备份恢复（折叠，独立于导出） -->
     <SettingsCard
       title="从备份恢复"
-      subtitle="选择 .drawerbox 文件 → 输入备份时主密码 → 确认恢复，完成后自动同步到各区域。"
+      subtitle="选择备份文件 → 输入备份时主密码 → 恢复后自动同步各区域。"
       :badge="{ text: '还原', tone: 'green' }"
       collapsible
       v-model:open="importOpen"
@@ -521,7 +530,7 @@ watch(
       <div class="s-form-group">
         <label class="s-form-label">① 备份文件</label>
         <div class="file-row">
-          <input v-model="importFile" class="s-form-input" placeholder="例如 D:\Backups\drawerbox-20250101.drawerbox" data-interactive />
+          <input v-model="importFile" class="s-form-input" placeholder="选择 .drawerbox 文件" data-interactive />
           <button class="s-btn-mini s-btn-mini-wide tap" data-interactive @click="onPickImportFile">📂 选择</button>
         </div>
       </div>
@@ -530,35 +539,37 @@ watch(
         <input v-model="importPw" type="password" class="s-form-input" placeholder="输入导出时使用的主密码…" autocomplete="new-password" data-interactive />
       </div>
       <div class="s-form-group">
-        <label class="s-form-label">③ 遇到重名时（按名称/路径判断）</label>
+        <label class="s-form-label">③ 遇到重名时</label>
         <div class="s-radio-row">
           <label class="s-radio-item tap" data-interactive>
             <input type="radio" :value="'overwrite'" v-model="importPolicy" />
-            <span><b>覆盖</b>：同名全部替换（适合还原到旧机器/重置后导入）</span>
+            <span><b>覆盖</b>：同名全部替换</span>
           </label>
           <label class="s-radio-item tap" data-interactive>
             <input type="radio" :value="'skip'" v-model="importPolicy" />
-            <span><b>跳过</b>：保留当前已有数据，只加新的</span>
+            <span><b>跳过</b>：保留当前数据，只加新的</span>
           </label>
           <label class="s-radio-item tap" data-interactive>
             <input type="radio" :value="'merge'" v-model="importPolicy" />
-            <span><b>合并</b>：软件路径存在时合并分类与使用计数</span>
+            <span><b>合并</b>：按路径合并分类与使用次数</span>
           </label>
         </div>
       </div>
       <div class="s-action-row">
         <button class="s-btn-primary" data-interactive :disabled="importBusy" @click="onImportBackup">
-          {{ importBusy ? "校验 + 恢复中…" : "🧩 开始恢复并同步到各区域" }}
+          {{ importBusy ? "校验 + 恢复中…" : "🧩 开始恢复" }}
         </button>
       </div>
       <StatusLine :tone="importResult.startsWith('✓') ? 'ok' : importResult ? 'err' : 'info'" :text="importResult" />
     </SettingsCard>
 
-    <!-- D. 迁移与历史副本（按实际状态显示） -->
+    <!-- 4. 迁移与历史副本（低频，默认折叠，按实际状态显示） -->
     <SettingsCard
       v-if="canRestoreDefault || retainedSources.length || restoreRunning"
-      title="数据位置迁移与历史副本"
-      subtitle="恢复默认位置；迁移前留下的旧数据副本可打开或删除。"
+      title="迁移与旧数据副本"
+      subtitle="恢复默认位置；迁移前留下的旧副本可打开或删除。"
+      collapsible
+      v-model:open="migrationMoreOpen"
     >
       <div v-if="canRestoreDefault && !restoreRunning" class="mig-trigger">
         <button class="s-btn-mini tap" data-interactive :disabled="restoreBusy" @click="restoreConfirmOpen = true">
@@ -566,16 +577,15 @@ watch(
         </button>
       </div>
       <div v-if="restoreConfirmOpen && !restoreRunning" class="mig-panel">
-        <p><b>当前位置：</b><code>{{ dataDir }}</code></p>
         <p><b>默认位置：</b><code>{{ defaultDir }}</code></p>
-        <p class="s-hint">先把完整数据复制到默认位置并验证；验证完成前不会删除当前数据；完成后应用重启。</p>
+        <p class="s-hint">先复制并验证，验证完成前不会删除当前数据；完成后应用重启。</p>
         <div class="s-action-row">
           <button class="s-btn-secondary" data-interactive @click="restoreConfirmOpen = false">取消</button>
           <button class="s-btn-primary" data-interactive :disabled="restoreBusy" @click="restoreStart">恢复到默认位置</button>
         </div>
       </div>
       <div v-if="restoreRunning" class="mig-running">
-        ⏳ 正在恢复到默认位置：复制 → 验证一致性 → 完成后自动重启。请勿关闭抽屉柜。
+        ⏳ 正在恢复到默认位置：复制 → 验证 → 自动重启。请勿关闭抽屉柜。
       </div>
 
       <div v-if="retainedSources.length" class="s-retained-block">
@@ -585,7 +595,7 @@ watch(
         <div v-for="r in retainedSources" :key="r.op_id" class="s-retained-row">
           <div class="s-retained-info">
             <div>{{ r.created_at.slice(0, 10) }}｜原位置：<code>{{ r.original_root }}</code></div>
-            <div class="s-hint">状态：已停止使用{{ r.available === false ? "｜⚠️ 当前不可访问" : "" }}</div>
+            <div class="s-hint">已停止使用{{ r.available === false ? "｜⚠️ 当前不可访问" : "" }}</div>
           </div>
           <div class="s-action-row retained-actions" v-if="pendingDeleteOp !== r.op_id">
             <button class="s-btn-mini tap" data-interactive @click="openRetained(r.op_id)">📂 打开</button>
@@ -604,26 +614,52 @@ watch(
       </div>
     </SettingsCard>
 
-    <!-- E. 重置所有数据（折叠，页面最末，与常用操作保持距离） -->
+    <!-- 5. 危险操作（统一二级危险区：清空回收站 + 重置） -->
     <SettingsCard
-      title="重置所有数据"
-      subtitle="永久删除全部数据并回到首次安装状态；展开前请确认已有备份。"
-      :badge="{ text: '永久不可逆', tone: 'red' }"
+      title="危险操作"
+      subtitle="以下操作不可恢复，请先确认已有备份。"
+      :badge="{ text: '不可逆', tone: 'red' }"
       intent="danger"
-      collapsible
-      v-model:open="resetOpen"
     >
-      <div class="s-danger-warn">
-        🔥 重置会<b>永久删除</b>：全部密码 / 软件 / 命令 / 便签 / 回收站 / 图标缓存 / 全局设置 / 二次验证密码，等价于第一次安装。<br />
-        ℹ️ 只影响当前使用的数据位置；迁移保留的旧数据副本不会被自动删除。
+      <div class="danger-row">
+        <div class="danger-row-main">
+          <span class="danger-row-title">清空回收站</span>
+          <span class="danger-row-sub">{{ appStore.trashCount }} 项已删除内容将被永久删除</span>
+        </div>
+        <button class="s-btn-secondary s-btn-warn" data-interactive @click="onClearTrash">清空</button>
+      </div>
+      <ConfirmInline
+        v-if="clearTrashConfirmOpen"
+        title="确定要立即清空回收站吗？所有已删除项将被永久删除，不可恢复。"
+        confirm-text="立即清空"
+        :loading="trashActionBusy"
+        @cancel="clearTrashConfirmOpen = false"
+        @confirm="doClearTrash"
+      />
+      <StatusLine v-if="trashActionMsg" :tone="trashActionMsg.startsWith('✓') ? 'ok' : 'err'" :text="trashActionMsg" />
+
+      <div class="s-divider"></div>
+
+      <div class="danger-row">
+        <div class="danger-row-main">
+          <span class="danger-row-title">重置所有数据</span>
+          <span class="danger-row-sub">删除全部数据，回到首次安装状态</span>
+        </div>
+        <button class="s-btn-secondary" data-interactive @click="resetOpen = !resetOpen">
+          {{ resetOpen ? "收起" : "展开" }}
+        </button>
       </div>
       <template v-if="resetOpen">
+        <div class="s-danger-warn">
+          🔥 重置会<b>永久删除</b>：全部密码 / 软件 / 命令 / 便签 / 回收站 / 图标缓存 / 全局设置 / 二次验证密码。<br />
+          ℹ️ 只影响当前数据位置；迁移保留的旧数据副本不会被自动删除。
+        </div>
         <label class="s-danger-check tap" data-interactive>
           <input type="checkbox" v-model="resetConfirmed" />
-          <span>第 1 步：我已确认会<b>永久删除所有数据且不可恢复</b>，已做好备份（如已导出 .drawerbox）</span>
+          <span>第 1 步：我已确认会<b>永久删除所有数据且不可恢复</b>，已做好备份</span>
         </label>
         <div class="s-form-group">
-          <label class="s-form-label">第 2 步：输入 <code style="color:#ef4444;font-weight:700;">确认重置</code> 四个字（防误触）</label>
+          <label class="s-form-label">第 2 步：输入 <code class="danger-code">确认重置</code> 四个字（防误触）</label>
           <input
             v-model="resetTypedText"
             class="s-form-input"
@@ -659,8 +695,56 @@ watch(
 </template>
 
 <style scoped>
-.dir-actions { display: flex; gap: 6px; flex-shrink: 0; }
-.mig-trigger { margin-top: 10px; }
+/* U1：数据页小窗口优先的层级与换行 */
+.section-title {
+  margin: 18px 0 8px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}
+.data-path-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+}
+.data-path {
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-primary);
+  word-break: break-all;
+  overflow-wrap: anywhere;
+  max-height: 3.2em;
+  overflow: hidden;
+}
+.data-path.expanded { max-height: none; }
+.data-path-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.data-secondary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+.data-secondary-hint { font-size: 11.5px; color: var(--text-muted); line-height: 1.5; }
+
+.danger-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+}
+.danger-row-main { display: flex; flex-direction: column; min-width: 0; }
+.danger-row-title { font-size: 13px; font-weight: 600; color: var(--text-primary); }
+.danger-row-sub { font-size: 11.5px; color: var(--text-muted); margin-top: 2px; line-height: 1.45; }
+.danger-code { color: #ef4444; font-weight: 700; }
+.mig-trigger { margin-top: 4px; }
 .mig-panel {
   margin-top: 10px;
   padding: 12px;
@@ -680,7 +764,13 @@ watch(
 .mig-running { background: rgba(59, 130, 246, 0.08); border-left: 3px solid #3b82f6; color: #93c5fd; }
 .mig-done { background: rgba(16, 185, 129, 0.08); border-left: 3px solid #10b981; color: #6ee7b7; word-break: break-all; }
 .file-row { display: flex; gap: 6px; align-items: stretch; }
-.file-row .s-form-input { flex: 1; }
+.file-row .s-form-input { flex: 1; min-width: 0; }
 .s-btn-mini-wide { padding: 0 14px; min-height: 36px; align-self: stretch; }
 .retained-actions { border-top: none; padding-top: 0; margin-top: 0; }
+
+@media (max-width: 419px) {
+  .data-path-actions .s-btn-mini { flex: 1; justify-content: center; }
+  .danger-row { flex-direction: column; align-items: stretch; }
+  .danger-row .s-btn-secondary { width: 100%; }
+}
 </style>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, onActivated, onDeactivated, computed } from "vue";
+import { ref, onMounted, onUnmounted, onActivated, onDeactivated, computed, nextTick } from "vue";
 import { useAppStore } from "../stores/app";
 import { useWidgetStore } from "../stores/widget";
 import { useTempStore } from "../stores/temp";
@@ -12,10 +12,6 @@ const appStore = useAppStore();
 const widgetStore = useWidgetStore();
 const tempStore = useTempStore();
 const snippetsStore = useSnippetsStore();
-
-// P0-#Z：行内 confirm（统一 5 区风格）
-const confirmingDeleteId = ref<number | null>(null);
-const deletingId = ref<number | null>(null);
 
 // 新增
 const showAdd = ref(false);
@@ -38,60 +34,267 @@ const ttlOptions = computed(() => {
     label: o.value === defaultTtl.value && o.value !== 0 ? `${o.label}（默认）` : o.label,
   }));
 });
-const addForm = ref({ text: "", ttlMinutes: 0 });
+const addForm = ref({ text: "", ttlMinutes: 0, title: "" });
 
-// v0.4.1：编辑 / 追加
-const showEdit = ref(false);
-const editTarget = ref<TempMeta | null>(null);
-const editMode = ref<"append" | "overwrite">("append");
-const editText = ref("");
-const editBusy = ref(false);
-function openEdit(item: TempMeta) {
-  editTarget.value = item;
-  editMode.value = "append"; // 默认追加：不覆盖原始内容，防误触
-  editText.value = "";
-  showEdit.value = true;
+// ===== U3：详情浮层（阅读 / 编辑 / 追加的统一入口） =====
+const detailTarget = ref<TempMeta | null>(null);
+const detailEditing = ref(false);
+const detailMode = ref<"edit" | "append">("edit");
+const detailTitle = ref("");
+const detailDraft = ref("");
+const detailAppend = ref("");
+const detailBusy = ref(false);
+const detailDeleteConfirm = ref(false);
+const detailDiscardConfirm = ref(false);
+const detailEl = ref<HTMLElement | null>(null);
+
+function openDetail(item: TempMeta) {
+  closeItemMenu();
+  detailTarget.value = item;
+  detailEditing.value = false;
+  detailDiscardConfirm.value = false;
+  detailDeleteConfirm.value = false;
+  void nextTick(() => detailEl.value?.focus());
 }
-function onEditModeChange(mode: "append" | "overwrite") {
-  editMode.value = mode;
-  if (mode === "overwrite" && editTarget.value) {
-    editText.value = editTarget.value.text;
-  } else {
-    editText.value = "";
+
+function openDetailAppend(item: TempMeta) {
+  openDetail(item);
+  startDetailEdit("append");
+}
+
+function startDetailEdit(mode: "edit" | "append") {
+  if (!detailTarget.value) return;
+  detailMode.value = mode;
+  detailTitle.value = detailTarget.value.title || "";
+  detailDraft.value = detailTarget.value.text;
+  detailAppend.value = "";
+  detailEditing.value = true;
+  detailDiscardConfirm.value = false;
+}
+
+const detailDirty = computed(() => {
+  if (!detailTarget.value || !detailEditing.value) return false;
+  if (detailTitle.value.trim() !== (detailTarget.value.title || "").trim()) return true;
+  if (detailMode.value === "append") return detailAppend.value.trim().length > 0;
+  return detailDraft.value !== detailTarget.value.text;
+});
+
+function requestCloseDetail() {
+  if (detailEditing.value && detailDirty.value) {
+    detailDiscardConfirm.value = true;
+    return;
   }
+  forceCloseDetail();
 }
-async function submitEdit() {
-  if (!editTarget.value || editBusy.value) return;
-  const original = editTarget.value.text;
-  let finalText: string;
-  if (editMode.value === "append") {
-    if (!editText.value.trim()) {
+
+function forceCloseDetail() {
+  detailTarget.value = null;
+  detailEditing.value = false;
+  detailDiscardConfirm.value = false;
+  detailDeleteConfirm.value = false;
+  detailTitle.value = "";
+  detailDraft.value = "";
+  detailAppend.value = "";
+}
+
+async function saveDetail() {
+  if (!detailTarget.value || detailBusy.value) return;
+  const id = detailTarget.value.id;
+  const newTitle = detailTitle.value.trim();
+  let finalText = detailTarget.value.text;
+  if (detailMode.value === "append") {
+    if (!detailAppend.value.trim()) {
       appStore.showClipToast("info", "请输入要追加的内容");
       return;
     }
-    finalText = original.endsWith("\n") || original === ""
-      ? original + editText.value
-      : original + "\n" + editText.value;
+    finalText =
+      finalText.endsWith("\n") || finalText === ""
+        ? finalText + detailAppend.value
+        : finalText + "\n" + detailAppend.value;
   } else {
-    if (!editText.value.trim()) {
+    if (!detailDraft.value.trim()) {
       appStore.showClipToast("info", "内容不能为空");
       return;
     }
-    finalText = editText.value;
+    finalText = detailDraft.value;
   }
-  editBusy.value = true;
+  detailBusy.value = true;
   try {
-    await tempStore.updateText(editTarget.value.id, finalText);
-    showEdit.value = false;
-    appStore.showClipToast("success", editMode.value === "append" ? "已追加" : "已保存");
+    if (newTitle !== (detailTarget.value.title || "")) {
+      await tempStore.updateTitle(id, newTitle || null);
+    }
+    if (finalText !== detailTarget.value.text) {
+      await tempStore.updateText(id, finalText);
+    }
+    await tempStore.loadItems();
+    const fresh = tempStore.items.find((i) => i.id === id) || null;
+    detailTarget.value = fresh;
+    detailEditing.value = false;
+    detailDiscardConfirm.value = false;
+    if (fresh) {
+      detailEl.value?.focus();
+    } else {
+      forceCloseDetail();
+    }
+    appStore.showClipToast("success", detailMode.value === "append" ? "已追加" : "已保存");
   } catch (e) {
     appStore.showClipToast("info", String(e));
   } finally {
-    editBusy.value = false;
+    detailBusy.value = false;
   }
 }
 
-// v0.4.1：续期
+function catSelectValue(item: TempMeta | null): number {
+  return item?.category_id ?? -1;
+}
+const catOptions = computed(() => [
+  { value: -1, label: "未分类" },
+  ...tempStore.categories.map((c) => ({ value: c.id, label: c.name })),
+]);
+async function onDetailCatChange(v: number) {
+  if (!detailTarget.value) return;
+  const id = detailTarget.value.id;
+  try {
+    await tempStore.setCategory(id, v === -1 ? null : v);
+    detailTarget.value = tempStore.items.find((i) => i.id === id) || null;
+  } catch (e) {
+    appStore.showClipToast("info", String(e));
+  }
+}
+
+async function setDetailPermanent() {
+  if (!detailTarget.value) return;
+  const id = detailTarget.value.id;
+  try {
+    await tempStore.renew(id, null, TEMP_NEVER_EXPIRES_MS);
+    detailTarget.value = tempStore.items.find((i) => i.id === id) || null;
+    appStore.showClipToast("success", "已设为永不过期");
+  } catch (e) {
+    appStore.showClipToast("info", String(e));
+  }
+}
+
+async function confirmDetailDelete() {
+  if (!detailTarget.value) return;
+  const id = detailTarget.value.id;
+  try {
+    await tempStore.remove(id);
+    forceCloseDetail();
+    appStore.showClipToast("success", "已删除，可在回收站恢复");
+  } catch (e) {
+    appStore.showClipToast("info", String(e));
+  }
+}
+
+// ===== U3：右键 / ⋯ 共用同一套操作菜单 =====
+const itemMenu = ref<{
+  visible: boolean;
+  x: number;
+  y: number;
+  item: TempMeta | null;
+  showCategories: boolean;
+}>({ visible: false, x: 0, y: 0, item: null, showCategories: false });
+const itemMenuEl = ref<HTMLElement | null>(null);
+
+function clampMenu(x: number, y: number, w: number, h: number) {
+  const pad = 8;
+  return {
+    x: Math.max(pad, Math.min(x, Math.max(pad, window.innerWidth - w - pad))),
+    y: Math.max(pad, Math.min(y, Math.max(pad, window.innerHeight - h - pad))),
+  };
+}
+
+function openItemMenu(e: MouseEvent, item: TempMeta) {
+  e.preventDefault();
+  e.stopPropagation();
+  const pos = clampMenu(e.clientX, e.clientY, 200, 260);
+  itemMenu.value = { visible: true, x: pos.x, y: pos.y, item, showCategories: false };
+  void nextTick(() => {
+    if (!itemMenuEl.value) return;
+    const r = itemMenuEl.value.getBoundingClientRect();
+    if (r.width === 0 || r.height === 0) return;
+    const fixed = clampMenu(pos.x, pos.y, r.width, r.height);
+    if (fixed.x !== pos.x || fixed.y !== pos.y) {
+      itemMenu.value = { ...itemMenu.value, x: fixed.x, y: fixed.y };
+    }
+  });
+}
+
+function closeItemMenu() {
+  if (!itemMenu.value.visible) return;
+  itemMenu.value = { ...itemMenu.value, visible: false, showCategories: false };
+}
+
+async function menuPickCategory(categoryId: number | null) {
+  const target = itemMenu.value.item;
+  closeItemMenu();
+  if (!target) return;
+  try {
+    await tempStore.setCategory(target.id, categoryId);
+    if (detailTarget.value?.id === target.id) {
+      detailTarget.value = tempStore.items.find((i) => i.id === target.id) || null;
+    }
+    appStore.showClipToast("success", "分类已更新");
+  } catch (e) {
+    appStore.showClipToast("info", String(e));
+  }
+}
+
+function menuAction(action: "open" | "append" | "copy" | "renew" | "promote" | "delete") {
+  const target = itemMenu.value.item;
+  closeItemMenu();
+  if (!target) return;
+  if (action === "open") openDetail(target);
+  else if (action === "append") openDetailAppend(target);
+  else if (action === "copy") void copy(target.text);
+  else if (action === "renew") openRenew(target);
+  else if (action === "promote") openPromote(target);
+  else if (action === "delete") {
+    openDetail(target);
+    detailDeleteConfirm.value = true;
+  }
+}
+
+// 点击外部关闭菜单；Esc 关闭菜单或详情
+function onDocPointerDown(e: PointerEvent) {
+  if (!itemMenu.value.visible) return;
+  const el = itemMenuEl.value;
+  if (el && e.target instanceof Node && el.contains(e.target)) return;
+  closeItemMenu();
+}
+function onWindowScroll() {
+  if (itemMenu.value.visible) closeItemMenu();
+}
+function onGlobalKeydown(e: KeyboardEvent) {
+  if (e.key !== "Escape") return;
+  // 关闭顺序 = 叠放顺序：菜单 > 上层弹窗 > 详情浮层
+  if (itemMenu.value.visible) {
+    closeItemMenu();
+    return;
+  }
+  if (showRenew.value) {
+    showRenew.value = false;
+    return;
+  }
+  if (showPromote.value) {
+    showPromote.value = false;
+    return;
+  }
+  if (showAdd.value) {
+    showAdd.value = false;
+    return;
+  }
+  if (showCatManage.value) {
+    showCatManage.value = false;
+    return;
+  }
+  if (detailTarget.value) {
+    e.stopPropagation();
+    requestCloseDetail();
+  }
+}
+
+// ===== 续期（保持 v0.4.1 逻辑） =====
 const RENEW_PRESETS = [
   { value: 1 * 24 * 60 * 60 * 1000, label: "延长 1 天" },
   { value: 3 * 24 * 60 * 60 * 1000, label: "延长 3 天" },
@@ -172,7 +375,11 @@ async function submitRenew() {
       renewBusy.value = false;
       return;
     }
-    const newExpires = await tempStore.renew(renewTarget.value.id, addMs, setExpiresAt);
+    const id = renewTarget.value.id;
+    const newExpires = await tempStore.renew(id, addMs, setExpiresAt);
+    if (detailTarget.value?.id === id) {
+      detailTarget.value = tempStore.items.find((i) => i.id === id) || null;
+    }
     showRenew.value = false;
     appStore.showClipToast(
       "success",
@@ -206,9 +413,18 @@ onMounted(() => {
   // 修复 P1：fire-and-forget，先启动倒计时刷新，再后台拉数据
   // 视图能立即渲染（空态），数据到达后自动填充
   void tempStore.loadItems();
+  void tempStore.loadCategories(); // Batch 4：分类列表
   startTimer();
+  document.addEventListener("pointerdown", onDocPointerDown, true);
+  window.addEventListener("scroll", onWindowScroll, true);
+  window.addEventListener("keydown", onGlobalKeydown);
 });
-onUnmounted(stopTimer);
+onUnmounted(() => {
+  stopTimer();
+  document.removeEventListener("pointerdown", onDocPointerDown, true);
+  window.removeEventListener("scroll", onWindowScroll, true);
+  window.removeEventListener("keydown", onGlobalKeydown);
+});
 onActivated(startTimer);
 onDeactivated(stopTimer);
 
@@ -216,11 +432,73 @@ onDeactivated(stopTimer);
 // 之前每次按键都触发后端 DB 查询，导致列表项被整个替换 → 闪屏
 // 现在搜索过滤完全在客户端 computed 完成
 
+// Batch 4：分类筛选 + 标题/正文搜索（store.filteredItems）叠加全局搜索框
 const filteredItems = computed(() => {
-  if (!appStore.searchQuery) return tempStore.items;
-  const q = appStore.searchQuery.toLowerCase();
-  return tempStore.items.filter((i) => i.text.toLowerCase().includes(q));
+  let list = tempStore.filteredItems;
+  if (appStore.searchQuery) {
+    const q = appStore.searchQuery.toLowerCase();
+    list = list.filter(
+      (i) => i.text.toLowerCase().includes(q) || (i.title || "").toLowerCase().includes(q)
+    );
+  }
+  return list;
 });
+
+// ===== 文章/分类 =====
+function notePreview(item: TempMeta): string {
+  return item.text.length > 90 ? item.text.slice(0, 90) + "…" : item.text;
+}
+
+// 分类管理弹窗（复用现有分类 CRUD）
+const showCatManage = ref(false);
+const catNewName = ref("");
+const catRenameId = ref<number | null>(null);
+const catRenameName = ref("");
+async function submitNewCategory() {
+  if (!catNewName.value.trim()) return;
+  try {
+    await tempStore.createCategory(catNewName.value);
+    catNewName.value = "";
+    appStore.showClipToast("success", "分类已创建");
+  } catch (e) {
+    appStore.showClipToast("info", "创建失败：" + String(e));
+  }
+}
+async function submitRenameCategory() {
+  if (catRenameId.value == null || !catRenameName.value.trim()) return;
+  try {
+    await tempStore.renameCategory(catRenameId.value, catRenameName.value);
+    catRenameId.value = null;
+    appStore.showClipToast("success", "分类已重命名");
+  } catch (e) {
+    appStore.showClipToast("info", "重命名失败：" + String(e));
+  }
+}
+async function submitDeleteCategory(id: number) {
+  try {
+    const n = await tempStore.deleteCategory(id);
+    if (detailTarget.value?.category_id === id) {
+      detailTarget.value = tempStore.items.find((i) => i.id === detailTarget.value?.id) || null;
+    }
+    appStore.showClipToast("success", `分类已删除，${n} 张便签回到未分类`);
+  } catch (e) {
+    appStore.showClipToast("info", "删除失败：" + String(e));
+  }
+}
+
+// 分类筛选：全部 / 未分类 / 分类
+function selectAllCategories() {
+  tempStore.activeCategoryId = null;
+  tempStore.showUncategorized = false;
+}
+function selectUncategorized() {
+  tempStore.activeCategoryId = null;
+  tempStore.showUncategorized = true;
+}
+function selectCategory(id: number) {
+  tempStore.showUncategorized = false;
+  tempStore.activeCategoryId = id;
+}
 
 function timeLeft(expires: number): string {
   if (isTempPermanent(expires)) return "永久保留";
@@ -236,6 +514,19 @@ function timeLeft(expires: number): string {
   return `${s}s`;
 }
 
+function expiryLabel(item: TempMeta): string {
+  if (isTempPermanent(item.expires_at)) return "永不过期";
+  if (item.expires_at <= now.value) return "已过期";
+  return `剩余 ${timeLeft(item.expires_at)}`;
+}
+function expiryTone(item: TempMeta): string {
+  if (isTempPermanent(item.expires_at)) return "permanent";
+  const diff = item.expires_at - now.value;
+  if (diff <= 0) return "expired";
+  if (diff <= 24 * 60 * 60 * 1000) return "soon";
+  return "";
+}
+
 function progress(item: TempMeta): number {
   if (isTempPermanent(item.expires_at)) return 100;
   const total = item.expires_at - item.created_at;
@@ -249,7 +540,7 @@ function openSummary() {
 }
 
 function openAdd() {
-  addForm.value = { text: "", ttlMinutes: defaultTtl.value };
+  addForm.value = { text: "", ttlMinutes: defaultTtl.value, title: "" };
   showAdd.value = true;
 }
 
@@ -259,7 +550,7 @@ async function submitAdd() {
     return;
   }
   try {
-    await tempStore.create(addForm.value.text, addForm.value.ttlMinutes);
+    await tempStore.create(addForm.value.text, addForm.value.ttlMinutes, addForm.value.title);
     showAdd.value = false;
     appStore.showClipToast("success", "已添加");
   } catch (e) {
@@ -273,27 +564,6 @@ async function copy(text: string) {
     appStore.showClipToast("success", "已复制");
   } catch (e) {
     appStore.showClipToast("info", String(e));
-  }
-}
-
-function askRemove(id: number) {
-  confirmingDeleteId.value = id;
-}
-
-function cancelRemove() {
-  confirmingDeleteId.value = null;
-}
-
-async function confirmRemove(id: number) {
-  deletingId.value = id;
-  try {
-    await tempStore.remove(id);
-    appStore.showClipToast("success", "已删除");
-  } catch (e) {
-    appStore.showClipToast("info", String(e));
-  } finally {
-    deletingId.value = null;
-    confirmingDeleteId.value = null;
   }
 }
 
@@ -332,70 +602,279 @@ async function submitPromote() {
             <span class="view-title-text">便签</span>
             <span class="title-count">{{ filteredItems.length }}</span>
           </h2>
-          <p class="view-subtitle">{{ widgetStore.tempExpireDays === 0 ? "新建便签默认永不过期" : `新建便签默认 ${widgetStore.tempExpireDays} 天后过期` }} · {{ new Date(now).toLocaleString("zh-CN") }}</p>
+          <p class="view-subtitle">{{ widgetStore.tempExpireDays === 0 ? "新建便签默认永不过期" : `新建便签默认 ${widgetStore.tempExpireDays} 天后过期` }}</p>
         </div>
       </div>
       <div class="view-header-actions">
         <button class="action-btn action-btn-primary tap" title="汇总便签" @click="openSummary">
           <span class="action-btn-glyph">📋</span>
         </button>
-        <button class="action-btn action-btn-primary tap" title="添加临时内容" @click="openAdd">+</button>
+        <button class="action-btn action-btn-primary tap" title="添加便签" @click="openAdd">+</button>
       </div>
+    </div>
+
+    <!-- U3：分类筛选常驻（全部 / 未分类 / 自定义分类 + 明确的管理入口） -->
+    <div class="cat-bar">
+      <div class="cat-bar-scroll">
+        <button
+          class="cat-chip"
+          :class="{ active: !tempStore.showUncategorized && tempStore.activeCategoryId === null }"
+          @click="selectAllCategories"
+        >全部</button>
+        <button
+          class="cat-chip"
+          :class="{ active: tempStore.showUncategorized }"
+          @click="selectUncategorized"
+        >未分类</button>
+        <button
+          v-for="c in tempStore.categories"
+          :key="c.id"
+          class="cat-chip"
+          :class="{ active: !tempStore.showUncategorized && tempStore.activeCategoryId === c.id }"
+          @click="selectCategory(c.id)"
+        >{{ c.name }}</button>
+      </div>
+      <button class="cat-manage-btn tap" data-interactive @click="showCatManage = true">
+        ⚙️ 管理分类
+      </button>
     </div>
 
     <!-- 空状态 -->
     <div v-if="filteredItems.length === 0 && !tempStore.loading" class="empty">
       <div class="empty-icon">⏳</div>
       <div class="empty-text">
-        <template v-if="appStore.searchQuery">没有匹配的临时内容</template>
-        <template v-else>没有临时内容，点 + 添加</template>
+        <template v-if="appStore.searchQuery">没有匹配的便签</template>
+        <template v-else-if="tempStore.showUncategorized">这个分类下还没有便签</template>
+        <template v-else-if="tempStore.activeCategoryId !== null">该分类下还没有便签</template>
+        <template v-else>还没有便签，点 + 添加</template>
       </div>
     </div>
 
     <TransitionGroup name="list" tag="div" class="list-container">
-      <div
+      <article
         v-for="(item, index) in filteredItems"
         :key="item.id"
-        class="list-item stagger-item"
-        :style="{ '--delay': `${index * 0.05}s` }"
+        class="note-card stagger-item"
+        :style="{ '--delay': `${index * 0.04}s` }"
+        :title="'单击查看详情，右键更多操作'"
+        @click="openDetail(item)"
+        @contextmenu.prevent.stop="openItemMenu($event, item)"
       >
-        <div class="item-main">
-          <div class="item-icon icon-orange">
-            <span>⏳</span>
-            <div class="item-icon-glow"></div>
-          </div>
-          <div class="item-info">
-            <div class="item-text">{{ item.text }}</div>
-            <div class="item-meta">
-              <span class="meta-time" :class="{ 'meta-permanent': isTempPermanent(item.expires_at) }">
-                ⏱ {{ isTempPermanent(item.expires_at) ? "永久保留" : `剩余 ${timeLeft(item.expires_at)}` }}
+        <div class="note-main">
+          <div class="item-icon icon-orange note-icon"><span>⏳</span></div>
+          <div class="note-info">
+            <div v-if="item.title" class="note-title">{{ item.title }}</div>
+            <div
+              class="note-text"
+              :class="{ 'note-text-preview': !!item.title, 'note-text-empty': !item.title && !item.text }"
+            >{{ item.title ? notePreview(item) : item.text }}</div>
+            <div class="note-meta">
+              <span class="note-cat" :class="{ 'note-cat-empty': !item.category_name }">
+                🏷 {{ item.category_name || "未分类" }}
               </span>
-              <div v-if="!isTempPermanent(item.expires_at)" class="meta-progress">
-                <div
-                  class="meta-progress-bar"
-                  :style="{ width: progress(item) + '%' }"
-                ></div>
-              </div>
+              <span class="note-time" :class="`note-time-${expiryTone(item)}`">
+                ⏱ {{ expiryLabel(item) }}
+              </span>
+            </div>
+            <div v-if="!isTempPermanent(item.expires_at)" class="note-progress">
+              <div class="note-progress-bar" :style="{ width: progress(item) + '%' }"></div>
             </div>
           </div>
         </div>
-        <div v-if="confirmingDeleteId !== item.id" class="item-actions">
-          <button class="action-btn" title="编辑 / 追加内容" @click="openEdit(item)">✏️</button>
-          <button class="action-btn" title="续期" @click="openRenew(item)">⏰</button>
-          <button class="action-btn" title="转存为命令" @click="openPromote(item)">📌</button>
-          <button class="action-btn" title="复制" @click="copy(item.text)">📋</button>
-          <button class="action-btn" title="删除" @click="askRemove(item.id)">🗑️</button>
+        <button
+          class="note-more tap"
+          data-interactive
+          title="更多操作"
+          aria-label="更多操作"
+          @click.stop="openItemMenu($event, item)"
+          @contextmenu.stop.prevent="openItemMenu($event, item)"
+        >···</button>
+      </article>
+    </TransitionGroup>
+
+    <!-- ===== U3：详情浮层（阅读 / 编辑 / 追加 / 分类 / 续期 / 复制 / 删除） ===== -->
+    <Teleport to="body">
+      <Transition name="modal">
+        <div v-if="detailTarget" class="dt-mask" @click.self="requestCloseDetail">
+          <div class="dt-sheet" role="dialog" aria-modal="true" tabindex="-1" ref="detailEl">
+            <div class="dt-head">
+              <div class="dt-head-text">
+                <span class="dt-head-title">{{ detailEditing ? (detailMode === "append" ? "追加内容" : "编辑便签") : "便签详情" }}</span>
+                <span class="dt-head-meta">{{ detailTarget.category_name || "未分类" }} · {{ expiryLabel(detailTarget) }}</span>
+              </div>
+              <button class="dt-close tap" data-interactive title="关闭（Esc）" @click="requestCloseDetail">×</button>
+            </div>
+
+            <div class="dt-body">
+              <template v-if="!detailEditing">
+                <h3 v-if="detailTarget.title" class="dt-title">{{ detailTarget.title }}</h3>
+                <pre class="dt-text">{{ detailTarget.text }}</pre>
+                <div class="dt-meta-line">
+                  创建于 {{ fmtDateTime(detailTarget.created_at) }} · 到期：{{ isTempPermanent(detailTarget.expires_at) ? "永不过期" : fmtDateTime(detailTarget.expires_at) }}
+                </div>
+              </template>
+              <template v-else>
+                <div class="dt-field">
+                  <label class="dt-label">标题（选填，≤100 字符）</label>
+                  <input
+                    v-model="detailTitle"
+                    class="form-input"
+                    maxlength="100"
+                    placeholder="不填则列表显示正文预览"
+                  />
+                </div>
+                <div v-if="detailMode === 'append'" class="dt-field">
+                  <label class="dt-label">追加到末尾（原文完整保留）</label>
+                  <textarea
+                    v-model="detailAppend"
+                    class="form-input form-textarea"
+                    rows="5"
+                    placeholder="输入要追加到末尾的内容…"
+                  ></textarea>
+                </div>
+                <div v-else class="dt-field">
+                  <label class="dt-label">正文</label>
+                  <textarea v-model="detailDraft" class="form-input form-textarea" rows="8"></textarea>
+                </div>
+              </template>
+
+              <div class="dt-cat-row">
+                <span class="dt-label">所属分类</span>
+                <DarkSelect
+                  :model-value="catSelectValue(detailTarget)"
+                  :options="catOptions"
+                  aria-label="所属分类"
+                  @update:model-value="onDetailCatChange"
+                />
+                <button class="dt-link tap" data-interactive @click="showCatManage = true">管理分类</button>
+              </div>
+
+              <div v-if="detailDiscardConfirm" class="dt-discard">
+                <span>有未保存的修改</span>
+                <button class="btn-secondary tap" data-interactive @click="detailDiscardConfirm = false">继续编辑</button>
+                <button class="btn-secondary danger-text tap" data-interactive @click="forceCloseDetail">放弃修改</button>
+              </div>
+
+              <ConfirmInline
+                v-if="detailDeleteConfirm"
+                title="确定删除这张便签？删除后可在回收站恢复。"
+                confirm-text="删除"
+                @cancel="detailDeleteConfirm = false"
+                @confirm="confirmDetailDelete"
+              />
+            </div>
+
+            <div class="dt-foot">
+              <template v-if="!detailEditing">
+                <button class="btn-primary tap" data-interactive @click="startDetailEdit('edit')">✏️ 编辑</button>
+                <button class="btn-secondary tap" data-interactive @click="startDetailEdit('append')">➕ 追加</button>
+                <button class="btn-secondary tap" data-interactive @click="copy(detailTarget.text)">📋 复制</button>
+                <button class="btn-secondary tap" data-interactive @click="openRenew(detailTarget)">⏰ 续期</button>
+                <button
+                  v-if="!isTempPermanent(detailTarget.expires_at)"
+                  class="btn-secondary tap"
+                  data-interactive
+                  @click="setDetailPermanent"
+                >∞ 永不过期</button>
+                <button class="dt-delete tap" data-interactive @click="detailDeleteConfirm = true">删除</button>
+              </template>
+              <template v-else>
+                <button class="btn-secondary tap" data-interactive @click="requestCloseDetail">取消</button>
+                <button class="btn-primary tap" data-interactive :disabled="detailBusy" @click="saveDetail">
+                  {{ detailBusy ? "保存中…" : "保存" }}
+                </button>
+              </template>
+            </div>
+          </div>
         </div>
-        <div v-else class="item-confirm-wrap">
-          <ConfirmInline
-            title="确定删除此便签？"
-            :loading="deletingId === item.id"
-            @cancel="cancelRemove"
-            @confirm="confirmRemove(item.id)"
-          />
+      </Transition>
+    </Teleport>
+
+    <!-- ===== U3：右键 / ⋯ 共用菜单 ===== -->
+    <Teleport to="body">
+      <Transition name="modal">
+        <div
+          v-if="itemMenu.visible && itemMenu.item"
+          ref="itemMenuEl"
+          class="tm-menu"
+          :style="{ left: itemMenu.x + 'px', top: itemMenu.y + 'px' }"
+          @click.stop
+          @contextmenu.prevent.stop
+        >
+          <template v-if="!itemMenu.showCategories">
+            <div class="tm-menu-title">{{ itemMenu.item.title || notePreview(itemMenu.item) }}</div>
+            <button class="tm-menu-item tap" data-interactive @click="menuAction('open')">👁 查看 / 编辑</button>
+            <button class="tm-menu-item tap" data-interactive @click="menuAction('append')">➕ 追加内容</button>
+            <button class="tm-menu-item tap" data-interactive @click="menuAction('copy')">📋 复制</button>
+            <button class="tm-menu-item tap" data-interactive @click="itemMenu.showCategories = true">
+              🏷 修改分类
+              <span class="tm-menu-hint">{{ itemMenu.item.category_name || "未分类" }}</span>
+            </button>
+            <button class="tm-menu-item tap" data-interactive @click="menuAction('renew')">⏰ 续期</button>
+            <button class="tm-menu-item tap" data-interactive @click="menuAction('promote')">📌 转存为命令</button>
+            <div class="tm-menu-divider"></div>
+            <button class="tm-menu-item danger tap" data-interactive @click="menuAction('delete')">🗑 删除（可恢复）</button>
+          </template>
+          <template v-else>
+            <button class="tm-menu-item tm-menu-back tap" data-interactive @click="itemMenu.showCategories = false">
+              ‹ 返回
+            </button>
+            <button class="tm-menu-item tap" data-interactive @click="menuPickCategory(null)">
+              未分类 <span v-if="!itemMenu.item.category_id" class="tm-menu-check">✓</span>
+            </button>
+            <button
+              v-for="c in tempStore.categories"
+              :key="c.id"
+              class="tm-menu-item tap"
+              data-interactive
+              @click="menuPickCategory(c.id)"
+            >
+              {{ c.name }} <span v-if="itemMenu.item.category_id === c.id" class="tm-menu-check">✓</span>
+            </button>
+            <button class="tm-menu-item tm-menu-manage tap" data-interactive @click="closeItemMenu(); showCatManage = true">
+              ⚙️ 管理分类…
+            </button>
+          </template>
+        </div>
+      </Transition>
+    </Teleport>
+
+    <!-- 分类管理（新建/重命名/删除；删除分类不删除便签） -->
+    <Transition name="modal">
+      <div v-if="showCatManage" class="modal-mask" @click.self="showCatManage = false">
+        <div class="modal">
+          <div class="modal-header">
+            <span>管理便签分类</span>
+            <button class="modal-close tap" @click="showCatManage = false">×</button>
+          </div>
+          <div class="modal-body">
+            <div class="form-row">
+              <label>新建分类</label>
+              <div class="cat-manage-row">
+                <input v-model="catNewName" class="form-input" maxlength="30" placeholder="分类名称（≤30 字符）" @keyup.enter="submitNewCategory" />
+                <button class="btn-primary tap" @click="submitNewCategory">新建</button>
+              </div>
+            </div>
+            <div class="cat-manage-list">
+              <div v-for="c in tempStore.categories" :key="c.id" class="cat-manage-item">
+                <template v-if="catRenameId === c.id">
+                  <input v-model="catRenameName" class="form-input" maxlength="30" @keyup.enter="submitRenameCategory" />
+                  <button class="btn-primary tap" @click="submitRenameCategory">保存</button>
+                  <button class="btn-secondary tap" @click="catRenameId = null">取消</button>
+                </template>
+                <template v-else>
+                  <span class="cat-manage-name">{{ c.name }}</span>
+                  <button class="btn-secondary tap" title="重命名" @click="catRenameId = c.id; catRenameName = c.name">重命名</button>
+                  <button class="btn-secondary danger-text tap" title="删除（便签回到未分类）" @click="submitDeleteCategory(c.id)">删除</button>
+                </template>
+              </div>
+              <div v-if="!tempStore.categories.length" class="cat-manage-empty">还没有分类，先新建一个</div>
+            </div>
+            <p class="cat-manage-hint">删除分类不会删除便签——相关便签自动回到「未分类」。</p>
+          </div>
         </div>
       </div>
-    </TransitionGroup>
+    </Transition>
 
     <!-- 剪贴板倒计时提示 -->
     <Transition name="toast">
@@ -410,22 +889,21 @@ async function submitPromote() {
       <div v-if="showAdd" class="modal-mask" @click.self="showAdd = false">
         <div class="modal">
           <div class="modal-header">
-            <span>添加临时内容</span>
+            <span>添加便签</span>
             <button class="modal-close tap" @click="showAdd = false">×</button>
           </div>
           <div class="modal-body">
+            <div class="form-row">
+              <label>标题（选填，≤100 字符）</label>
+              <input v-model="addForm.title" class="form-input" maxlength="100" placeholder="不填则显示正文预览" />
+            </div>
             <div class="form-row">
               <label>内容</label>
               <textarea v-model="addForm.text" class="form-input form-textarea" rows="6" placeholder="临时保存的内容…"></textarea>
             </div>
             <div class="form-row">
               <label>保留时长</label>
-              <DarkSelect
-                v-model="addForm.ttlMinutes"
-                :options="ttlOptions"
-                aria-label="保留时长"
-                block
-              />
+              <DarkSelect v-model="addForm.ttlMinutes" :options="ttlOptions" aria-label="保留时长" block />
             </div>
           </div>
           <div class="modal-footer">
@@ -436,60 +914,9 @@ async function submitPromote() {
       </div>
     </Transition>
 
-    <!-- 编辑 / 追加表单（v0.4.1） -->
+    <!-- 续期（v0.4.1 逻辑保持不变） -->
     <Transition name="modal">
-      <div v-if="showEdit && editTarget" class="modal-mask" @click.self="showEdit = false">
-        <div class="modal">
-          <div class="modal-header">
-            <span>编辑便签</span>
-            <button class="modal-close tap" @click="showEdit = false">×</button>
-          </div>
-          <div class="modal-body">
-            <div class="form-row">
-              <label>当前内容</label>
-              <div class="edit-original">{{ editTarget.text }}</div>
-            </div>
-            <div class="form-row">
-              <label>编辑方式</label>
-              <div class="seg-mini">
-                <button
-                  class="seg-mini-btn tap"
-                  :class="{ active: editMode === 'append' }"
-                  data-interactive
-                  @click="onEditModeChange('append')"
-                >➕ 追加到末尾（不覆盖原文）</button>
-                <button
-                  class="seg-mini-btn tap"
-                  :class="{ active: editMode === 'overwrite' }"
-                  data-interactive
-                  @click="onEditModeChange('overwrite')"
-                >✏️ 重写全部内容</button>
-              </div>
-            </div>
-            <div class="form-row">
-              <label>{{ editMode === "append" ? "要追加的内容" : "新的完整内容" }}</label>
-              <textarea
-                v-model="editText"
-                class="form-input form-textarea"
-                rows="5"
-                :placeholder="editMode === 'append' ? '输入要追加到末尾的内容…' : '输入新的完整内容…'"
-              ></textarea>
-              <span v-if="editMode === 'append'" class="field-hint">原文会完整保留，新内容换行追加在末尾</span>
-            </div>
-          </div>
-          <div class="modal-footer">
-            <button class="btn-secondary tap" @click="showEdit = false">取消</button>
-            <button class="btn-primary tap" :disabled="editBusy" @click="submitEdit">
-              {{ editBusy ? "保存中…" : "保存" }}
-            </button>
-          </div>
-        </div>
-      </div>
-    </Transition>
-
-    <!-- 续期弹窗（v0.4.1） -->
-    <Transition name="modal">
-      <div v-if="showRenew && renewTarget" class="modal-mask" @click.self="showRenew = false">
+      <div v-if="showRenew && renewTarget" class="modal-mask modal-mask-top" @click.self="showRenew = false">
         <div class="modal">
           <div class="modal-header">
             <span>续期便签</span>
@@ -562,48 +989,321 @@ async function submitPromote() {
 <style scoped>
 .view { padding-bottom: 20px; }
 /* view-header / view-title 等都用 global 统一样式 */
-.view-subtitle { font-size: 12px; color: var(--text-muted); font-family: monospace; }
-
-.btn-add, .btn-summary { display: flex; align-items: center; gap: 6px; padding: 9px 18px; border-radius: var(--radius); font-size: 13px; font-weight: 500; cursor: pointer; border: none; transition: all 0.2s; -webkit-app-region: no-drag; }
-.btn-add { background: linear-gradient(135deg, var(--accent) 0%, #4fc3f7 100%); color: white; box-shadow: 0 2px 8px rgba(79, 124, 255, 0.3); }
-.btn-add:hover { transform: translateY(-1px); }
-.btn-summary { background: linear-gradient(135deg, #ffb84d 0%, #ff8a5e 100%); color: white; box-shadow: 0 4px 16px rgba(255, 184, 77, 0.3); }
-.btn-summary:hover { transform: translateY(-2px); }
 
 .empty { text-align: center; padding: 60px 20px; color: var(--text-muted); }
 .empty-icon { font-size: 48px; margin-bottom: 12px; opacity: 0.5; }
 .empty-text { font-size: 13px; }
 
-.list-container { display: flex; flex-direction: column; gap: 8px; }
-.list-item { display: flex; align-items: center; gap: 12px; padding: 10px; background: var(--bg-primary); border: 1px solid var(--border); border-radius: 12px; transition: all 0.2s var(--ease-smooth); }
-.list-item:hover { border-color: rgba(255, 184, 77, 0.4); background: var(--bg-secondary); transform: translateX(2px); }
-.item-main { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
-.item-icon { width: 36px; height: 36px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 16px; position: relative; flex-shrink: 0; }
-.icon-orange { background: linear-gradient(135deg, rgba(255, 184, 77, 0.3), rgba(255, 184, 77, 0.1)); color: var(--warning); }
-.item-icon-glow { position: absolute; inset: 0; background: radial-gradient(circle, rgba(255, 255, 255, 0.2), transparent); pointer-events: none; }
-.item-info { flex: 1; min-width: 0; }
-.item-text { font-size: 12px; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; line-height: 1.4; }
-.item-meta { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
-.meta-time { font-size: 10px; color: var(--text-muted); font-family: monospace; white-space: nowrap; }
-.meta-time.meta-permanent { color: #34d399; }
+/* ===== U3：分类条（常驻、可横滑、管理入口固定可见） ===== */
+.cat-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.cat-bar-scroll {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding-bottom: 2px;
+}
+.cat-bar-scroll::-webkit-scrollbar { display: none; }
+.cat-chip {
+  border: 1px solid var(--border);
+  background: var(--bg-secondary);
+  color: var(--text-muted);
+  border-radius: 999px;
+  padding: 5px 12px;
+  font-size: 11.5px;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: all 0.15s;
+  -webkit-app-region: no-drag;
+}
+.cat-chip:hover { color: var(--text-secondary); border-color: rgba(255, 184, 77, 0.4); }
+.cat-chip.active {
+  border-color: rgba(255, 184, 77, 0.65);
+  background: rgba(255, 184, 77, 0.14);
+  color: #ffd48a;
+  font-weight: 600;
+}
+.cat-manage-btn {
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  border-radius: 999px;
+  padding: 5px 10px;
+  font-size: 11.5px;
+  cursor: pointer;
+  white-space: nowrap;
+  -webkit-app-region: no-drag;
+}
+.cat-manage-btn:hover { border-color: var(--accent); color: var(--text-primary); }
 
-/* v0.4.1：编辑/续期 */
+/* ===== U3：便签卡片（阅读优先，单一更多入口） ===== */
+.list-container { display: flex; flex-direction: column; gap: 8px; }
+.note-card {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: border-color 0.18s, background 0.18s, transform 0.18s;
+  -webkit-app-region: no-drag;
+}
+.note-card:hover {
+  border-color: rgba(255, 184, 77, 0.45);
+  background: var(--bg-secondary);
+  transform: translateX(2px);
+}
+.note-main { display: flex; align-items: flex-start; gap: 10px; flex: 1; min-width: 0; }
+.note-icon { width: 30px; height: 30px; border-radius: 9px; font-size: 14px; flex-shrink: 0; }
+.note-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.note-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: 1.35;
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  padding-right: 22px;
+}
+.note-text {
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  word-break: break-word;
+  white-space: pre-wrap;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
+.note-text-preview {
+  -webkit-line-clamp: 1;
+  color: var(--text-muted);
+  font-size: 12px;
+  white-space: normal;
+  padding-right: 22px;
+}
+.note-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 2px; }
+.note-cat {
+  font-size: 10.5px;
+  color: #e8c268;
+  background: rgba(232, 194, 104, 0.1);
+  border-radius: 6px;
+  padding: 1px 7px;
+  max-width: 55%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.note-cat-empty { color: var(--text-faint); background: rgba(255, 255, 255, 0.05); }
+.note-time { font-size: 10.5px; color: var(--text-muted); white-space: nowrap; }
+.note-time-permanent { color: #34d399; }
+.note-time-soon { color: #fbbf24; }
+.note-time-expired { color: #f87171; }
+.note-progress { height: 2px; background: rgba(0, 0, 0, 0.3); border-radius: 2px; overflow: hidden; margin-top: 4px; }
+.note-progress-bar { height: 100%; background: linear-gradient(90deg, var(--warning), #ff8a5e); transition: width 1s linear; }
+.note-more {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.55;
+  transition: all 0.15s;
+  -webkit-app-region: no-drag;
+}
+.note-card:hover .note-more { opacity: 1; }
+.note-more:hover { background: var(--bg-tertiary); color: var(--text-primary); }
+
+/* ===== U3：详情浮层 ===== */
+.dt-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  background: rgba(0, 0, 0, 0.62);
+  backdrop-filter: blur(6px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+.dt-sheet {
+  width: min(520px, 96vw);
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.6);
+  outline: none;
+  overflow: hidden;
+}
+.dt-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.dt-head-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.dt-head-title { font-size: 14px; font-weight: 600; color: var(--text-primary); }
+.dt-head-meta { font-size: 11px; color: var(--text-muted); }
+.dt-close {
+  width: 28px; height: 28px; flex-shrink: 0;
+  border: none; border-radius: 7px; background: transparent;
+  color: var(--text-muted); font-size: 18px; cursor: pointer;
+}
+.dt-close:hover { background: var(--bg-tertiary); color: var(--text-primary); }
+.dt-body { flex: 1; overflow-y: auto; padding: 14px; }
+.dt-title { margin: 0 0 8px; font-size: 16px; font-weight: 700; color: var(--text-primary); word-break: break-word; }
+.dt-text {
+  margin: 0;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+.dt-meta-line { margin-top: 10px; font-size: 11px; color: var(--text-muted); }
+.dt-field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+.dt-label { font-size: 11.5px; color: var(--text-muted); }
+.dt-cat-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding-top: 10px; border-top: 1px dashed var(--border); }
+.dt-link {
+  border: none; background: transparent; color: #7ea6ff;
+  font-size: 11.5px; cursor: pointer; padding: 2px 4px;
+}
+.dt-link:hover { text-decoration: underline; }
+/* 详情内的删除确认：允许换行，避免长文案被省略 */
+.dt-body :deep(.confirm-inline) {
+  display: flex;
+  flex-wrap: wrap;
+  white-space: normal;
+  width: 100%;
+  box-sizing: border-box;
+}
+.dt-body :deep(.confirm-text) {
+  flex: 1 1 100%;
+  white-space: normal;
+  line-height: 1.5;
+}
+.dt-body :deep(.confirm-actions) { margin-left: auto; }
+
+.dt-discard {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-top: 10px; padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  font-size: 12px; color: #fbbf24;
+}
+.dt-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.15);
+}
+.dt-foot .btn-primary, .dt-foot .btn-secondary { flex-shrink: 0; }
+.dt-delete {
+  margin-left: auto;
+  border: none;
+  background: transparent;
+  color: #a56b6b;
+  font-size: 11.5px;
+  cursor: pointer;
+  padding: 6px 4px;
+}
+.dt-delete:hover { color: #f87171; text-decoration: underline; }
+.danger-text { color: #f87171 !important; }
+
+/* ===== U3：共用操作菜单 ===== */
+.tm-menu {
+  position: fixed;
+  z-index: 400;
+  min-width: 196px;
+  max-width: 240px;
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+  padding: 6px;
+  background: rgba(20, 20, 32, 0.97);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.tm-menu-title {
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 6px 8px 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tm-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+.tm-menu-item:hover { background: var(--bg-tertiary); color: var(--text-primary); }
+.tm-menu-item.danger { color: #f87171; }
+.tm-menu-item.danger:hover { background: rgba(244, 63, 94, 0.12); }
+.tm-menu-hint { margin-left: auto; font-size: 10.5px; color: var(--text-faint); }
+.tm-menu-check { margin-left: auto; color: #34d399; }
+.tm-menu-divider { height: 1px; background: var(--border); margin: 4px 2px; }
+.tm-menu-back { color: var(--text-muted); font-size: 11.5px; }
+.tm-menu-manage { color: #7ea6ff; }
+
+/* 续期等旧弹窗置顶于详情浮层之上 */
+.modal-mask-top { z-index: 350; }
+
+/* 旧弹窗与表单样式（保持 v0.4.1 行为） */
 .edit-original {
   font-size: 12px; color: var(--text-secondary);
   background: rgba(0, 0, 0, 0.25); border: 1px dashed var(--border);
   border-radius: 8px; padding: 8px 10px;
   max-height: 120px; overflow-y: auto; white-space: pre-wrap; word-break: break-all;
-}
-.seg-mini { display: flex; gap: 4px; background: var(--bg-tertiary); border-radius: 8px; padding: 3px; }
-.seg-mini-btn {
-  flex: 1; border: none; border-radius: 6px; padding: 7px 6px;
-  background: transparent; color: var(--text-muted);
-  font-size: 11px; cursor: pointer; transition: all 0.15s;
-  -webkit-app-region: no-drag; white-space: nowrap;
-}
-.seg-mini-btn.active {
-  background: linear-gradient(135deg, var(--accent) 0%, var(--highlight) 100%);
-  color: white; font-weight: 600;
 }
 .field-hint { font-size: 10.5px; color: var(--text-faint); margin-top: 2px; }
 .renew-preview {
@@ -611,22 +1311,12 @@ async function submitPromote() {
   background: rgba(16, 185, 129, 0.08); border-left: 3px solid #10b981;
   border-radius: 6px; padding: 8px 10px; margin: 4px 0 0;
 }
-.renew-error {
-  font-size: 12px; color: #f87171;
-  margin: 4px 0 0;
-}
-.form-select-block { width: 100%; }
-.meta-progress { flex: 1; height: 3px; background: rgba(0, 0, 0, 0.3); border-radius: 2px; overflow: hidden; }
-.meta-progress-bar { height: 100%; background: linear-gradient(90deg, var(--warning), #ff8a5e); transition: width 1s linear; }
-
-.item-actions { display: flex; gap: 4px; flex-shrink: 0; }
-.action-btn { width: 30px; height: 30px; border: none; background: var(--bg-tertiary); color: var(--text-muted); border-radius: 8px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: all 0.15s; -webkit-app-region: no-drag; }
-.action-btn:hover { background: var(--warning); color: white; transform: scale(1.08); }
+.renew-error { font-size: 12px; color: #f87171; margin: 4px 0 0; }
 
 .clipboard-toast { position: fixed; bottom: 16px; right: 16px; padding: 10px 16px; background: rgba(0, 0, 0, 0.8); backdrop-filter: blur(8px); border: 1px solid var(--accent); border-radius: 10px; display: flex; align-items: center; gap: 8px; font-size: 12px; z-index: 99; }
 
-.modal-mask { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.6); backdrop-filter: blur(8px); display: flex; align-items: center; justify-content: center; z-index: 100; }
-.modal { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px; width: 90%; max-width: 420px; max-height: 85vh; display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5); }
+.modal-mask { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.6); backdrop-filter: blur(8px); display: flex; align-items: center; justify-content: center; z-index: 100; padding: 12px; }
+.modal { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px; width: 92%; max-width: 420px; max-height: 85vh; display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5); }
 .modal-header { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--border); font-size: 14px; font-weight: 600; }
 .modal-close { width: 26px; height: 26px; border: none; background: transparent; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 6px; -webkit-app-region: no-drag; }
 .modal-close:hover { background: var(--highlight); color: white; }
@@ -638,9 +1328,10 @@ async function submitPromote() {
 .form-input:focus { outline: none; border-color: var(--accent); }
 .form-textarea { resize: vertical; font-family: inherit; min-height: 100px; }
 
-.btn-primary, .btn-secondary { border: none; border-radius: 8px; padding: 7px 14px; font-size: 12px; cursor: pointer; font-weight: 500; transition: all 0.15s; -webkit-app-region: no-drag; }
+.btn-primary, .btn-secondary { border: none; border-radius: 8px; padding: 8px 14px; font-size: 12px; cursor: pointer; font-weight: 500; transition: all 0.15s; -webkit-app-region: no-drag; }
 .btn-primary { background: linear-gradient(135deg, var(--accent) 0%, #4fc3f7 100%); color: white; }
 .btn-primary:hover { transform: translateY(-1px); }
+.btn-primary:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
 .btn-secondary { background: var(--bg-primary); color: var(--text-secondary); border: 1px solid var(--border); }
 .btn-secondary:hover { background: var(--bg-secondary); border-color: var(--accent); }
 
@@ -652,4 +1343,23 @@ async function submitPromote() {
 .modal-enter-from, .modal-leave-to { opacity: 0; }
 .toast-enter-active, .toast-leave-active { transition: all 0.3s var(--ease-smooth); }
 .toast-enter-from, .toast-leave-to { opacity: 0; transform: translateY(20px); }
+
+/* 分类管理弹窗 */
+.cat-manage-row { display: flex; gap: 8px; }
+.cat-manage-row .form-input { flex: 1; min-width: 0; }
+.cat-manage-list { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.cat-manage-item { display: flex; align-items: center; gap: 8px; }
+.cat-manage-item .form-input { flex: 1; min-width: 0; }
+.cat-manage-name { flex: 1; font-size: 13px; color: #e8ecf3; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cat-manage-empty { font-size: 12px; color: #7c8aa8; padding: 8px 0; }
+.cat-manage-hint { font-size: 11px; color: #7c8aa8; margin-top: 10px; }
+
+/* 窄窗（≤419）：详情底部操作两列，不溢出 */
+@media (max-width: 419px) {
+  .dt-mask { padding: 8px; }
+  .dt-sheet { max-height: 92vh; }
+  .dt-foot { gap: 6px; }
+  .dt-foot .btn-primary, .dt-foot .btn-secondary { flex: 1 1 calc(50% - 6px); min-width: 0; }
+  .dt-delete { flex: 1 1 100%; margin-left: 0; text-align: center; }
+}
 </style>
