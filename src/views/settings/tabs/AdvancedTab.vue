@@ -231,7 +231,7 @@ onUnmounted(() => {
 
     <SettingsCard
       title="版本更新历史"
-      subtitle="随应用打包的历史记录（离线可查）；单一事实源为 GitHub Releases，发布新版本时同步登记。"
+      subtitle="随应用打包的版本记录（离线可查）；候选版标为未发布，正式记录与 GitHub Releases 同步。"
     >
       <div v-if="isTestEdition" class="vh-test-banner">
         🧪 测试构建（验收通道）：版本号可能与正式版相同，但不是正式发行版
@@ -252,7 +252,7 @@ onUnmounted(() => {
                   class="vh-now"
                 >本机安装</span>
               </div>
-              <div class="vh-date">{{ entry.date || "未发布" }} · {{ entry.summary }}</div>
+              <div class="vh-date">{{ entry.unreleased || !entry.date ? "未发布" : entry.date }} · {{ entry.summary }}</div>
             </div>
             <div class="vh-actions">
               <button class="s-btn-mini tap" data-interactive @click="toggleNotes(entry.version)">
@@ -281,7 +281,7 @@ onUnmounted(() => {
         <div v-if="showAllHistory" class="vh-overlay" @click.self="showAllHistory = false">
           <div class="vh-modal">
             <div class="vh-modal-head">
-              <b>版本更新历史（全部 {{ VERSION_HISTORY.length }} 条正式版本）</b>
+              <b>版本更新历史（全部 {{ VERSION_HISTORY.length }} 条版本记录）</b>
               <button class="s-btn-mini tap" data-interactive @click="showAllHistory = false">关闭</button>
             </div>
             <div class="vh-modal-body">
@@ -300,7 +300,7 @@ onUnmounted(() => {
                         class="vh-now"
                       >本机安装</span>
                     </div>
-                    <div class="vh-date">{{ entry.date || "未发布" }} · {{ entry.summary }}</div>
+                    <div class="vh-date">{{ entry.unreleased || !entry.date ? "未发布" : entry.date }} · {{ entry.summary }}</div>
                   </div>
                   <div class="vh-actions">
                     <button class="s-btn-mini tap" data-interactive @click="toggleNotes(entry.version)">
