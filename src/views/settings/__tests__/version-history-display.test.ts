@@ -31,7 +31,7 @@ afterEach(() => {
 });
 
 describe("v0.4.3 candidate history in the existing settings UI", () => {
-  it("shows the installed unpublished entry, expands its full notes, and includes it in the all-records panel", async () => {
+  it("shows the installed released entry, expands its full notes, and includes it in the all-records panel", async () => {
     const container = document.createElement("div");
     document.body.appendChild(container);
     app = createApp(AdvancedTab);
@@ -42,9 +42,9 @@ describe("v0.4.3 candidate history in the existing settings UI", () => {
     const first = container.querySelector(".vh-item")!;
     expect(first.querySelector(".vh-version")?.textContent).toContain("v0.4.3");
     expect(first.querySelector(".vh-now")?.textContent).toBe("本机安装");
-    expect(first.querySelector(".vh-date")?.textContent).toContain("未发布");
-    expect(VERSION_HISTORY[0].date).toBe("");
-    expect(VERSION_HISTORY[0].unreleased).toBe(true);
+    expect(first.querySelector(".vh-date")?.textContent).toContain("2026-10-24");
+    expect(VERSION_HISTORY[0].date).toBe("2026-10-24");
+    expect(VERSION_HISTORY[0].unreleased).toBe(false);
     expect(container.querySelectorAll(".vh-item")[1].textContent).toContain("2026-10-12");
 
     const expand = Array.from(first.querySelectorAll("button")).find(b => b.textContent === "更新内容")!;
@@ -62,7 +62,7 @@ describe("v0.4.3 candidate history in the existing settings UI", () => {
     expect(modal.querySelector(".vh-modal-head")?.textContent).toContain("条版本记录");
     expect(modal.querySelector(".vh-modal-head")?.textContent).not.toContain("正式版本");
     expect(modal.querySelector(".vh-item")?.textContent).toContain("v0.4.3");
-    expect(modal.querySelector(".vh-date")?.textContent).toContain("未发布");
+    expect(modal.querySelector(".vh-date")?.textContent).toContain("2026-10-24");
     expect(modal.querySelector(".vh-notes")?.textContent).toBe(VERSION_HISTORY[0].notes);
   });
 });
