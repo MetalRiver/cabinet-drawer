@@ -30,8 +30,8 @@ afterEach(() => {
   document.body.innerHTML = "";
 });
 
-describe("v0.4.4 candidate history in the existing settings UI", () => {
-  it("shows the unreleased candidate on top with 未发布 badge, expands its full notes, and includes it in the all-records panel", async () => {
+describe("v0.4.4 released history in the existing settings UI", () => {
+  it("shows the installed released entry on top, expands its full notes, and includes it in the all-records panel", async () => {
     const container = document.createElement("div");
     document.body.appendChild(container);
     app = createApp(AdvancedTab);
@@ -39,15 +39,15 @@ describe("v0.4.4 candidate history in the existing settings UI", () => {
     await Promise.resolve();
     await nextTick();
 
-    // 候选条目：unreleased + date 为空，UI 显示"未发布"，不得出现虚构日期
+    // 正式发布态：date 回填、unreleased 删除
     expect(VERSION_HISTORY[0].version).toBe("v0.4.4");
-    expect(VERSION_HISTORY[0].date).toBe("");
-    expect(VERSION_HISTORY[0].unreleased).toBe(true);
+    expect(VERSION_HISTORY[0].date).toBe("2026-10-25");
+    expect(VERSION_HISTORY[0].unreleased).toBe(false);
 
     const first = container.querySelector(".vh-item")!;
     expect(first.querySelector(".vh-version")?.textContent).toContain("v0.4.4");
-    expect(first.querySelector(".vh-date")?.textContent).toContain("未发布");
-    expect(first.querySelector(".vh-date")?.textContent).not.toContain("2026-");
+    expect(first.querySelector(".vh-date")?.textContent).toContain("2026-10-25");
+    expect(first.querySelector(".vh-date")?.textContent).not.toContain("未发布");
 
     // 已安装的正式版本 v0.4.3 保持完整展示（date + unreleased=false）
     const second = container.querySelectorAll(".vh-item")[1];
@@ -70,7 +70,7 @@ describe("v0.4.4 candidate history in the existing settings UI", () => {
     const modal = document.querySelector(".vh-modal")!;
     expect(modal.querySelectorAll(".vh-item")).toHaveLength(VERSION_HISTORY.length);
     expect(modal.querySelector(".vh-item")?.textContent).toContain("v0.4.4");
-    expect(modal.querySelector(".vh-item")?.textContent).toContain("未发布");
+    expect(modal.querySelector(".vh-item")?.textContent).toContain("2026-10-25");
     expect(modal.querySelector(".vh-notes")?.textContent).toBe(VERSION_HISTORY[0].notes);
   });
 });

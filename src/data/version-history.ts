@@ -42,8 +42,8 @@ export const VERSION_HISTORY: VersionHistoryEntry[] = [
   {
     version: "v0.4.4",
     name: "抽屉柜 Drawer v0.4.4",
-    date: "",
-    unreleased: true,
+    date: "2026-10-25",
+    unreleased: false,
     summary: "密码区布局修复、启动点击提速、软件区滚动与动画开销优化",
     url: "https://github.com/MetalRiver/cabinet-drawer/releases/tag/v0.4.4",
     notes: `# 抽屉柜 Drawer v0.4.4
