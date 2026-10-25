@@ -6,7 +6,7 @@ import { VERSION_HISTORY } from "../../../data/version-history";
 
 // Only IPC and side-effect boundaries are mocked; mount the actual history UI.
 vi.mock("../../../api", () => ({
-  getAppVersion: async () => "0.4.3",
+  getAppVersion: async () => "0.4.4",
   getAppEdition: async () => "production",
   getSetting: async () => "false",
   setSetting: vi.fn(),
@@ -30,8 +30,8 @@ afterEach(() => {
   document.body.innerHTML = "";
 });
 
-describe("v0.4.3 candidate history in the existing settings UI", () => {
-  it("shows the installed released entry, expands its full notes, and includes it in the all-records panel", async () => {
+describe("v0.4.4 candidate history in the existing settings UI", () => {
+  it("shows the unreleased candidate on top with 未发布 badge, expands its full notes, and includes it in the all-records panel", async () => {
     const container = document.createElement("div");
     document.body.appendChild(container);
     app = createApp(AdvancedTab);
@@ -39,30 +39,38 @@ describe("v0.4.3 candidate history in the existing settings UI", () => {
     await Promise.resolve();
     await nextTick();
 
-    const first = container.querySelector(".vh-item")!;
-    expect(first.querySelector(".vh-version")?.textContent).toContain("v0.4.3");
-    expect(first.querySelector(".vh-now")?.textContent).toBe("本机安装");
-    expect(first.querySelector(".vh-date")?.textContent).toContain("2026-10-24");
-    expect(VERSION_HISTORY[0].date).toBe("2026-10-24");
-    expect(VERSION_HISTORY[0].unreleased).toBe(false);
-    expect(container.querySelectorAll(".vh-item")[1].textContent).toContain("2026-10-12");
+    // 候选条目：unreleased + date 为空，UI 显示"未发布"，不得出现虚构日期
+    expect(VERSION_HISTORY[0].version).toBe("v0.4.4");
+    expect(VERSION_HISTORY[0].date).toBe("");
+    expect(VERSION_HISTORY[0].unreleased).toBe(true);
 
+    const first = container.querySelector(".vh-item")!;
+    expect(first.querySelector(".vh-version")?.textContent).toContain("v0.4.4");
+    expect(first.querySelector(".vh-date")?.textContent).toContain("未发布");
+    expect(first.querySelector(".vh-date")?.textContent).not.toContain("2026-");
+
+    // 已安装的正式版本 v0.4.3 保持完整展示（date + unreleased=false）
+    const second = container.querySelectorAll(".vh-item")[1];
+    expect(second?.textContent).toContain("v0.4.3");
+    expect(second?.textContent).toContain("2026-10-24");
+
+    // 展开候选条目 notes
     const expand = Array.from(first.querySelectorAll("button")).find(b => b.textContent === "更新内容")!;
     expand.click();
     await nextTick();
     expect(first.querySelector(".vh-notes")?.textContent).toBe(VERSION_HISTORY[0].notes);
-    expect(first.querySelector(".vh-notes")?.textContent).toContain("软件扫描与整理");
-    expect(first.querySelector(".vh-notes")?.textContent).toContain("数据兼容与备份建议");
+    expect(first.querySelector(".vh-notes")?.textContent).toContain("密码区");
+    expect(first.querySelector(".vh-notes")?.textContent).toContain("软件区");
+    expect(first.querySelector(".vh-notes")?.textContent).toContain("数据与兼容");
 
+    // 全部记录面板
     const showAll = Array.from(container.querySelectorAll("button")).find(b => b.textContent?.includes("查看全部历史版本"))!;
     showAll.click();
     await nextTick();
     const modal = document.querySelector(".vh-modal")!;
     expect(modal.querySelectorAll(".vh-item")).toHaveLength(VERSION_HISTORY.length);
-    expect(modal.querySelector(".vh-modal-head")?.textContent).toContain("条版本记录");
-    expect(modal.querySelector(".vh-modal-head")?.textContent).not.toContain("正式版本");
-    expect(modal.querySelector(".vh-item")?.textContent).toContain("v0.4.3");
-    expect(modal.querySelector(".vh-date")?.textContent).toContain("2026-10-24");
+    expect(modal.querySelector(".vh-item")?.textContent).toContain("v0.4.4");
+    expect(modal.querySelector(".vh-item")?.textContent).toContain("未发布");
     expect(modal.querySelector(".vh-notes")?.textContent).toBe(VERSION_HISTORY[0].notes);
   });
 });
