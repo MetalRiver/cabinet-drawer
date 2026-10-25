@@ -261,12 +261,21 @@ export const useSoftwareStore = defineStore("software", () => {
     // C1（v0.4.3）：使用次数改由后端在启动请求受理成功后计数——
     // 旧实现此处先 record 再 launch，失败（文件缺失/重定位仍失败/ShellExecute 报错）
     // 也 +1，统计口径失真。删除前端预调用，避免双计数。
+    const launched = items.value.find((x) => x.id === id);
     try {
-      // P0-#F#RUNTIME：后端可能返回 "ok" / "ok:auto-relocated:旧 → 新" / "ok:steam-fallback"
+      // P0-#APPC#PER#LAUNCH：启动成功后不再整表重拉。
+      // 旧实现每次点击启动都 await loadItems() → listAppsWithIcons 全量返回
+      // 全部条目 + 全部图标 base64（500 条 ≈ 600KB、真实库更大），点击→toast
+      // 延迟随条目数线性恶化（实测 20→500 条：130ms→540ms，v0.4.3 用户实测同感）。
+      // 常规成功路径只需同步该条使用计数（后端 record_app_usage 已落库，
+      // 下次进入软件区/常用区自会取到真值；此处乐观 +1 保持界面即时一致）。
       const result: string = await apiLaunchApp(id);
-      await loadItems();
-      // 自动重定位成功 → 通知前端 toast（让用户知道"路径已自动更新"）
+      if (launched) {
+        launched.use_count += 1;
+      }
+      // 自动重定位成功 → path 已被后端改写，需要刷新该条元数据（罕见路径，可接受一次全量拉取）
       if (result.startsWith("ok:auto-relocated:")) {
+        await loadItems();
         const arrow = result.slice("ok:auto-relocated:".length);
         const [from, to] = arrow.split(" → ");
         return {
@@ -282,6 +291,7 @@ export const useSoftwareStore = defineStore("software", () => {
       }
       return { ok: true };
     } catch (e: any) {
+      // 失败路径保留全量刷新：available / 重定位后的 path 需要与后端对齐
       await loadItems();
       // P0-#F：精确错误信息
       const msg = String(e);

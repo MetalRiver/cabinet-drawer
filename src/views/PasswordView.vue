@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, reactive } from "vue";
+import { ref, computed, onMounted, reactive, nextTick } from "vue";
 import { useAppStore } from "../stores/app";
 import { useWidgetStore } from "../stores/widget";
 import { usePasswordStore } from "../stores/passwords";
@@ -236,7 +236,8 @@ const filteredItems = computed(() => {
 // P0-#Z：清掉调试 console.log
 
 // ===== 行展开/折叠 =====
-// P0-#Z：点击新 tile 时先收起其他已展开的
+// P1-#PW#LAYOUT：展开的详情行改为紧跟被点击卡片渲染（同一 v-for 内交错输出），
+// 不再集中放在整个网格末尾——详情与所选卡片保持明确对应关系（v0.4.3 用户反馈修复）
 async function toggleRow(item: PasswordMeta) {
   const s = getRowState(item.id);
   if (s.mode === "collapsed") {
@@ -250,6 +251,10 @@ async function toggleRow(item: PasswordMeta) {
     }
     s.mode = "expanded";
     s.showPassword = false;
+    // P1-#PW#LAYOUT：详情就绪后就近滚动到可视区（末行卡片展开时详情可能落在视口外）
+    void nextTick(() => {
+      document.querySelector(".pwd-detail-row")?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    });
     if (!s.decryptedPassword) {
       s.isLoading = true;
       try {
@@ -680,13 +685,17 @@ function fmtTime(ts: number) {
     </div>
 
     <!-- P0-#Z：图标网格（首字母+色块） + 点开展开为详情行 -->
+    <!-- P1-#PW#LAYOUT：单一 v-for 交错输出——卡片始终渲染，展开的详情行紧跟所选卡片
+         （grid-column: 1/-1 落在被点卡片的下一行），替代旧"详情集中堆在网格末尾"结构 -->
     <div v-else class="pwd-grid">
-      <!-- 图标卡片（折叠态） -->
-      <template v-for="item in filteredItems" :key="`tile-${item.id}`">
+      <template v-for="item in filteredItems" :key="item.id">
+        <!-- 图标卡片（始终渲染；展开态加 selected 高亮） -->
         <div
-          v-if="getRowState(item.id).mode === 'collapsed'"
           class="pwd-tile tap"
-          :class="`hue-${colorIndex(item.title)}`"
+          :class="[
+            `hue-${colorIndex(item.title)}`,
+            { selected: getRowState(item.id).mode !== 'collapsed' },
+          ]"
           :title="`${item.title}${item.username ? ' · ' + item.username : ''}`"
           @click="toggleRow(item)"
         >
@@ -699,10 +708,8 @@ function fmtTime(ts: number) {
             :title="`已复制 ${passwordStore.getUseCount(item.id)} 次`"
           >🔥 {{ passwordStore.getUseCount(item.id) }}</span>
         </div>
-      </template>
 
-      <!-- 展开的详情行（横跨整行） -->
-      <template v-for="item in filteredItems" :key="`detail-${item.id}`">
+        <!-- 展开的详情行（紧跟所选卡片，横跨整行） -->
         <div
           v-if="getRowState(item.id).mode !== 'collapsed'"
           class="pwd-detail-row"
@@ -1119,18 +1126,14 @@ function fmtTime(ts: number) {
 .btn-danger:hover { transform: translateY(-1px); }
 
 /* P0-#Z：图标网格 + 点开展开为详情行 */
+/* P1-#PW#LAYOUT：列宽改 minmax(84px, 1fr)——随窗口/容器宽度自适应拉伸填充，
+   不再固定 80/88/96px 留大片右侧空白；卡片最小 84px 保证名称可读 */
 .pwd-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, 80px);
+  grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
   gap: 10px;
   align-content: start;
   min-height: 60px;
-}
-@media (min-width: 560px) {
-  .pwd-grid { grid-template-columns: repeat(auto-fill, 88px); gap: 12px; }
-}
-@media (min-width: 800px) {
-  .pwd-grid { grid-template-columns: repeat(auto-fill, 96px); gap: 14px; }
 }
 
 .pwd-tile {
@@ -1143,10 +1146,10 @@ function fmtTime(ts: number) {
   align-items: center;
   justify-content: center;
   gap: 4px;
-  padding: 6px 4px;
+  padding: 8px 4px 6px;
   cursor: pointer;
   overflow: hidden;
-  transition: transform 0.15s var(--ease-smooth), box-shadow 0.15s var(--ease-smooth);
+  transition: transform 0.15s var(--ease-smooth), box-shadow 0.15s var(--ease-smooth), border-color 0.15s var(--ease-smooth);
   -webkit-app-region: no-drag;
   border: 1px solid rgba(255, 255, 255, 0.08);
 }
@@ -1158,6 +1161,16 @@ function fmtTime(ts: number) {
 .pwd-tile:active {
   transform: scale(0.97);
 }
+/* P1-#PW#LAYOUT：选中态——展开详情时对应卡片保持高亮，明确"详情属于这张卡" */
+.pwd-tile.selected {
+  border-color: var(--accent);
+  box-shadow:
+    0 0 0 2px var(--accent-soft),
+    0 8px 20px rgba(0, 0, 0, 0.45);
+}
+.pwd-tile.selected .pwd-tile-letter {
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45), 0 0 12px var(--accent-soft);
+}
 .pwd-tile-letter {
   font-size: 26px;
   font-weight: 700;
@@ -1165,16 +1178,21 @@ function fmtTime(ts: number) {
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
   line-height: 1;
 }
+/* P1-#PW#LAYOUT：名称单行截断改两行——80px 卡片下单行只放得下 ~9 个字，
+   长标题被截成"…"（用户反馈"名称显示不完整"）；两行 clamp 覆盖绝大多数标题 */
 .pwd-tile-name {
   font-size: 10px;
   font-weight: 500;
   color: rgba(255, 255, 255, 0.78);
   text-align: center;
   max-width: 100%;
-  white-space: nowrap;
+  white-space: normal;
+  word-break: break-all;
+  line-height: 1.25;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
-  text-overflow: ellipsis;
-  line-height: 1.2;
 }
 /* P0-#Z：密码卡片火苗徽章（前端计数） */
 .pwd-tile-flame {

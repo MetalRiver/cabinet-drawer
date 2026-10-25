@@ -1824,11 +1824,18 @@ async function confirmDeleteApp(id: number | null) {
 
     <!-- P0-#Y：类型筛选 chips 改为左侧可收缩 sidebar（默认仅图标列、hover 展开） -->
     <!-- 主内容容器：左 sidebar + 右主区 -->
+    <!-- P0-#APPC#PER#OVERLAY：展开层改为浮在网格上方（absolute），不再挤压 apps-main ——
+         旧实现 hover 时 sidebar 宽度 42→178 动画，apps-main 每帧重排、全部卡片重算布局，
+         大列表下滚轮/悬停明显卡顿；浮层方案让网格零重排 -->
     <div class="apps-body">
-      <!-- 左侧可收缩 sidebar -->
-      <div class="filter-sidebar" :class="{ expanded: sidebarExpanded }"
-           @mouseenter="sidebarExpanded = true"
-           @mouseleave="sidebarExpanded = false">
+      <!-- 左侧可收缩 sidebar（固定 42px 轨道） -->
+      <div class="filter-sidebar">
+        <div
+          class="sidebar-inner"
+          :class="{ expanded: sidebarExpanded }"
+          @mouseenter="sidebarExpanded = true"
+          @mouseleave="sidebarExpanded = false"
+        >
         <div class="sidebar-section-label" v-if="sidebarExpanded">类型</div>
         <div class="type-chips sidebar-chips">
           <button
@@ -1865,6 +1872,7 @@ async function confirmDeleteApp(id: number | null) {
             </div>
           </div>
         </Transition>
+        </div>
       </div>
 
       <!-- 右侧主内容 -->
@@ -1920,7 +1928,7 @@ async function confirmDeleteApp(id: number | null) {
               'app-cell-missing': item.available === false && (item.app_type || 'app') !== 'url'
             }"
             :data-type="item.app_type || 'app'"
-            :style="{ '--delay': `${index * 0.03}s` }"
+            :style="{ '--delay': `${Math.min(index * 0.03, 0.3)}s` }"
             @click="launchApp(item.id)"
             @contextmenu="openContextMenu($event, item)"
           >
@@ -2479,6 +2487,7 @@ AppID：${a.target || a.path}`"
 .view { padding-bottom: 20px; }
 
 /* ============ P0-#Y-Collapsible：左侧可收缩 sidebar ============ */
+/* P0-#APPC#PER#OVERLAY：外层只占 42px 轨道；展开是 inner 浮层，网格零重排 */
 .apps-body {
   display: flex;
   gap: 8px;
@@ -2489,8 +2498,17 @@ AppID：${a.target || a.path}`"
   min-width: 0;
 }
 .filter-sidebar {
-  width: 42px; /* 收起态：只显示 emoji */
+  width: 42px; /* 固定轨道：只显示 emoji 列 */
   flex-shrink: 0;
+  position: relative;
+  align-self: stretch;
+}
+.sidebar-inner {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 42px;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -2498,19 +2516,18 @@ AppID：${a.target || a.path}`"
   background: var(--bg-primary);
   border: 1px solid var(--border);
   border-radius: 12px;
-  transition: width 0.22s var(--ease-smooth), box-shadow 0.22s var(--ease-smooth);
+  transition: width 0.22s var(--ease-smooth), box-shadow 0.22s var(--ease-smooth), background-color 0.22s var(--ease-smooth);
   overflow: hidden;
-  position: relative;
-  align-self: stretch;
+  z-index: 30; /* 浮在网格上方；展开不挤压 apps-main（零重排） */
 }
-.filter-sidebar:hover,
-.filter-sidebar.expanded {
+.sidebar-inner:hover,
+.sidebar-inner.expanded {
   width: 178px; /* 展开态：emoji + label */
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
   background: var(--bg-secondary);
 }
+/* 收起态：右侧半透明提示条，提示"hover 可展开"（挂在轨道上，不随浮层展开移动） */
 .filter-sidebar::after {
-  /* 收起态：右侧半透明提示条，提示"hover 可展开" */
   content: "";
   position: absolute;
   top: 50%;
@@ -2523,6 +2540,7 @@ AppID：${a.target || a.path}`"
   border-radius: 1px;
   transition: opacity 0.2s;
   pointer-events: none;
+  z-index: 31;
 }
 .filter-sidebar:hover::after { opacity: 0; }
 
@@ -2578,8 +2596,8 @@ AppID：${a.target || a.path}`"
   transition: max-width 0.22s var(--ease-smooth) 0.04s, opacity 0.16s;
   pointer-events: none;
 }
-.filter-sidebar:hover .type-chip-label,
-.filter-sidebar.expanded .type-chip-label {
+.sidebar-inner:hover .type-chip-label,
+.sidebar-inner.expanded .type-chip-label {
   max-width: 110px;
   opacity: 1;
   pointer-events: auto;
@@ -2788,7 +2806,15 @@ AppID：${a.target || a.path}`"
   border: 1px solid var(--border);
   border-radius: 12px;
   cursor: pointer;
-  transition: all 0.16s var(--ease-smooth);
+  /* P0-#APPC#PER：旧 transition:all 会连带过渡布局属性（width 等）——
+     侧栏展开/窗口缩放触发网格重排时全部卡片同步跑布局过渡动画，
+     大列表下造成持续 style/layout 开销（v0.4.3 滚动/点击卡顿诱因之一）。
+     收窄为合成器友好属性。 */
+  transition:
+    transform 0.16s var(--ease-smooth),
+    box-shadow 0.16s var(--ease-smooth),
+    background-color 0.16s var(--ease-smooth),
+    border-color 0.16s var(--ease-smooth);
   user-select: none;
   -webkit-app-region: no-drag;
   overflow: hidden;
