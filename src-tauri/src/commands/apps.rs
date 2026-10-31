@@ -1597,8 +1597,25 @@ pub fn cancel_scan() {
 // 🛡️ 2. 列出软件（支持搜索 + 分类过滤）
 // ============================================================
 #[tauri::command]
-pub fn list_apps(
-    state: State<AppState>,
+pub async fn list_apps(
+    app: AppHandle,
+    query: Option<String>,
+    category_id: Option<i64>,
+) -> Result<Vec<db::AppMeta>, String> {
+    // G4-1（M3）：本命令为主线程同步命令，500 条时把轻量命令排队拖到 64–94ms
+    //（G2.1-B 实测）。改 async + spawn_blocking（照 fill_missing_icons 既有模式）：
+    // gate/db 在阻塞线程内短持、不跨 await；锁顺序/migration_freeze 不变；
+    // 命令名/参数/返回结构/错误语义不变（前端契约零改动）。
+    tauri::async_runtime::spawn_blocking(move || {
+        let state: tauri::State<AppState> = app.state();
+        list_apps_sync(&state, query, category_id)
+    })
+    .await
+    .map_err(|e| format!("软件列表线程失败: {}", e))?
+}
+
+fn list_apps_sync(
+    state: &AppState,
     query: Option<String>,
     category_id: Option<i64>,
 ) -> Result<Vec<db::AppMeta>, String> {
