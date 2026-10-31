@@ -1676,8 +1676,24 @@ fn read_icon_as_data_url_inner(path: String) -> Option<String> {
 }
 
 #[tauri::command]
-pub fn list_apps_with_icons(
-    state: State<AppState>,
+pub async fn list_apps_with_icons(
+    app: AppHandle,
+    query: String,
+    category_id: Option<i64>,
+) -> Result<Vec<AppWithIcon>, String> {
+    // G4-1（M3）：兼容回退接口（前端主链路已不调用，但仍在最重的读写组合）。
+    // 同步→async+spawn_blocking（照 fill_missing_icons 既有模式）；
+    // gate/db 阻塞线程内短持、不跨 await；契约不变。
+    tauri::async_runtime::spawn_blocking(move || {
+        let state: tauri::State<AppState> = app.state();
+        list_apps_with_icons_sync(&state, query, category_id)
+    })
+    .await
+    .map_err(|e| format!("图标列表线程失败: {}", e))?
+}
+
+fn list_apps_with_icons_sync(
+    state: &AppState,
     query: String,
     category_id: Option<i64>,
 ) -> Result<Vec<AppWithIcon>, String> {
