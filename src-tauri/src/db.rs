@@ -562,6 +562,18 @@ impl Db {
 
     /// 列出所有软件（可选搜索 + 分类过滤）
     pub fn list_apps(&self, query: &str, category_id: Option<i64>) -> Result<Vec<AppMeta>> {
+        let mut rows = self.list_apps_rows(query, category_id)?;
+        // Phase 2D：可用性在 DB 锁外派生（fs 检查绝不持锁），失败一律视为不可用但不影响加载
+        for m in rows.iter_mut() {
+            m.available = std::panic::catch_unwind(|| app_path_available(&m.app_type, &m.path))
+                .unwrap_or(false);
+        }
+        Ok(rows)
+    }
+
+    /// G3-1A（性能架构升级）：仅执行 SQL 查询，不做 available 派生。
+    /// 调用方应在【释放 DB 锁之后】自行派生可用性（N 次文件系统 stat 不进锁）。
+    pub fn list_apps_rows(&self, query: &str, category_id: Option<i64>) -> Result<Vec<AppMeta>> {
         let mut rows = {
             let conn = self.conn.lock().unwrap();
             let mut sql = String::from(
@@ -604,11 +616,6 @@ impl Db {
                 .collect::<Result<Vec<_>>>()?;
             rows
         };
-        // Phase 2D：可用性在 DB 锁外派生（fs 检查绝不持锁），失败一律视为不可用但不影响加载
-        for m in rows.iter_mut() {
-            m.available = std::panic::catch_unwind(|| app_path_available(&m.app_type, &m.path))
-                .unwrap_or(false);
-        }
         Ok(rows)
     }
 

@@ -1605,9 +1605,19 @@ pub fn list_apps(
     // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
     let _data_gate = state.data_read()?;
 
-    let db = state.db.lock().unwrap();
-    let q = query.unwrap_or_default();
-    db.list_apps(&q, category_id).map_err(|e| e.to_string())
+    // G3-1A（性能架构升级）：DB Mutex 只覆盖 SQL 查询；available 派生（N 次
+    // Path::exists 文件系统 stat）在锁外执行，避免网络盘/移动盘路径拖住全局锁。
+    let mut apps = {
+        let db = state.db.lock().unwrap();
+        let q = query.unwrap_or_default();
+        db.list_apps_rows(&q, category_id)
+            .map_err(|e| e.to_string())?
+    };
+    for m in apps.iter_mut() {
+        m.available = std::panic::catch_unwind(|| crate::db::app_path_available(&m.app_type, &m.path))
+            .unwrap_or(false);
+    }
+    Ok(apps)
 }
 
 // ============================================================
@@ -1657,10 +1667,14 @@ pub fn list_apps_with_icons(
     // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
     let _data_gate = state.data_read()?;
 
-    let db = state.db.lock().unwrap();
-    let apps = db
-        .list_apps(&query, category_id)
-        .map_err(|e| e.to_string())?;
+    // G3-1A（性能架构升级）：DB Mutex 只覆盖元数据查询；图标文件读取与 Base64 编码
+    // 一律在锁外执行。此前 N 次 fs::read + base64 在锁内，会让其他 DB 命令排队。
+    // 行为契约不变：入参/返回结构/错误语义均与 v0.4.5 相同。
+    let apps: Vec<db::AppMeta> = {
+        let db = state.db.lock().unwrap();
+        db.list_apps(&query, category_id)
+            .map_err(|e| e.to_string())?
+    };
     let result: Vec<AppWithIcon> = apps
         .into_iter()
         .map(|a| {
