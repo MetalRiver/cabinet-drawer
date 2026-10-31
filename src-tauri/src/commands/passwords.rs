@@ -7,17 +7,24 @@ use zeroize::Zeroizing;
 
 use crate::crypto;
 use crate::db;
+use tauri::{AppHandle, Manager};
+
 use crate::{AppState, SecurityModel};
 
 // ============================================================
 // 🔑 列出所有密码元信息（不含解密后的密码）
 // ============================================================
 #[tauri::command]
-pub fn list_passwords(state: State<AppState>) -> Result<Vec<db::PasswordMeta>, String> {
-    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
-    let _data_gate = state.data_read()?;
-
-    list_passwords_inner(&state)
+pub async fn list_passwords(app: AppHandle) -> Result<Vec<db::PasswordMeta>, String> {
+    // G4-1（M3）：密码区进入时的数据请求。同步命令在软件列表取数在飞期间
+    // 被拖到 58–82ms（G2 第一轮实测）。改 async + spawn_blocking；
+    // gate/db 在阻塞线程内短持、不跨 await；契约不变。
+    tauri::async_runtime::spawn_blocking(move || {
+        let state: tauri::State<AppState> = app.state();
+        list_passwords_inner(&state)
+    })
+    .await
+    .map_err(|e| format!("密码列表线程失败: {}", e))?
 }
 
 fn list_passwords_inner(state: &AppState) -> Result<Vec<db::PasswordMeta>, String> {
