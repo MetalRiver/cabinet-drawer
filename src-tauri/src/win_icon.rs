@@ -130,6 +130,49 @@ pub fn parse_url_shortcut(path: &str) -> Option<String> {
     None
 }
 
+
+// ============================================================
+// G3-1 取证守卫（仅测试构建 test-edition 编译；正式构建零改动）
+// 目的：H3/生产取证发现隔离测试期间生产图标目录出现孤儿占位图，
+//       而 G-1 只守护启动入口、不拦运行时文件写入。
+// 行为：设置 DRAWER_ICON_GUARD_ROOT 后，任何图标 PNG 写入目标必须位于
+//       该根内；越界则【在执行写入之前】拒绝（fail-closed），并把
+//       PID / 目标 / 来源路径 / 调用方 写入守卫日志（守卫根内，隔离目录）。
+// ============================================================
+#[cfg(feature = "test-edition")]
+fn icon_write_guard(target: &std::path::Path, source_path: &str, caller: &str) -> Result<(), String> {
+    let root = match std::env::var("DRAWER_ICON_GUARD_ROOT") {
+        Ok(r) if !r.trim().is_empty() => r,
+        _ => return Ok(()), // 未启用守卫的测试/正式运行：零开销直通
+    };
+    let t = target.to_string_lossy().to_lowercase();
+    let r = root.trim_end_matches(['\\', '/']).to_lowercase();
+    if t.starts_with(&r) {
+        return Ok(());
+    }
+    let line = format!(
+        "[icon-write-guard] REJECT pid={} caller={} target={} source={} guard_root={}
+",
+        std::process::id(),
+        caller,
+        target.display(),
+        source_path,
+        root
+    );
+    let log_path = std::path::Path::new(&root).join("icon-write-guard.log");
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&log_path) {
+        use std::io::Write as _;
+        let _ = f.write_all(line.as_bytes());
+    }
+    eprintln!("{}", line.trim_end());
+    Err(format!("icon-write-guard: 拒绝写入测试根之外: {}", target.display()))
+}
+
+#[cfg(not(feature = "test-edition"))]
+fn icon_write_guard(_target: &std::path::Path, _source_path: &str, _caller: &str) -> Result<(), String> {
+    Ok(())
+}
+
 /// icon 缓存根目录
 /// G3-1C：改为 pub —— 受控回退命令 `get_app_icon_data_url` 需用它校验
 /// 请求读取的路径必须位于缓存根内（防止按路径任意读文件的旧通道被滥用）。
@@ -174,6 +217,12 @@ pub fn extract_to_cache(exe_path: &str) -> Option<PathBuf> {
     let key = cache_key(&actual_path);
     let cache_path = cache_dir.join(format!("{}.png", key));
 
+    // G3-1 取证守卫：目标不在守卫根内 → 不写任何文件（fail-closed）
+    if let Err(e) = icon_write_guard(&cache_path, exe_path, "extract_to_cache") {
+        eprintln!("{}", e);
+        return None;
+    }
+
     if cache_path.exists() {
         return Some(cache_path);
     }
@@ -199,6 +248,11 @@ pub fn extract_to_cache(exe_path: &str) -> Option<PathBuf> {
 /// 写 fallback 占位图（64x64 PNG）
 /// 策略：根据文件名生成稳定哈希色 → 纯色方块，区别于"图标消失"
 fn write_fallback_icon(cache_path: &Path, source_path: &str) {
+    // G3-1 取证守卫（纵深防御）：与 extract_to_cache 同一断言
+    if let Err(e) = icon_write_guard(cache_path, source_path, "write_fallback_icon") {
+        eprintln!("{}", e);
+        return;
+    }
     use image::{Rgba, RgbaImage};
     let mut img = RgbaImage::new(64, 64);
     // 用文件路径哈希 → 稳定颜色（同一文件总生成同一颜色，便于识别）
