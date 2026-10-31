@@ -16,6 +16,7 @@ import {
   scanCustomDir as apiScanCustomDir,
   cancelScan as apiCancelScan,
   readIconAsDataUrl,
+  getAppIconDataUrl,
   fillMissingIcons as apiFillMissingIcons,
   forceReextractIcons as apiForceReextractIcons,
   listAppsWithIcons,
@@ -131,6 +132,31 @@ export const useSoftwareStore = defineStore("software", () => {
   //   - 常见区 (FrequentView) 抢先把 cache 填了 → 软件区一进去就被清空
   // 修复：fillMissingIcons 返回 0 → 不清 cache，不重 load
   //        fillMissingIcons > 0 → 必须清（icon_path 变了，旧的 data URL 失效）
+  // ===== G3-1C：受控图标回退（资产 URL 失败 → 按 id 定向取一次 base64） =====
+  // 并发控制：同一 id 单飞；失败记录在案，不自动重试（重试 = 下一轮列表刷新周期）。
+  const iconFallbackFailed = ref<Record<number, boolean>>({});
+  const iconFallbackInflight = new Set<number>();
+  async function fetchAppIconFallback(id: number) {
+    if (iconFallbackInflight.has(id)) return;
+    if (iconDataUrls.value[id] || iconFallbackFailed.value[id]) return;
+    iconFallbackInflight.add(id);
+    try {
+      const url = await getAppIconDataUrl(id);
+      if (url) iconDataUrls.value = { ...iconDataUrls.value, [id]: url };
+      else iconFallbackFailed.value = { ...iconFallbackFailed.value, [id]: true };
+    } catch {
+      iconFallbackFailed.value = { ...iconFallbackFailed.value, [id]: true };
+    } finally {
+      iconFallbackInflight.delete(id);
+    }
+  }
+  function dropAppIconFallback(id: number) {
+    if (iconDataUrls.value[id] === undefined) return;
+    const { [id]: _drop, ...rest } = iconDataUrls.value;
+    iconDataUrls.value = rest;
+    iconFallbackFailed.value = { ...iconFallbackFailed.value, [id]: true };
+  }
+
   let iconBusyPromise: Promise<number> | null = null;
   async function refreshAllIcons(opts: { forceClear?: boolean } = {}): Promise<number> {
     if (iconBusyPromise) {
@@ -150,8 +176,9 @@ export const useSoftwareStore = defineStore("software", () => {
           // 之前：无条件清空 cache → UI ~30s 空白（"图标消失"假象）
           return n;
         }
-        // 清空前端缓存 → 否则 UI 还显示旧图标
+        // 清空前端缓存 → 否则 UI 还显示旧图标（G3-1C：同时清回退失败记录，允许重试）
         iconDataUrls.value = {};
+        iconFallbackFailed.value = {};
         // 重新拉列表（带新 icon_path） + 重新加载 data URLs
         await loadItems();
         // loadItems 末尾已经 void loadIconDataUrls(items)，这里再等一次保证全部完成
@@ -380,6 +407,7 @@ export const useSoftwareStore = defineStore("software", () => {
   // 导入备份后整体刷新：分类 + 列表 + 图标缓存全部重拉
   async function reloadAll() {
     iconDataUrls.value = {};
+    iconFallbackFailed.value = {};
     await loadCategories();
     await loadItems();
   }
@@ -467,6 +495,9 @@ export const useSoftwareStore = defineStore("software", () => {
     error,
     hasLoaded,
     iconDataUrls,
+    iconFallbackFailed,
+    fetchAppIconFallback,
+    dropAppIconFallback,
     filteredCount,
     loadCategories,
     loadItems,

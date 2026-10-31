@@ -415,9 +415,15 @@ export const updateApp = (params: {
 export const deleteApp = (id: number) =>
   invoke("delete_app", { id });
 
-/** 读图标转 base64 data URL（绕过 Tauri asset protocol 加载失败） */
+/** 读图标转 base64 data URL（绕过 Tauri asset protocol 加载失败）
+ *  G3-1C 备注：按任意路径读取的旧通道，前端主链路已不再使用；保留仅作兼容。
+ *  新链路请使用 getAppIconDataUrl(id)（受控：路径来自 DB 记录、限缓存根内、限大小）。 */
 export const readIconAsDataUrl = (path: string): Promise<string | null> =>
   invoke("read_icon_as_data_url", { path });
+
+/** G3-1C：基于软件 ID 的受控图标回退（资产 URL 失败时定向取一次 base64） */
+export const getAppIconDataUrl = (id: number) =>
+  invoke<string | null>("get_app_icon_data_url", { id });
 
 /** P0-#ICON#NUCLEAR#ALL#IN#ONE：一次拿所有 app + 全部 icon data URL
  *  替代 loadIconDataUrls 缓存机制：零竞态、零异步等待、零 IPC 失败窗口 */

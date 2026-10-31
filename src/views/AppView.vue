@@ -92,7 +92,14 @@ const sidebarExpanded = ref(false);
 // 直接切到首字母彩色卡片，避免显示灰方块
 const iconError = ref<Record<number, boolean>>({});
 function onAppIconError(id: number) {
+  if (iconError.value[id]) return;
   iconError.value = { ...iconError.value, [id]: true };
+  // G3-1C：资产 URL 失败 → 定向受控回退（按 id 取 base64 一次；失败则 SVG/emoji 兜底）
+  void softwareStore.fetchAppIconFallback(id);
+}
+function onFallbackIconError(id: number) {
+  // 回退 base64 也失败 → 移除 data URL，模板落到 SVG/emoji（不重试）
+  softwareStore.dropAppIconFallback(id);
 }
 // 扫描结果专用：路径级别（不是 db id），用于扫描模态框里的图标
 const scanIconError = ref<Record<string, boolean>>({});
@@ -1973,7 +1980,7 @@ async function confirmDeleteApp(id: number | null) {
                   :src="softwareStore.iconDataUrls[item.id]"
                   :alt="item.name"
                   class="app-icon-img"
-                  @error="onAppIconError(item.id)"
+                  @error="onFallbackIconError(item.id)"
                 />
                 <!-- P0-#Y#FIX#ICON#FOLDER：folder/url 没真实图标时显示内置 SVG（Windows 风格） -->
                 <FolderIconSvg v-else-if="(item.app_type || 'app') === 'folder'" class="app-icon-img" />

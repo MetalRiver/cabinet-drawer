@@ -1902,6 +1902,8 @@ pub fn run() {
             change_master_password,
             // 通用：图标 data URL 转换（绕过 asset protocol 加载失败）
             read_icon_as_data_url,
+            // G3-1C：基于软件 ID 的受控图标回退（路径来自 DB 记录，限缓存根内、限大小）
+            get_app_icon_data_url,
             // P0-#ICON#NUCLEAR#ALL#IN#ONE：一次拿所有 app + 所有 icon
             list_apps_with_icons,
             relink_app,

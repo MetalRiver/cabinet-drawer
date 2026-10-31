@@ -131,7 +131,9 @@ pub fn parse_url_shortcut(path: &str) -> Option<String> {
 }
 
 /// icon 缓存根目录
-fn cache_root() -> PathBuf {
+/// G3-1C：改为 pub —— 受控回退命令 `get_app_icon_data_url` 需用它校验
+/// 请求读取的路径必须位于缓存根内（防止按路径任意读文件的旧通道被滥用）。
+pub fn cache_root() -> PathBuf {
     let base = std::env::var("LOCALAPPDATA")
         .or_else(|_| std::env::var("APPDATA"))
         .unwrap_or_else(|_| ".".to_string());

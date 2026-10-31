@@ -1781,6 +1781,56 @@ pub fn read_icon_as_data_url(path: String) -> Option<String> {
 }
 
 // ============================================================
+// 🛡️ G3-1C：基于软件 ID 的受控图标读取（资产 URL 失败时的定向回退）
+// 安全约束（与旧的按路径直读接口 read_icon_as_data_url 不同）：
+//   1. 只接受软件 id；icon_path 必须来自 DB 中该记录本身（不接受前端传路径）；
+//   2. 路径必须位于图标缓存根（win_icon::cache_root）内，越界直接拒绝；
+//   3. 文件大小上限 512KB（正常 64x64 PNG ≈ 0.3-3.5KB）；
+//   4. 记录已软删 / icon_path 为空 / 文件缺失 → 返回 None（前端降级 SVG/emoji）；
+//   5. 读取在 spawn_blocking 中执行，gate→db 顺序与既有命令一致（读门共享，锁内仅一次轻量查询）。
+// 重试与并发控制在前端（同一 id 单飞、失败不自动重试）。
+// ============================================================
+#[tauri::command]
+pub async fn get_app_icon_data_url(app: AppHandle, id: i64) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state: tauri::State<AppState> = app.state();
+        get_app_icon_data_url_sync(&state, id)
+    })
+    .await
+    .map_err(|e| format!("图标回退线程失败: {}", e))?
+}
+
+fn get_app_icon_data_url_sync(state: &AppState, id: i64) -> Result<Option<String>, String> {
+    const MAX_ICON_BYTES: u64 = 512 * 1024;
+    let icon_path: Option<String> = {
+        let _data_gate = state.data_read()?;
+        let db = state.db.lock().unwrap();
+        let conn = db.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT icon_path FROM apps WHERE id=?1 AND deleted_at IS NULL")
+            .map_err(|e| e.to_string())?;
+        match stmt.query_row(rusqlite::params![id], |row| row.get::<_, Option<String>>(0)) {
+            Ok(v) => v,
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(e) => return Err(e.to_string()),
+        }
+    };
+    let Some(p) = icon_path.filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+    let root = win_icon::cache_root();
+    let pb = std::path::PathBuf::from(&p);
+    if !pb.starts_with(&root) {
+        return Err("图标路径越界（不在图标缓存根内）".to_string());
+    }
+    match std::fs::metadata(&p) {
+        Ok(m) if m.len() <= MAX_ICON_BYTES => {}
+        _ => return Ok(None),
+    }
+    Ok(read_icon_as_data_url_inner(p))
+}
+
+// ============================================================
 // 🛡️ 6. 原生文件 / 文件夹选择对话框
 // ============================================================
 #[tauri::command]
