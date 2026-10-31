@@ -2009,7 +2009,18 @@ pub fn restart_app(app: AppHandle) -> Result<(), String> {
 // 🛡️ 10. 一次性回填所有 app 的 subtype（旧版本没填的）
 // ============================================================
 #[tauri::command]
-pub fn rescan_subtypes(state: State<AppState>) -> Result<usize, String> {
+pub async fn rescan_subtypes(app: AppHandle) -> Result<usize, String> {
+    // G4-1（M3）：启动期 +400ms 任务，同步命令在主线程执行（全表读 + 逐条 UPDATE）。
+    // 改 async + spawn_blocking；gate/db 在阻塞线程内短持、不跨 await；契约不变。
+    tauri::async_runtime::spawn_blocking(move || {
+        let state: tauri::State<AppState> = app.state();
+        rescan_subtypes_sync(&state)
+    })
+    .await
+    .map_err(|e| format!("subtype 回填线程失败: {}", e))?
+}
+
+fn rescan_subtypes_sync(state: &AppState) -> Result<usize, String> {
     // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
     let _data_gate = state.data_read()?;
 
