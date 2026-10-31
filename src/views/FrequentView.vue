@@ -33,6 +33,7 @@ interface FrequentItem {
   title: string;
   subtitle: string;
   icon: string;          // 软件：实际图标路径；其他：emoji
+  iconPath?: string;     // G3-1B：软件记录的 icon_path（资产 URL 主路径用）
   iconFallback: string;  // 失败时显示的首字母 / emoji
   appType?: string;      // P0-#FREQ#ICON#SYNC：app 类型的细分（url/folder/document/app）
   color: "blue" | "cyan" | "orange" | "purple";
@@ -84,7 +85,9 @@ const items = ref<FrequentItem[]>([]);
 // 这样 store 变化时模板自动 reactive 更新
 function getIcon(item: FrequentItem): string {
   if (item.type === "app") {
-    return softwareStore.iconDataUrls[item.id] || "";
+    // G3-1B：与软件区一致——资产 URL 主路径；base64 仅作按需回退缓存
+    if (softwareStore.iconDataUrls[item.id]) return softwareStore.iconDataUrls[item.id];
+    return item.iconPath ? convertFileSrc(item.iconPath) : "";
   }
   return item.icon;
 }
@@ -138,6 +141,7 @@ async function refresh() {
       // item.icon 留空：模板里通过 computed getIcon(item) 实时读 softwareStore.iconDataUrls
       // 这样不需要 watch trigger，store 变化时模板自动响应
       icon: "",
+      iconPath: a.icon_path,
       // P0-#FREQ#ICON#SYNC：app 项类型变 url/folder 时不再显示首字母
       // 之前：用户把"创意设计"从 app 改成 url → 软件区有 UrlIconSvg → 常用区仍是"创"字
       // 现在：iconFallback 优先返回 type 对应的 emoji（与软件区副标 fallback 一致）

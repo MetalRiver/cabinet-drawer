@@ -245,9 +245,9 @@ const ctxSubtypeOptionsNoUncat = computed(() =>
 // 计算有多少个 app（type=app/folder/document/url）没拿到 data URL
 // > 0 时 header 显示"重抽图标"按钮（用户手动触发兜底闭环）
 const missingIconCount = computed(() => {
-  return softwareStore.items.filter(
-    (it) => it.icon_path && !softwareStore.iconDataUrls[it.id]
-  ).length;
+  // G3-1B：图标改走资产 URL 后，"缺图标"=记录本身没有 icon_path
+  // （icon_path 存在但资产加载失败的情况由 iconError 兜底，不在此计数）
+  return softwareStore.items.filter((it) => !it.icon_path).length;
 });
 const reextractingIcons = ref(false);
 async function reextractIcons() {
@@ -1948,8 +1948,9 @@ async function confirmDeleteApp(id: number | null) {
               <div class="type-stripe" :class="`stripe-${item.app_type || 'app'}`"></div>
               <!-- P0-#ICON#DUAL#FALLBACK：三级回退渲染（恢复之前能用的 asset:// 兜底）
                    优先级：
-                   1. softwareStore.iconDataUrls[id] ← 后端 base64 data URL（最稳）
-                   2. convertFileSrc(icon_path) ← Tauri asset:// 协议（之前能用，恢复它！）
+                   G3-1B 起的优先级：
+                   1. convertFileSrc(icon_path) ← Tauri 资产协议（主路径；scope 已配、CSP 已放行）
+                   2. softwareStore.iconDataUrls[id] ← base64（仅 G3-1C 受控回退产物）
                    3. folder/url/document → 内置 SVG
                    4. app → emoji 🚀（用 emoji 字体，避开之前的 CSS bug）
 
@@ -1957,16 +1958,19 @@ async function confirmDeleteApp(id: number | null) {
                      → CSS bug 让 🚀 透明化成"紫色羽毛" → 用户看到"图标全没了"
                    修复：恢复 #2 兜底 + 用 @error 自动降级到 #4（不是 fixed 隐藏） -->
               <div class="app-icon">
+                <!-- G3-1B：资产 URL 为主路径（icon_path → convertFileSrc，浏览器缓存/渐进解码）；
+                     base64（iconDataUrls）降为按需回退缓存（G3-1C 受控回退产物）；
+                     两者都不可用 → 内置 SVG / emoji 兜底（与 v0.4.5 视觉一致） -->
                 <img
-                  v-if="softwareStore.iconDataUrls[item.id]"
-                  :src="softwareStore.iconDataUrls[item.id]"
+                  v-if="item.icon_path && !iconError[item.id]"
+                  :src="iconSrc(item.icon_path)"
                   :alt="item.name"
                   class="app-icon-img"
                   @error="onAppIconError(item.id)"
                 />
                 <img
-                  v-else-if="item.icon_path && !iconError[item.id]"
-                  :src="iconSrc(item.icon_path)"
+                  v-else-if="softwareStore.iconDataUrls[item.id]"
+                  :src="softwareStore.iconDataUrls[item.id]"
                   :alt="item.name"
                   class="app-icon-img"
                   @error="onAppIconError(item.id)"

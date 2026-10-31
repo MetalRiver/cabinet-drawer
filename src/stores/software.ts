@@ -73,38 +73,18 @@ export const useSoftwareStore = defineStore("software", () => {
       setTimeout(() => reject(new Error("加载超时（8s）")), 8000)
     );
     try {
-      // P0-#ICON#NUCLEAR#ALL#IN#ONE：用 listAppsWithIcons 替代 listApps + loadIconDataUrls
-      // 之前：两次调用（listApps 拿元数据 + 17 次 readIconAsDataUrl 拿图标）
-      //   → 任何一个 IPC 失败 / 时序错位 / WebView2 拒绝 base64 → UI 显示 fallback
-      //   → 18 个紫色羽毛就是这么来的
-      // 现在：一次调用拿全部（包括 base64 data URL）→ 零竞态、零等待、零失败窗口
+      // G3-1B（性能架构升级）：元数据与图标分离。
+      // 列表只取元数据（listApps）；图标由 <img :src="convertFileSrc(icon_path)">
+      // 经 Tauri 资产协议加载（浏览器缓存、渐进解码，不进 IPC payload）。
+      // base64 仅作为【按需回退】缓存（G3-1C：资产加载失败时由受控命令按 id 取一次）。
+      // 旧接口 listAppsWithIcons 保留在后端作为兼容回退，前端不再默认调用。
+      // 实测依据（G2.1-C）：图标 base64 占列表 payload 的 84.5%（500 条 ≈ 1.02MB）。
       const list = await Promise.race([
-        listAppsWithIcons("", activeCategoryId.value ?? undefined),
+        apiListApps("", activeCategoryId.value ?? undefined),
         timeoutPromise,
       ]);
-      // 拆分：items 存元数据，iconDataUrls 存 data URL（保持现有 UI 兼容）
-      items.value = list.map((it) => ({
-        id: it.id,
-        name: it.name,
-        path: it.path,
-        icon_path: it.icon_path,
-        args: it.args,
-        available: it.available,
-        category_id: it.category_id,
-        app_type: it.app_type,
-        app_subtype: it.app_subtype,
-        use_count: it.use_count,
-        last_used_at: it.last_used_at,
-        created_at: it.created_at,
-      }));
-      // 一次性填满 cache（所有 data URL 已经在 list 里了）
-      const newCache: Record<number, string> = {};
-      for (const it of list) {
-        if (it.icon_data_url) {
-          newCache[it.id] = it.icon_data_url;
-        }
-      }
-      iconDataUrls.value = newCache;
+      items.value = list;
+      iconDataUrls.value = {};
       hasLoaded.value = true;
     } catch (e) {
       error.value = String(e);
