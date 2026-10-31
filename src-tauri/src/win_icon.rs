@@ -141,9 +141,19 @@ pub fn parse_url_shortcut(path: &str) -> Option<String> {
 // ============================================================
 #[cfg(feature = "test-edition")]
 fn icon_write_guard(target: &std::path::Path, source_path: &str, caller: &str) -> Result<(), String> {
+    // G3-1 收口（评审要求）：测试构建【必须】配置守卫根；缺失 = fail-closed
+    // （拒绝一切图标写入），防止任何未挂守卫的测试实例把文件写进真实用户目录。
+    // 正式构建不含本函数（cfg 门控），行为零变化。
     let root = match std::env::var("DRAWER_ICON_GUARD_ROOT") {
         Ok(r) if !r.trim().is_empty() => r,
-        _ => return Ok(()), // 未启用守卫的测试/正式运行：零开销直通
+        _ => {
+            let line = format!(
+                "[icon-write-guard] FAIL-CLOSED pid={} caller={} target={}（测试构建未配置 DRAWER_ICON_GUARD_ROOT，拒绝写入）",
+                std::process::id(), caller, target.display()
+            );
+            eprintln!("{}", line);
+            return Err(line);
+        }
     };
     let t = target.to_string_lossy().to_lowercase();
     let r = root.trim_end_matches(['\\', '/']).to_lowercase();
