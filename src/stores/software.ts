@@ -179,10 +179,11 @@ export const useSoftwareStore = defineStore("software", () => {
         // 清空前端缓存 → 否则 UI 还显示旧图标（G3-1C：同时清回退失败记录，允许重试）
         iconDataUrls.value = {};
         iconFallbackFailed.value = {};
-        // 重新拉列表（带新 icon_path） + 重新加载 data URLs
+        // G3-1B：重新拉元数据（新 icon_path）→ 资产 URL 自动更新。
+        // 修复：此处曾调用遗留 loadIconDataUrls(items) 把全部图标按旧通道
+        // read_icon_as_data_url 逐条拉回 base64（G3-1 验证实测 500 条全部回填），
+        // 使 M1 的分离形同虚设 —— 现已移除；图标展示交给资产 URL，失败走 G3-1C 受控回退。
         await loadItems();
-        // loadItems 末尾已经 void loadIconDataUrls(items)，这里再等一次保证全部完成
-        await loadIconDataUrls(items.value);
         return n;
       } finally {
         iconBusyPromise = null;
