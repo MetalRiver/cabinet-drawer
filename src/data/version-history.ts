@@ -40,6 +40,35 @@ export interface VersionHistoryEntry {
 
 export const VERSION_HISTORY: VersionHistoryEntry[] = [
   {
+    version: "v0.4.5",
+    name: "抽屉柜 Drawer v0.4.5",
+    date: "",
+    unreleased: true,
+    summary: "图标补齐改为后台执行，修复软件区进入与启动时的界面卡顿",
+    url: "https://github.com/MetalRiver/cabinet-drawer/releases/tag/v0.4.5",
+    notes: `# 抽屉柜 Drawer v0.4.5
+
+## 性能修复
+
+- 图标补齐（缺失图标的后台抽取）改为在后台线程执行：进入软件区或首次导入软件时，抽取图标的过程不再阻塞界面和其他操作的响应。
+- 修复点击软件启动后界面反馈随软件数量增多而变慢的问题中与图标处理相关的部分。
+
+## 软件区
+
+- 进入软件区时，列表照常立即显示；缺失的图标在后台补齐后自动出现，补齐期间界面保持可交互。
+
+## 数据与兼容
+
+- 本版沿用现有数据位置和安全机制，不迁移、不改写用户数据；数据库结构无变化。
+- 升级后图标缓存位置与命名规则与此前版本一致，无需重新抽取全部图标。
+
+## 安装与更新说明
+
+- 适用于 Windows 10/11 x64，安装到当前用户目录。
+- 应用内更新使用 GitHub Releases，更新包由原 updater 公钥校验；Gitee 作为手动下载镜像，需要单独维护发行附件。
+- 升级前建议在"数据与备份"中导出 \`.drawerbox\` 加密备份并妥善保存。`,
+  },
+  {
     version: "v0.4.4",
     name: "抽屉柜 Drawer v0.4.4",
     date: "2026-10-25",
