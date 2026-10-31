@@ -1809,9 +1809,24 @@ pub async fn pick_path(mode: String, title: Option<String>) -> Option<String> {
 // ============================================================
 // 🛡️ 7. 填充缺失图标（空路径 OR 文件不存在的都重抽）
 // ============================================================
+// P1-#APPC#PER#FILL：改 async + spawn_blocking（照 health_check_apps 既有模式）——
+// 原同步命令跑在主线程，46 条真实图标重抽（ExtractIconW 串行 + 每张写盘）期间
+// 阻塞全部 IPC 调度，实测其他轻量 IPC 排队至 1433ms（H1 修正对照 2026-10-31）。
+// 约束保持：数据门/锁顺序（gate → db 两段短持）不变、无跨 await 持锁（闭包纯同步）、
+// 返回值契约 Result<usize, String> 不变；前端互斥（iconBusyPromise）与
+// force_reextract 的串行关系不受影响。
 #[tauri::command]
-pub fn fill_missing_icons(state: State<AppState>) -> Result<usize, String> {
-    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
+pub async fn fill_missing_icons(app: AppHandle) -> Result<usize, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state: tauri::State<AppState> = app.state();
+        fill_missing_icons_sync(&state)
+    })
+    .await
+    .map_err(|e| format!("图标补齐线程失败: {}", e))?
+}
+
+fn fill_missing_icons_sync(state: &AppState) -> Result<usize, String> {
+    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn；spawn_blocking 内同步持有）
     let _data_gate = state.data_read()?;
 
     let apps: Vec<db::AppMeta> = {
