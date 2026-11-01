@@ -2,8 +2,9 @@
 import { ref, onMounted, onUnmounted } from "vue";
 import { useAppStore } from "./stores/app";
 import { useWidgetStore } from "./stores/widget";
-import { applyWidgetConfig, getAppStatus, getDataRootBlock, getSetupMode, restartApp } from "./api";
+import { applyWidgetConfig, getAppStatus, getDataRootBlock, getSetupMode, lockApp, restartApp } from "./api";
 import type { DataRootBlockInfo, SetupModeInfo } from "./api";
+import { clearBackendKeyWithRetry } from "./lib/backend-lock-retry";
 import { listen } from "@tauri-apps/api/event";
 import LockScreen from "./components/LockScreen.vue";
 import SetupWizard from "./components/SetupWizard.vue";
@@ -155,7 +156,27 @@ onMounted(async () => {
     const idleMs = Date.now() - lastActivity;
     if (idleMs >= minutes * 60 * 1000) {
       console.log(`[App.vue] 空闲 ${(idleMs / 60000).toFixed(1)}min ≥ ${minutes}min → 自动锁屏`);
+      // O1.2（P0）：空闲自动锁安全收口。
+      // 1) 先同步 appStore.lock() 立即切锁屏遮蔽敏感内容（明文不得因等待后端而继续显示）；
+      // 2) 再清后端 ActiveKey（lock_app = clear_key，幂等；与 MainLayout.lockNow() 同一契约）。
+      //    此前本路径只锁前端，后端密钥原样保留——锁屏期间 list_passwords 等受保护命令
+      //    实测仍可返回数据（O1.1 审查确证）。
+      // 3) 失败不得静默：重试 3 次（500ms 间隔），仍失败显式记录错误。
+      //    lock_app 仅在 IPC 通道失效时失败——通道失效通常意味着后端进程正在退出
+      //   （密钥随进程消亡）；但若后端仍存活则密钥未清，必须留下明确错误，不得当作已锁。
       appStore.lock();
+      void clearBackendKeyWithRetry(() => lockApp(), {
+        onError: (e, attempt) => {
+          console.error(`[App.vue] O1.2 空闲自动锁：lock_app 失败（第 ${attempt}/3 次）`, e);
+        },
+      }).then((ok) => {
+        if (!ok) {
+          console.error(
+            "[App.vue] O1.2 空闲自动锁：后端密钥清除失败（3 次重试均失败）——后端不可达；" +
+              "若后端进程仍存活则 ActiveKey 未清除，锁屏期间后端命令可能仍可访问数据"
+          );
+        }
+      });
     }
   }, IDLE_CHECK_MS);
 
