@@ -128,6 +128,11 @@ onMounted(async () => {
   // 这是事件监听的兜底（防止事件丢失 / 监听器未注册时就触发锁定）
   pollTimer = window.setInterval(async () => {
     if (appStore.isFirstRun) return; // 首次设置主密码时不要干扰
+    // G4-2B O1（安全版本）：轮询的唯一用途是检测「后端已被锁、但前端仍解锁」。
+    // 前端已明确锁定时该检测无意义——解锁由前端驱动（仅 LockScreen 调用 unlock_app，
+    // 不存在无事件解锁），故锁定期间暂停状态查询；窗口可见/隐藏不做区分：
+    // Rust 侧 hide 不通知前端，无法可靠识别隐藏态 → 不降频，安全标准不降。
+    if (appStore.isLocked) return;
     try {
       const status = await getAppStatus();
       if (!status.unlocked && !appStore.isLocked) {
