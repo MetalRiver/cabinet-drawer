@@ -1986,6 +1986,14 @@ pub fn force_reextract_icons(state: State<AppState>) -> Result<usize, String> {
 // ============================================================
 #[tauri::command]
 pub fn restart_app(app: AppHandle) -> Result<(), String> {
+    // test-edition 故障注入（O1.3 验收 C 专用）：模拟安全重启失败（spawn 失败），
+    // 验证前端 exit_app 强制退出兜底链路。正式构建 cfg 编译期剔除，零影响。
+    #[cfg(feature = "test-edition")]
+    {
+        if std::env::var("DRAWER_FAIL_RESTART_APP").ok().as_deref() == Some("1") {
+            return Err("test-edition 注入：restart_app 模拟失败".to_string());
+        }
+    }
     use std::process::Command;
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let exe_str = exe.to_string_lossy().to_string();
