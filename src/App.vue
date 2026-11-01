@@ -2,7 +2,7 @@
 import { ref, onMounted, onUnmounted } from "vue";
 import { useAppStore } from "./stores/app";
 import { useWidgetStore } from "./stores/widget";
-import { applyWidgetConfig, getAppStatus, getDataRootBlock, getSetupMode, lockApp, restartApp } from "./api";
+import { applyWidgetConfig, exitApp, getAppStatus, getDataRootBlock, getSetupMode, lockApp, restartApp } from "./api";
 import type { DataRootBlockInfo, SetupModeInfo } from "./api";
 import { clearBackendKeyWithRetry } from "./lib/backend-lock-retry";
 import { listen } from "@tauri-apps/api/event";
@@ -69,6 +69,14 @@ function onUserActivity() {
 }
 const IDLE_CHECK_MS = 30_000; // 每 30s 检测一次
 const ACTIVITY_EVENTS = ["mousedown", "keydown", "touchstart", "wheel"] as const;
+
+// O1.3 fail-closed 锁定状态机（代次令牌）：
+// Locking（UI 已遮蔽 + 后端清钥在途）→ Locked（后端确认清除）
+//                                  ├→ Superseded（用户在重试窗口内解锁——放弃剩余重试，不清新密钥）
+//                                  └→ Exhausted（重试耗尽）→ Restarting（安全重启）→ 兜底 ForceExit
+// lockingSeq 代次递增使旧重试任务自然失效；disposed 在组件卸载（应用退出）时中止一切在途重试。
+let lockingSeq = 0;
+let disposed = false;
 
 onMounted(async () => {
   // Phase 2C-1：Data Root 阻断优先判断。阻断模式下后端未打开 DB，
@@ -156,26 +164,50 @@ onMounted(async () => {
     const idleMs = Date.now() - lastActivity;
     if (idleMs >= minutes * 60 * 1000) {
       console.log(`[App.vue] 空闲 ${(idleMs / 60000).toFixed(1)}min ≥ ${minutes}min → 自动锁屏`);
-      // O1.2（P0）：空闲自动锁安全收口。
-      // 1) 先同步 appStore.lock() 立即切锁屏遮蔽敏感内容（明文不得因等待后端而继续显示）；
-      // 2) 再清后端 ActiveKey（lock_app = clear_key，幂等；与 MainLayout.lockNow() 同一契约）。
-      //    此前本路径只锁前端，后端密钥原样保留——锁屏期间 list_passwords 等受保护命令
-      //    实测仍可返回数据（O1.1 审查确证）。
-      // 3) 失败不得静默：重试 3 次（500ms 间隔），仍失败显式记录错误。
-      //    lock_app 仅在 IPC 通道失效时失败——通道失效通常意味着后端进程正在退出
-      //   （密钥随进程消亡）；但若后端仍存活则密钥未清，必须留下明确错误，不得当作已锁。
+      // O1.3（P0）fail-closed 锁定状态机：
+      // ① Locking：同步 appStore.lock() 立即遮蔽敏感内容（明文不得因等待后端而继续显示）；
+      // ② 后端清钥（lock_app=clear_key，幂等）带 3 次重试；shouldAbort 检查代次与解锁态——
+      //    用户在重试窗口内解锁 → 放弃剩余重试，绝不清除新一轮解锁设置的新密钥；
+      // ③ Locked：后端确认清除；
+      // ④ Exhausted（重试耗尽且未被取代）→ fail-closed：restart_app 安全重启（销毁原进程密钥）；
+      //    重启失败 → 再试一次 → 仍失败 → exit_app 强制退出兜底——旧进程绝不以可访问的
+      //    解锁状态继续运行。每一步均显式记录，不静默。
       appStore.lock();
+      const seq = ++lockingSeq;
       void clearBackendKeyWithRetry(() => lockApp(), {
         onError: (e, attempt) => {
-          console.error(`[App.vue] O1.2 空闲自动锁：lock_app 失败（第 ${attempt}/3 次）`, e);
+          console.error(`[App.vue] O1.3 空闲自动锁：lock_app 失败（第 ${attempt}/3 次）`, e);
         },
+        shouldAbort: () => disposed || seq !== lockingSeq || !appStore.isLocked,
       }).then((ok) => {
-        if (!ok) {
-          console.error(
-            "[App.vue] O1.2 空闲自动锁：后端密钥清除失败（3 次重试均失败）——后端不可达；" +
-              "若后端进程仍存活则 ActiveKey 未清除，锁屏期间后端命令可能仍可访问数据"
-          );
+        if (disposed || seq !== lockingSeq) return; // 应用退出或新一轮锁定已接管
+        if (ok) {
+          console.log("[App.vue] O1.3 空闲自动锁：后端密钥已清除 → Locked");
+          return;
         }
+        if (!appStore.isLocked) {
+          console.warn("[App.vue] O1.3 空闲自动锁：重试期间用户已解锁 → Superseded，放弃剩余重试（不清除新密钥）");
+          return;
+        }
+        console.error("[App.vue] O1.3 空闲自动锁：后端密钥清除失败（3 次重试均失败）→ Exhausted → fail-closed 安全重启");
+        void (async () => {
+          for (let restartAttempt = 1; restartAttempt <= 2; restartAttempt++) {
+            try {
+              await restartApp();
+              console.warn(`[App.vue] O1.3 fail-closed：安全重启已发起（第 ${restartAttempt} 次）→ 进程即将退出，密钥随之销毁`);
+              return;
+            } catch (e) {
+              console.error(`[App.vue] O1.3 fail-closed：restart_app 失败（第 ${restartAttempt}/2 次）`, e);
+              if (restartAttempt < 2) await new Promise((r) => setTimeout(r, 500));
+            }
+          }
+          console.error("[App.vue] O1.3 fail-closed：安全重启两次失败 → exit_app 强制退出兜底（旧进程绝不以解锁状态继续运行）");
+          try {
+            await exitApp();
+          } catch (e) {
+            console.error("[App.vue] O1.3 fail-closed：exit_app 兜底也失败——进程无法自行终止，需要用户/外部干预", e);
+          }
+        })();
       });
     }
   }, IDLE_CHECK_MS);
@@ -189,6 +221,7 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  disposed = true; // O1.3：应用退出/卸载时中止一切在途锁定重试
   unlistenLock?.();
   unlistenLock = null;
   unlistenToggleMini?.();

@@ -86,6 +86,9 @@ export const unlockApp = (masterPassword: string) =>
 
 export const lockApp = () => invoke<void>("lock_app");
 
+// O1.3 fail-closed 兜底：安全重启失败时强制退出旧进程（绝不以解锁状态继续运行）
+export const exitApp = () => invoke<void>("exit_app");
+
 // P0-#PW#PER#ITEM#VERIFY / P0-#PW#2ND：密码区二次验证
 // 优先比对独立二次验证密码（pw2nd_hash），未启用则回退到主密码 hash
 export const verifyPasswordForPwView = (inputPassword: string) =>

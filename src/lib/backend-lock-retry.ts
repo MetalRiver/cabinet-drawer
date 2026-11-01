@@ -17,11 +17,17 @@ export interface BackendLockRetryOptions {
   onError?: (error: unknown, attempt: number) => void;
   /** 等待函数（测试注入用，替换真实 setTimeout 等待） */
   delay?: (ms: number) => Promise<void>;
+  /**
+   * O1.3：每次尝试前检查；返回 true 表示锁定意图已被取代（典型：用户已重新解锁），
+   * 立即中止剩余重试——不允许旧重试任务在新一轮解锁后继续清除新密钥。
+   */
+  shouldAbort?: () => boolean;
 }
 
 /**
  * 依次尝试 lockFn（后端 lock_app），失败重试直至用尽次数。
- * 返回 true=后端密钥已清除；false=全部尝试失败（调用方必须显式上报，不得静默）。
+ * 返回 true=后端密钥已清除；false=未清除（全部尝试失败，或 shouldAbort 中止——
+ * 调用方须结合自身状态区分"耗尽"与"被取代"，只有前者才应触发 fail-closed）。
  * lockFn 的同步异常与 Promise 拒绝一律按失败处理，不会向上抛出。
  */
 export async function clearBackendKeyWithRetry(
@@ -32,6 +38,7 @@ export async function clearBackendKeyWithRetry(
   const retryDelayMs = options.retryDelayMs ?? 500;
   const delay = options.delay ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
   for (let attempt = 1; attempt <= attempts; attempt++) {
+    if (options.shouldAbort?.()) return false;
     try {
       await lockFn();
       return true;

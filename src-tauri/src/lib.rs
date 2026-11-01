@@ -1890,6 +1890,7 @@ pub fn run() {
             setup_master_password,
             unlock_app,
             lock_app,
+            exit_app, // O1.3 fail-closed 兜底：安全重启失败时强制退出
             // P0-#PW#2ND：独立二次验证密码（默认跟随主密码，可单独设）
             has_second_password,
             change_second_password,

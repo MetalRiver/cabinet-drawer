@@ -56,4 +56,33 @@ describe("clearBackendKeyWithRetry", () => {
     expect(ok).toBe(false);
     expect(lockFn).toHaveBeenCalledTimes(1);
   });
+
+  it("O1.3 shouldAbort 首查即真：一次都不尝试，返回 false", async () => {
+    const lockFn = vi.fn().mockResolvedValue(undefined);
+    const onError = vi.fn();
+    const ok = await clearBackendKeyWithRetry(lockFn, {
+      shouldAbort: () => true,
+      onError,
+      delay: () => Promise.resolve(),
+    });
+    expect(ok).toBe(false);
+    expect(lockFn).not.toHaveBeenCalled();
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("O1.3 shouldAbort 在 delay 后生效：第 2 次尝试前中止（用户已解锁，不清新密钥）", async () => {
+    const lockFn = vi.fn().mockRejectedValue(new Error("fail"));
+    let unlocked = false;
+    const delay = vi.fn(async () => {
+      unlocked = true; // 模拟重试等待期间用户完成解锁
+    });
+    const ok = await clearBackendKeyWithRetry(lockFn, {
+      attempts: 3,
+      shouldAbort: () => unlocked,
+      delay,
+    });
+    expect(ok).toBe(false);
+    expect(lockFn).toHaveBeenCalledTimes(1);
+    expect(delay).toHaveBeenCalledTimes(1);
+  });
 });

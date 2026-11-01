@@ -3,7 +3,7 @@
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use sha2::{Digest, Sha256};
-use tauri::State;
+use tauri::{AppHandle, State};
 
 use crate::crypto;
 use crate::{
@@ -432,6 +432,16 @@ pub fn lock_app(state: State<AppState>) -> Result<(), String> {
     }
     state.clear_key();
     Ok(())
+}
+
+// ============================================================
+// 🔒 O1.3 fail-closed 兜底：强制退出应用
+// ============================================================
+// 安全重启（restart_app）失败时，由前端空闲自动锁的耗尽链路调用：
+// 旧进程绝不以可访问的解锁状态继续运行——退出即销毁内存中的 ActiveKey。
+#[tauri::command]
+pub fn exit_app(app: AppHandle) {
+    app.exit(0);
 }
 
 // ============================================================
