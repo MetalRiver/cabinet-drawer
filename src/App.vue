@@ -166,19 +166,44 @@ onMounted(async () => {
       console.log(`[App.vue] 空闲 ${(idleMs / 60000).toFixed(1)}min ≥ ${minutes}min → 自动锁屏`);
       // O1.3（P0）fail-closed 锁定状态机：
       // ① Locking：同步 appStore.lock() 立即遮蔽敏感内容（明文不得因等待后端而继续显示）；
-      // ② 后端清钥（lock_app=clear_key，幂等）带 3 次重试；shouldAbort 检查代次与解锁态——
-      //    用户在重试窗口内解锁 → 放弃剩余重试，绝不清除新一轮解锁设置的新密钥；
+      // ② 后端清钥（lock_app=clear_key，幂等）带 3 次重试；shouldAbort 检查代次/解锁态/isUnlocking——
+      //    用户在重试窗口内开始解锁 → 立即放弃剩余重试，绝不清除即将设置的新密钥；
       // ③ Locked：后端确认清除；
       // ④ Exhausted（重试耗尽且未被取代）→ fail-closed：restart_app 安全重启（销毁原进程密钥）；
       //    重启失败 → 再试一次 → 仍失败 → exit_app 强制退出兜底——旧进程绝不以可访问的
       //    解锁状态继续运行。每一步均显式记录，不静默。
+      // 耗尽时若用户正在解锁（isUnlocking，KDF 验证 1–3s 期间后端新密钥已就位）→ 搁置重启，
+      // 等解锁落定：成功=Superseded；失败（仍锁定）=恢复 fail-closed。
+      const runFailClosed = async () => {
+        if (appStore.isUnlocking) {
+          console.warn("[App.vue] O1.3 fail-closed：执行前发现用户再次开始解锁 → 再次搁置");
+          return;
+        }
+        console.error("[App.vue] O1.3 空闲自动锁：后端密钥清除失败（3 次重试均失败）→ Exhausted → fail-closed 安全重启");
+        for (let restartAttempt = 1; restartAttempt <= 2; restartAttempt++) {
+          try {
+            await restartApp();
+            console.warn(`[App.vue] O1.3 fail-closed：安全重启已发起（第 ${restartAttempt} 次）→ 进程即将退出，密钥随之销毁`);
+            return;
+          } catch (e) {
+            console.error(`[App.vue] O1.3 fail-closed：restart_app 失败（第 ${restartAttempt}/2 次）`, e);
+            if (restartAttempt < 2) await new Promise((r) => setTimeout(r, 500));
+          }
+        }
+        console.error("[App.vue] O1.3 fail-closed：安全重启两次失败 → exit_app 强制退出兜底（旧进程绝不以解锁状态继续运行）");
+        try {
+          await exitApp();
+        } catch (e) {
+          console.error("[App.vue] O1.3 fail-closed：exit_app 兜底也失败——进程无法自行终止，需要用户/外部干预", e);
+        }
+      };
       appStore.lock();
       const seq = ++lockingSeq;
       void clearBackendKeyWithRetry(() => lockApp(), {
         onError: (e, attempt) => {
           console.error(`[App.vue] O1.3 空闲自动锁：lock_app 失败（第 ${attempt}/3 次）`, e);
         },
-        shouldAbort: () => disposed || seq !== lockingSeq || !appStore.isLocked,
+        shouldAbort: () => disposed || seq !== lockingSeq || !appStore.isLocked || appStore.isUnlocking,
       }).then((ok) => {
         if (disposed || seq !== lockingSeq) return; // 应用退出或新一轮锁定已接管
         if (ok) {
@@ -189,25 +214,24 @@ onMounted(async () => {
           console.warn("[App.vue] O1.3 空闲自动锁：重试期间用户已解锁 → Superseded，放弃剩余重试（不清除新密钥）");
           return;
         }
-        console.error("[App.vue] O1.3 空闲自动锁：后端密钥清除失败（3 次重试均失败）→ Exhausted → fail-closed 安全重启");
-        void (async () => {
-          for (let restartAttempt = 1; restartAttempt <= 2; restartAttempt++) {
-            try {
-              await restartApp();
-              console.warn(`[App.vue] O1.3 fail-closed：安全重启已发起（第 ${restartAttempt} 次）→ 进程即将退出，密钥随之销毁`);
-              return;
-            } catch (e) {
-              console.error(`[App.vue] O1.3 fail-closed：restart_app 失败（第 ${restartAttempt}/2 次）`, e);
-              if (restartAttempt < 2) await new Promise((r) => setTimeout(r, 500));
+        if (appStore.isUnlocking) {
+          // 解锁在途（unlock_app 已发出、KDF 验证中，后端新密钥即将/已经就位）：
+          // 搁置 fail-closed，等解锁落定——成功则 Superseded；失败（仍锁定）则恢复 fail-closed。
+          console.warn("[App.vue] O1.3 空闲自动锁：重试耗尽时用户正在解锁 → 搁置 fail-closed，等待解锁落定");
+          void (async () => {
+            for (let i = 0; i < 100 && !disposed && seq === lockingSeq && appStore.isUnlocking; i++) {
+              await new Promise((r) => setTimeout(r, 200)); // 最多等 20s（KDF + UI 切换实测 1–3s）
             }
-          }
-          console.error("[App.vue] O1.3 fail-closed：安全重启两次失败 → exit_app 强制退出兜底（旧进程绝不以解锁状态继续运行）");
-          try {
-            await exitApp();
-          } catch (e) {
-            console.error("[App.vue] O1.3 fail-closed：exit_app 兜底也失败——进程无法自行终止，需要用户/外部干预", e);
-          }
-        })();
+            if (disposed || seq !== lockingSeq) return;
+            if (!appStore.isLocked) {
+              console.warn("[App.vue] O1.3 空闲自动锁：用户解锁成功 → Superseded（新密钥保持，不重启）");
+              return;
+            }
+            await runFailClosed();
+          })();
+          return;
+        }
+        void runFailClosed();
       });
     }
   }, IDLE_CHECK_MS);

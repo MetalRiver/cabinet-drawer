@@ -137,6 +137,7 @@ async function handleUnlock() {
     return;
   }
   isLoading.value = true;
+  appStore.beginUnlock(); // O1.3：解锁开始即置位——空闲自动锁重试/耗尽判定据此让路，绝不清除即将设置的新密钥
   error.value = "";
   try {
     const recovery = await unlockApp(password.value);
@@ -145,6 +146,7 @@ async function handleUnlock() {
     isUnlocked.value = true;
     setTimeout(() => {
       appStore.unlock();
+      appStore.endUnlock(); // O1.3：解锁落定（成功）
       password.value = "";
       attempts.value = 0;
     }, 200);
@@ -152,6 +154,7 @@ async function handleUnlock() {
     error.value = String(e);
     attempts.value++;
     isLoading.value = false;
+    appStore.endUnlock(); // O1.3：解锁落定（失败）
   }
 }
 

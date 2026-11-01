@@ -65,6 +65,18 @@ export const useAppStore = defineStore("app", () => {
     isLocked.value = false;
   }
 
+  // O1.3：解锁进行中信号（beginUnlock 在 unlock_app 发出前置位，endUnlock 在成功/失败落定后复位）。
+  // 空闲自动锁的重试中止与耗尽判定必须以此为准——前端 isLocked 翻转要等 KDF 验证 + UI 切换
+  // （实测 1–3s），期间后端新密钥已就位；仅看 isLocked 会让旧重试清掉新密钥、
+  // 甚至把刚完成的解锁会话 fail-closed 重启掉。
+  const isUnlocking = ref(false);
+  function beginUnlock() {
+    isUnlocking.value = true;
+  }
+  function endUnlock() {
+    isUnlocking.value = false;
+  }
+
   function setFirstRun(v: boolean) {
     isFirstRun.value = v;
   }
@@ -89,6 +101,9 @@ export const useAppStore = defineStore("app", () => {
     init,
     lock,
     unlock,
+    isUnlocking,
+    beginUnlock,
+    endUnlock,
     setFirstRun,
     completeMigration,
     showClipToast,
