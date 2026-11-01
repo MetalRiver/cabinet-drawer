@@ -420,8 +420,18 @@ pub fn change_master_password(
 // 🔒 锁定 App（清空内存密钥）
 // ============================================================
 #[tauri::command]
-pub fn lock_app(state: State<AppState>) {
+pub fn lock_app(state: State<AppState>) -> Result<(), String> {
+    // test-edition 故障注入（O1.2 安全闭环复核专用）：模拟后端锁定命令持续失败且后端进程存活，
+    // 验证前端重试/显式报错/安全终止链路。正式构建 cfg 编译期剔除，零影响。
+    // 模式对齐 commands/window.rs perf_probe_report（env 门控 test-edition 钩子）。
+    #[cfg(feature = "test-edition")]
+    {
+        if std::env::var("DRAWER_FAIL_LOCK_APP").ok().as_deref() == Some("1") {
+            return Err("test-edition 注入：lock_app 模拟失败（后端进程存活）".to_string());
+        }
+    }
     state.clear_key();
+    Ok(())
 }
 
 // ============================================================
