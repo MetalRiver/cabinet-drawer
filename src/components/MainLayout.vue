@@ -8,6 +8,7 @@ import { listen } from "@tauri-apps/api/event";
 import { useWindowDrag } from "../composables/useWindowDrag";
 import { useSoftwareStore } from "../stores/software";
 import { useTempStore } from "../stores/temp";
+import { scheduleDeferred } from "../lib/defer-idle";
 import SearchBar from "./SearchBar.vue";
 import SummaryModal from "./SummaryModal.vue";
 import TrashModal from "./TrashModal.vue";
@@ -130,6 +131,11 @@ defineExpose({});
 //   原来只加不减会累积监听）
 const onOpenTrash = () => { showTrash.value = true; };
 
+// O2：启动扫描延迟执行器句柄（提升到 setup 作用域供 onUnmounted cancel——
+// MainLayout 每次锁屏-解锁重新挂载，挂起中的排期若不取消会在旧实例上重复触发）
+let healthScan: ReturnType<typeof scheduleDeferred> | null = null;
+let rescanScan: ReturnType<typeof scheduleDeferred> | null = null;
+
 onMounted(() => {
   // P0-#PERF#INIT：onMounted **绝不 await 任何 IPC** — 改为 fire-and-forget
   // 之前：await getDataDir() / await widgetStore.init() / await listen() 全部同步 block
@@ -161,37 +167,35 @@ onMounted(() => {
   void tempStore.loadItems().catch(() => {});
   void appStore.refreshTrashCount().catch(() => {});
 
-  // ===== 后台任务 4：启动时健康检查 — 自动修复失效 app path =====
-  // 关键：等 UI 渲染**完成**后再跑（避免阻塞首帧）
-  // 用 setTimeout 50ms 让浏览器先绘制一次
-  setTimeout(() => {
-    void (async () => {
-      try {
-        const { healthCheckApps } = await import("../api");
-        const fixed = await healthCheckApps();
-        if (fixed > 0) {
-          appStore.showClipToast("info", `已自动修复 ${fixed} 个失效应用路径`);
-          await softwareStore.loadItems();
-        }
-      } catch (e) {
-        console.warn("[healthCheck] 失败", e);
+  // ===== 后台任务 4/5：启动时健康检查 + subtype 回填（O2：延迟到空闲执行）=====
+  // 改造前：setTimeout 200/400ms 全表扫描与首屏视图加载并发竞争 data gate。
+  // 现在：scheduleDeferred——首屏渲染优先，浏览器空闲时执行；timeout 兜底保证
+  //       **检查最终仍然执行（不以跳过冒充性能优化）**；started 幂等防重复扫描/并发重入。
+  // 语义保留：自动修复失效路径（fixed>0 → 提示+刷新列表）、subtype 回填（n>0 → 刷新）、
+  // 失败处理（console.warn 保留）。组件卸载（锁屏/退出）时 cancel 挂起中的排期。
+  healthScan = scheduleDeferred(async () => {
+    try {
+      const { healthCheckApps } = await import("../api");
+      const fixed = await healthCheckApps();
+      if (fixed > 0) {
+        appStore.showClipToast("info", `已自动修复 ${fixed} 个失效应用路径`);
+        await softwareStore.loadItems();
       }
-    })();
-  }, 200);
+    } catch (e) {
+      console.warn("[healthCheck] 失败", e);
+    }
+  }, { onError: (e) => console.warn("[healthCheck] 延迟执行失败", e) });
 
-  // ===== 后台任务 5：启动时回填所有 app 的 subtype =====
-  setTimeout(() => {
-    void (async () => {
-      try {
-        const n = await rescanSubtypes();
-        if (n > 0) {
-          await softwareStore.loadItems();
-        }
-      } catch (e) {
-        console.warn("[MainLayout] rescanSubtypes 失败", e);
+  rescanScan = scheduleDeferred(async () => {
+    try {
+      const n = await rescanSubtypes();
+      if (n > 0) {
+        await softwareStore.loadItems();
       }
-    })();
-  }, 400);
+    } catch (e) {
+      console.warn("[MainLayout] rescanSubtypes 失败", e);
+    }
+  }, { onError: (e) => console.warn("[MainLayout] rescanSubtypes 延迟执行失败", e) });
 
   // ===== 后台任务 6：监听窗口事件 =====
   void (async () => {
@@ -231,6 +235,9 @@ onUnmounted(() => {
   unlistenForceExpand?.();
   // ✅ 泄漏修复：与 onMounted 中的 addEventListener 成对移除
   window.removeEventListener("open-trash", onOpenTrash);
+  // O2：cancel 挂起中的启动扫描排期（不 cancel 已开始的任务——扫描幂等且应用退出时进程消亡）
+  healthScan?.cancel();
+  rescanScan?.cancel();
 });
 
 // ===== 迷你模式窗口尺寸 =====
