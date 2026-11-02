@@ -94,6 +94,20 @@ export const useSoftwareStore = defineStore("software", () => {
     }
   }
 
+  // O3：软件列表初始化去重——**视图 onMounted 专用入口**。
+  // 语义：本进程内列表已加载（hasLoaded）且不在加载中 → 跳过
+  //   （锁屏期间后端锁定、DB 零写入，跨锁屏数据不变 → 跳过安全）。
+  // 与 loadItems 的分工（O3-0 报告 §五 的竞态结论）：
+  //   - loadItems = 强制刷新（CRUD 写入 / O2 延迟扫描修复 / refreshAllIcons / reloadAll
+  //     专用，**总是加载**——去重守卫绝不能放进 loadItems 本体，否则 O2 扫描的
+  //     修复刷新会被吞掉，UI 与 DB 不一致）；
+  //   - loadItemsIfNeeded = 初始化去重（仅 AppView/FrequentView 挂载时调用）。
+  // 首次加载失败时 hasLoaded 保持 false → 后续调用仍会真正加载（可重试，不误标）。
+  async function loadItemsIfNeeded() {
+    if (hasLoaded.value && !loading.value) return;
+    await loadItems();
+  }
+
   /// 关键修复：异步批量把 icon_path 转 data URL
   /// 不阻塞列表渲染：fire-and-forget，9 个软件 ~10-30ms 完成
   /// 失败项静默忽略（前端走 v-else 显示首字母卡片）
@@ -502,6 +516,7 @@ export const useSoftwareStore = defineStore("software", () => {
     filteredCount,
     loadCategories,
     loadItems,
+    loadItemsIfNeeded,
     loadIconDataUrls,
     reloadAll,
     // P1-#APPC#ICON#SYNC：暴露 refreshAllIcons 给 SettingsView/AppView 共用

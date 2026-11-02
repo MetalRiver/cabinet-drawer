@@ -498,8 +498,11 @@ onMounted(() => {
     .catch(() => {});
   // 修复 P1：fire-and-forget，不再 await，避免首次切到该 tab 时整个 setup 阻塞
   // IPC 慢的 view 不应该让路由组件等数据，应该先渲染骨架（空态）再异步填充
+  // O3：loadItems → loadItemsIfNeeded——常用区（默认视图）已在解锁窗口加载过列表，
+  //   这里跳过重复的全量拉取（每会话 list_apps 2→1）；CRUD/扫描/reloadAll 的
+  //   强制刷新仍走 loadItems（语义不变）。首次加载失败时 hasLoaded=false → 下次仍会真正加载。
   void softwareStore.loadCategories();
-  void softwareStore.loadItems();
+  void softwareStore.loadItemsIfNeeded();
   // 关键修复：自动补齐 db 里所有 icon_path 为空的 apps 图标
   // 用户不需要每次点"扫描"才能看到图标 —— 首次进软件区时后台抽图存 db
   // 抽完刷新列表，图标会显示出来

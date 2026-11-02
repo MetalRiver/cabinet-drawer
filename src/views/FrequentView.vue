@@ -93,7 +93,10 @@ function getIcon(item: FrequentItem): string {
 }
 
 onMounted(() => {
-  void softwareStore.loadItems();
+  // O3：loadItems → loadItemsIfNeeded——本视图是解锁后默认路由的首个挂载点，
+  //   正常路径这里就是首次全量加载；若列表已加载（如锁屏-解锁后的重挂载）则跳过
+  //   重复的全量拉取。CRUD/扫描/reloadAll 的强制刷新仍走 loadItems（语义不变）。
+  void softwareStore.loadItemsIfNeeded();
   void snippetsStore.loadItems();
   void passwordsStore.refresh();
   void tempStore.loadItems();
