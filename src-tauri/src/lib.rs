@@ -15,6 +15,7 @@ use std::os::windows::process::CommandExt;
 mod apps_2d_tests;
 #[cfg(test)]
 mod apps_health_tests;
+mod app_identity;
 mod backup;
 mod backup_v2;
 mod commands;
@@ -1393,6 +1394,10 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
+            // G7-2 隔离修正：最早期注入真实 identifier——图标缓存根/前端日志路径由此
+            // 按 identifier 解析（候选版 com.drawer-box.candidate 写自己的目录，
+            // 正式版 com.drawer-box.app 解析结果与历史硬编码逐字节一致）。
+            app_identity::set_app_dir_name(app.config().identifier.as_str());
             // 初始化数据库（或在启动前先执行 factory_reset，100% 避开 Windows SQLite 文件锁）
             // Phase 2C-1：config_root（= app_data_dir，state/guard 的家）与 effective_root
             // （真正的 Data Root，DB 的家）从此分离。默认两者相同 → 老用户零行为漂移。

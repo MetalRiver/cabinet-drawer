@@ -2118,11 +2118,13 @@ pub fn delete_app_category(state: State<AppState>, id: i64) -> Result<(), String
 // ============================================================
 #[tauri::command]
 pub fn log_frontend(level: String, msg: String) {
+    // G7-2 隔离修正：目录名按 identifier 解析（同 win_icon::cache_root）——
+    // 候选版写 com.drawer-box.candidate\frontend.log，不再写穿正式版 %APPDATA% 目录。
     let log_path = std::env::var("APPDATA")
         .or_else(|_| std::env::var("LOCALAPPDATA"))
         .map(|p| {
             std::path::PathBuf::from(p)
-                .join("com.drawer-box.app")
+                .join(crate::app_identity::app_dir_name())
                 .join("frontend.log")
         })
         .unwrap_or_else(|_| std::path::PathBuf::from("frontend.log"));

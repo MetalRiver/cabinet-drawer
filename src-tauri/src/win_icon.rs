@@ -186,11 +186,16 @@ fn icon_write_guard(_target: &std::path::Path, _source_path: &str, _caller: &str
 /// icon 缓存根目录
 /// G3-1C：改为 pub —— 受控回退命令 `get_app_icon_data_url` 需用它校验
 /// 请求读取的路径必须位于缓存根内（防止按路径任意读文件的旧通道被滥用）。
+/// G7-2 隔离修正：目录名改为按 identifier 解析（app_identity::app_dir_name）——
+/// 正式版=com.drawer-box.app（与历史硬编码逐字节一致）；
+/// 候选版=com.drawer-box.candidate（与资产 scope `$APPLOCALDATA/icons/**/*` 对齐，不再写穿正式缓存）。
 pub fn cache_root() -> PathBuf {
     let base = std::env::var("LOCALAPPDATA")
         .or_else(|_| std::env::var("APPDATA"))
         .unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(base).join("com.drawer-box.app").join("icons")
+    PathBuf::from(base)
+        .join(crate::app_identity::app_dir_name())
+        .join("icons")
 }
 
 /// 计算 cache 文件名（SHA256 前 16 字符）
