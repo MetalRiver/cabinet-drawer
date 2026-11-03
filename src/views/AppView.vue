@@ -184,6 +184,9 @@ function openContextMenu(e: MouseEvent, item: any) {
   });
 }
 function closeContextMenu() {
+  // G7-3：幂等——已关闭直接返回。滚动期间 window scroll（capture）每帧调本函数，
+  // 旧实现无条件展开新对象赋值 → 每帧触发一次响应式更新调度（滚动时持续微开销）。
+  if (!ctxMenu.value.visible) return;
   ctxMenu.value = { ...ctxMenu.value, visible: false };
 }
 // 窗口尺寸变化时重新钳位（避免菜单跑出可视区）
@@ -1644,27 +1647,42 @@ async function openLocation(item: any) {
   }
 }
 
+// G7-3：启动中的卡片（即时可见反馈 + 同卡防重入 + 成功后 2s 冷却）。
+// 用户实测（G7-3）：点击→toast 间隔 100-290ms 且期间卡片零反馈，目标软件窗口出现更慢，
+// 用户误以为点击无效而连点 → 同一软件被启动多次（窗口"陆续出现"）。
+// launchingIds = 进行中防重入；launchedAt = 成功后 2s 冷却（与"已启动"toast 展示期一致——
+// 反馈在屏期间的同卡重击属于冗余操作，忽略之不属于静默吞请求）。
+const launchingIds = ref(new Set<number>());
+const LAUNCH_COOLDOWN_MS = 2000;
+const launchedAt = new Map<number, number>();
+
 async function launchApp(id: number) {
-  // P0-#F：根据软件类型 + 启动结果给精确 toast
-  const item = softwareStore.items.find((it) => it.id === id);
-  const result = await softwareStore.launch(id);
-  if (result.ok) {
-    if (!item) return;
-    const p = (item.path || "").toLowerCase();
-    // P0-#Y#URL#TOAST：根据 app_type / path 形式给精确成功提示
-    if (item.app_type === "url" || p.startsWith("http://") || p.startsWith("https://") || p.startsWith("steam://") || p.startsWith("com.epicgames.launcher://")) {
-      appStore.showClipToast("success", `已在浏览器中打开「${item.name}」`);
-    } else if (p.endsWith(".url")) {
-      appStore.showClipToast("success", `已在浏览器中打开「${item.name}」`);
-    } else if (p.endsWith(".lnk")) {
-      appStore.showClipToast("success", `已启动「${item.name}」`);
-    } else if (item.app_type === "folder") {
-      appStore.showClipToast("success", `已打开文件夹「${item.name}」`);
-    } else {
-      appStore.showClipToast("success", `已启动「${item.name}」`);
-    }
-  } else {
-    if (result.error === "missing") {
+  // G7-3：同卡防重入——进行中再点直接忽略（首次点击已有可见启动中态，非静默吞操作）
+  if (launchingIds.value.has(id)) return;
+  const last = launchedAt.get(id);
+  if (last != null && Date.now() - last < LAUNCH_COOLDOWN_MS) return;
+  launchingIds.value.add(id);
+  try {
+    // P0-#F：根据软件类型 + 启动结果给精确 toast
+    const item = softwareStore.items.find((it) => it.id === id);
+    const result = await softwareStore.launch(id);
+    if (result.ok) {
+      launchedAt.set(id, Date.now()); // G7-3：受理成功即进入 2s 冷却（与 toast 展示期一致）
+      if (!item) return;
+      const p = (item.path || "").toLowerCase();
+      // P0-#Y#URL#TOAST：根据 app_type / path 形式给精确成功提示
+      if (item.app_type === "url" || p.startsWith("http://") || p.startsWith("https://") || p.startsWith("steam://") || p.startsWith("com.epicgames.launcher://")) {
+        appStore.showClipToast("success", `已在浏览器中打开「${item.name}」`);
+      } else if (p.endsWith(".url")) {
+        appStore.showClipToast("success", `已在浏览器中打开「${item.name}」`);
+      } else if (p.endsWith(".lnk")) {
+        appStore.showClipToast("success", `已启动「${item.name}」`);
+      } else if (item.app_type === "folder") {
+        appStore.showClipToast("success", `已打开文件夹「${item.name}」`);
+      } else {
+        appStore.showClipToast("success", `已启动「${item.name}」`);
+      }
+    } else if (result.error === "missing") {
       // 路径不存在 — 提示用户重新拖入
       // P0-#Y#URL#TOAST：URL 类型不应该说"重新拖入 .exe 或 .lnk"
       if (item && (item.app_type === "url" ||
@@ -1680,6 +1698,9 @@ async function launchApp(id: number) {
     } else {
       appStore.showClipToast("info", result.message || "启动失败");
     }
+  } finally {
+    // G7-3：无论成败都解除启动中态（下一帧恢复卡片常规外观）
+    launchingIds.value.delete(id);
   }
 }
 
@@ -1993,14 +2014,19 @@ async function confirmDeleteApp(id: number | null) {
 
         <!-- 网格：3 列软件卡片（真实图标 + 名称 + 启动） -->
         <div v-else class="app-grid">
+          <!-- G7-3：入场动画只给首屏批次（stagger-item 仅 index<INITIAL_RENDER_COUNT）——
+               60 格并发 350ms 动画是滚动追加期间的主要主线程开销，且滚动中无暇看动画，追加批瞬时出现；
+               app-cell-launching = 启动中即时可见态（下一帧出现），配合同卡防重入 launchingIds -->
           <div
             v-for="(item, index) in renderedItems"
             :key="item.id"
-            class="app-cell stagger-item"
+            class="app-cell"
             :class="{
+              'stagger-item': index < INITIAL_RENDER_COUNT,
               'app-cell-editing': editingId === item.id,
               'app-cell-confirming': confirmingDeleteId === item.id,
-              'app-cell-missing': item.available === false && (item.app_type || 'app') !== 'url'
+              'app-cell-missing': item.available === false && (item.app_type || 'app') !== 'url',
+              'app-cell-launching': launchingIds.has(item.id)
             }"
             :data-type="item.app_type || 'app'"
             :style="{ '--delay': `${Math.min(index * 0.03, 0.3)}s` }"
@@ -2041,6 +2067,8 @@ async function confirmDeleteApp(id: number | null) {
                   :src="iconSrc(item.icon_path)"
                   :alt="item.name"
                   class="app-icon-img"
+                  loading="lazy"
+                  decoding="async"
                   @error="onAppIconError(item.id)"
                 />
                 <img
@@ -2048,6 +2076,8 @@ async function confirmDeleteApp(id: number | null) {
                   :src="softwareStore.iconDataUrls[item.id]"
                   :alt="item.name"
                   class="app-icon-img"
+                  loading="lazy"
+                  decoding="async"
                   @error="onFallbackIconError(item.id)"
                 />
                 <!-- P0-#Y#FIX#ICON#FOLDER：folder/url 没真实图标时显示内置 SVG（Windows 风格） -->
@@ -2911,6 +2941,23 @@ AppID：${a.target || a.path}`"
   -webkit-app-region: no-drag;
   overflow: hidden;
   min-width: 0;
+  /* G7-3：视口外卡片跳过 layout/paint（1000 格全渲染时滚动/交互的主线程成本大降）。
+     auto 尺寸记忆实际渲染高度（占位 96px 与真实高度接近，滚动条几乎不跳动）；
+     展开编辑/确认删除/右键菜单均作用于可见卡片，交互不受影响。 */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 96px;
+}
+/* G7-3：启动中即时可见态——图标呼吸脉冲 + 边框高亮，下一帧即出现；
+   配合同卡防重入（launchingIds），用户在目标软件窗口出现前就能看到"已点击"。 */
+.app-cell-launching {
+  border-color: var(--primary, #6366f1);
+}
+.app-cell-launching .app-icon-img {
+  animation: launchPulse 0.9s ease-in-out infinite;
+}
+@keyframes launchPulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.55; transform: scale(0.92); }
 }
 .app-cell::before {
   content: "";
