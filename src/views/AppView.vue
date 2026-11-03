@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed, h, nextTick } from "vue";
+import { ref, onMounted, onUnmounted, computed, h, nextTick, watch } from "vue";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useAppStore } from "../stores/app";
@@ -652,6 +652,9 @@ const onDocClick = (e: MouseEvent) => {
 onUnmounted(() => {
   unlistenDragDrop?.();
   unlistenDragDrop = null;
+  // G7-1：分批渲染观察器清理
+  gridObserver?.disconnect();
+  gridObserver = null;
   // P1-#APPC#CTX#EDGE：清理 resize 监听
   window.removeEventListener("resize", repositionCtxMenu);
   // ✅ 泄漏修复：以下监听此前从未被移除，随锁屏-解锁循环持续累积
@@ -897,6 +900,68 @@ async function restoreTrashedCandidate(a: ScannedApp) {
 
 // 软件区展示：直接用 store 的客户端 filter 结果（搜索/分类/类型都已在 store 内处理）
 const filteredItems = computed(() => softwareStore.filteredItems);
+
+// ===== G7-1：渐进分批渲染（1000 条规模首屏只渲染 60 格，滚动接近尾部再追加）=====
+// 目的：消除"一次性渲染上千格 + 上千张图标"造成的主线程阻塞（1000 规模空转 rAF 只有 ~27fps）。
+// 边界：只控制"一次渲染多少格"，数据源仍是 filteredItems——搜索/分类/类型/细分/CRUD/右键菜单/
+//       编辑展开/拖拽/回收站全部照旧；追加发生在列表尾部，原生滚动位置不受影响。
+// 兜底：若浏览器不支持 IntersectionObserver，退化为"全部渲染"（与改造前一致，绝不丢条目）。
+const INITIAL_RENDER_COUNT = 60;
+const RENDER_CHUNK = 60;
+const visibleCount = ref(INITIAL_RENDER_COUNT);
+const renderedItems = computed(() =>
+  filteredItems.value.length <= visibleCount.value
+    ? filteredItems.value
+    : filteredItems.value.slice(0, visibleCount.value)
+);
+const hasMoreToRender = computed(() => visibleCount.value < filteredItems.value.length);
+const gridSentinel = ref<HTMLElement | null>(null);
+let gridObserver: IntersectionObserver | null = null;
+
+function appendNextChunk() {
+  if (!hasMoreToRender.value) return;
+  visibleCount.value = Math.min(visibleCount.value + RENDER_CHUNK, filteredItems.value.length);
+  // 追加后哨兵位置下移：重新 observe 一次，保证"仍停留在可视余量内"时继续补齐
+  void nextTick(() => {
+    if (gridSentinel.value && hasMoreToRender.value && gridObserver) {
+      gridObserver.disconnect();
+      gridObserver.observe(gridSentinel.value);
+    }
+  });
+}
+
+function observeGridSentinel(el: HTMLElement | null) {
+  if (!el || typeof IntersectionObserver === "undefined") return;
+  if (!gridObserver) {
+    const root = document.querySelector<HTMLElement>(".content-scroll");
+    gridObserver = new IntersectionObserver(
+      (entries) => {
+        if (!entries.some((e) => e.isIntersecting)) return;
+        appendNextChunk();
+      },
+      // rootMargin 600px：提前一屏多开始追加，滚动时不会看到空白
+      { root: root || null, rootMargin: "600px 0px" }
+    );
+  }
+  gridObserver.disconnect();
+  gridObserver.observe(el);
+}
+watch(gridSentinel, (el) => observeGridSentinel(el), { flush: "post" });
+
+// 过滤条件变了（搜索/分类/一级类型/细分）→ 结果集换了 → 回到首屏批次
+watch(
+  () => [appStore.searchQuery, softwareStore.activeCategoryId, softwareStore.activeAppType, softwareStore.activeSubtype],
+  () => {
+    visibleCount.value = INITIAL_RENDER_COUNT;
+  }
+);
+// 数据本身变化（创建/删除/恢复/重载/扫描）→ 保留已呈现区间，只做边界钳位
+watch(
+  () => filteredItems.value.length,
+  (len) => {
+    if (len < visibleCount.value) visibleCount.value = Math.max(Math.min(len, INITIAL_RENDER_COUNT), 0);
+  }
+);
 
 // P0-#Y：app_type → 中文 + emoji（侧边栏一级 chip）
 // P0-#Y#FIX#UNCAT#REMOVE：删除"未分类"一级
@@ -1929,7 +1994,7 @@ async function confirmDeleteApp(id: number | null) {
         <!-- 网格：3 列软件卡片（真实图标 + 名称 + 启动） -->
         <div v-else class="app-grid">
           <div
-            v-for="(item, index) in filteredItems"
+            v-for="(item, index) in renderedItems"
             :key="item.id"
             class="app-cell stagger-item"
             :class="{
@@ -2014,6 +2079,13 @@ async function confirmDeleteApp(id: number | null) {
               >···</button>
             </template>
           </div>
+          <!-- G7-1：分批渲染哨兵——进入可视区前 600px 时追加下一批（仅在还有未渲染条目时存在） -->
+          <div
+            v-if="hasMoreToRender"
+            ref="gridSentinel"
+            class="app-grid-sentinel"
+            aria-hidden="true"
+          ></div>
         </div>
       </div>
     </div>
@@ -2795,6 +2867,12 @@ AppID：${a.target || a.path}`"
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 6px;
   padding: 4px 0;
+}
+/* G7-1：分批渲染哨兵——不占格子、不产生视觉痕迹，只用于 IntersectionObserver 触底追加 */
+.app-grid-sentinel {
+  grid-column: 1 / -1;
+  height: 1px;
+  width: 100%;
 }
 @media (min-width: 420px) {
   .app-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
