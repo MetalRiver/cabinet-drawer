@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, reactive, onMounted, onUnmounted, computed, h, nextTick, watch } from "vue";
+import { ref, onMounted, onUnmounted, computed, h, nextTick, watch } from "vue";
+import { scheduleDeferred } from "../lib/defer-idle";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useAppStore } from "../stores/app";
@@ -515,7 +516,11 @@ onMounted(() => {
   // P0-#ICON#MISSING#AUTOHEAL：配合后端 fill_missing_icons 新增的"文件丢失自愈"逻辑
   //   - db.icon_path 不为空但 PNG 文件丢失 → 自动重抽
   //   - 用户即使手动清过 cache 目录也能恢复
-  void softwareStore.refreshAllIcons();
+  // 2026-11-05 方案甲：图标补齐移出解锁/挂载拥塞窗（ca-FR1 实测进入窗口停滞与 fill_missing_icons 同窗；纯显示补齐，晚到无害）
+  scheduleDeferred(
+    async () => { await softwareStore.refreshAllIcons(); },
+    { minDelayMs: 8000, timeoutMs: 30000, onError: (e: unknown) => console.warn("[AppView] 图标补齐延迟执行失败", e) }
+  );
 
   // P0-#Y：注册系统级拖拽监听（Tauri 2 webview 事件）
   // 关键修复：HTML5 drag&drop 也作为兜底，防止 transparent 窗口下 Tauri 事件不响应
@@ -901,156 +906,15 @@ async function restoreTrashedCandidate(a: ScannedApp) {
 // 软件区展示：直接用 store 的客户端 filter 结果（搜索/分类/类型都已在 store 内处理）
 const filteredItems = computed(() => softwareStore.filteredItems);
 
-// ===== G7-4：真正的网格虚拟化（窗口化 + 离屏回收）=====
-// 目的：G7-1 的 IntersectionObserver 分批渲染只追加不回收——1000 条最终仍累积 1000 个 DOM 节点
-//       （content-visibility:auto 只省 paint，省不了 DOM 与 layout）。
-// 方案：按 .content-scroll 的 scrollTop 实时计算可视行区间，只渲染 [start,end) 行的卡片，
-//       其余用上/下两个整行占位（spacer）撑起总高度——实际 DOM 数量恒定在"一屏+余量"，与条目数无关。
-// 边界：数据源仍是 filteredItems——搜索/分类/类型/细分/CRUD/右键菜单/编辑展开/回收站全部照旧；
-//       列数与行高从 DOM 实测（响应式列数、卡片高度变化自适应）；1..N 条全部可达（窗口跟随 scrollTop）。
-// 兜底：网格未就绪/测量失败 → 渲染全部（绝不丢条目）。
-const INITIAL_RENDER_COUNT = 60; // G7-3：stagger 入场动画只给首屏批次
-const GRID_GAP = 6;
-const WIN_OVERSCAN_PX = 360;     // 上下各约 3 行余量，滚动时不出现空白
-const gridEl = ref<HTMLElement | null>(null);
-const contentEl = ref<HTMLElement | null>(null);
-const win = reactive({ start: 0, end: INITIAL_RENDER_COUNT, topSpacer: 0, bottomSpacer: 0, cols: 4, rowH: 100 });
-const geom = { cols: 4, rowH: 100, gridTopInContent: 0, viewH: 600 };
-// G7-4 修复（全局健康检查）：几何缓存——G7-4 原实现每次滚动事件都 getComputedStyle+2×getBoundingClientRect
-// （强制同步布局）再触发重渲染 → 读写交替 layout thrashing，快速滚动时主线程饱和（"突然停住"）。
-// 现在只在 mount/resize/数据变化/编辑态变化时重测；滚动期零强制布局。
-let geomDirty = true;
-function markGeomDirty() { geomDirty = true; }
-
-function measureGridGeom(): boolean {
-  if (!geomDirty) return true; // 缓存命中
-  const grid = gridEl.value;
-  if (!grid) return false;
-  const cs = Array.from(grid.querySelectorAll<HTMLElement>(".app-cell"));
-  if (!cs.length) return false;
-  const cont = contentEl.value;
-  const cols = Math.max(1, getComputedStyle(grid).gridTemplateColumns.split(" ").filter(Boolean).length);
-  const r0 = cs[0].getBoundingClientRect();
-  let rowH = r0.height + GRID_GAP;
-  if (cs.length > cols) {
-    const rN = cs[cols].getBoundingClientRect();
-    const dr = rN.top - r0.top;
-    if (dr > 20) rowH = dr; // 相邻行 top 差最可靠（含行 gap）
-  }
-  geom.cols = cols;
-  geom.rowH = Math.max(40, rowH);
-  if (cont) {
-    // 缓存容器几何：网格在内容坐标中的顶部 + 可视高度——滚动期只需读 scrollTop
-    geom.gridTopInContent = grid.getBoundingClientRect().top - cont.getBoundingClientRect().top + cont.scrollTop;
-    geom.viewH = cont.clientHeight;
-  }
-  geomDirty = false;
-  return true;
-}
-
-const windowedItems = computed(() => {
-  const items = filteredItems.value;
-  if (!items.length) return items;
-  if (win.end <= win.start) return items; // 未测量就绪 → 全渲染兜底（绝不丢条目）
-  return items.slice(win.start, win.end);
-});
-
-let winPending = false;
-let winRaf: number | null = null;
-let winTimer: number | null = null;
-function scheduleWindow() {
-  // G7-4 修复：滚动事件只做轻量调度（合并到每帧一次），重算在帧回调里做且零强制布局。
-  // rAF 为主（60fps 精确）；setTimeout 34ms 兜底（窗口被遮挡时 rAF 暂停，setTimeout 仍执行）。
-  if (winPending) return;
-  winPending = true;
-  const run = () => {
-    if (!winPending) return;
-    winPending = false;
-    if (winRaf != null) { cancelAnimationFrame(winRaf); winRaf = null; }
-    if (winTimer != null) { clearTimeout(winTimer); winTimer = null; }
-    recomputeWindow();
-  };
-  winRaf = requestAnimationFrame(run);
-  winTimer = window.setTimeout(run, 34);
-}
-
-function recomputeWindow() {
-  const cont = contentEl.value;
-  const items = filteredItems.value;
-  if (!cont || !items.length) return;
-  if (!measureGridGeom()) return;
-  const cols = geom.cols;
-  const rowH = geom.rowH;
-  const totalRows = Math.ceil(items.length / cols);
-  const viewTop = cont.scrollTop - geom.gridTopInContent; // 只读 scrollTop（不触发强制布局）
-  const startRow = Math.max(0, Math.floor((viewTop - WIN_OVERSCAN_PX) / rowH));
-  const endRow = Math.min(totalRows, Math.ceil((viewTop + geom.viewH + WIN_OVERSCAN_PX) / rowH));
-  const nStart = startRow * cols;
-  const nEnd = Math.min(items.length, endRow * cols);
-  // G7-4 修复：窗口未变化 → 不写响应式状态（避免每滚动帧都触发 Vue 重渲染）
-  if (nStart === win.start && nEnd === win.end) return;
-  win.start = nStart;
-  win.end = nEnd;
-  win.topSpacer = startRow * rowH;
-  win.bottomSpacer = Math.max(0, (totalRows - endRow) * rowH);
-  win.cols = cols;
-  win.rowH = rowH;
-}
-
-let winScrollEl: HTMLElement | null = null;
-function bindWindowScroll() {
-  winScrollEl = gridEl.value?.closest<HTMLElement>(".content-scroll") ?? null;
-  contentEl.value = winScrollEl; // G7-4：滚动容器 ref（修复：此前 contentEl 从未赋值 → 虚拟窗口永不重算）
-  if (winScrollEl) winScrollEl.addEventListener("scroll", scheduleWindow, { passive: true });
-  window.addEventListener("resize", onWinResize, { passive: true });
-}
-function onWinResize() {
-  markGeomDirty(); // 列数/行高可能变化（响应式列数）
-  scheduleWindow();
-}
-function unbindWindowScroll() {
-  winScrollEl?.removeEventListener("scroll", scheduleWindow);
-  window.removeEventListener("resize", onWinResize);
-  winScrollEl = null;
-}
-onMounted(() => {
-  bindWindowScroll();
-  markGeomDirty();
-  void nextTick(() => { recomputeWindow(); }); // 首屏格子渲染完成后测量行高/列数并计算窗口
-});
-// 编辑态变化（行内编辑表单使卡片变高 → 行距变化）→ 几何重测
-watch(
-  () => editingId.value,
-  () => { markGeomDirty(); scheduleWindow(); }
-);
-onUnmounted(() => {
-  unbindWindowScroll();
-});
-
-// 过滤条件变了（搜索/分类/一级类型/细分）→ 结果集换了 → 窗口重算并钳位滚动位置
-watch(
-  () => [appStore.searchQuery, softwareStore.activeCategoryId, softwareStore.activeAppType, softwareStore.activeSubtype],
-  () => {
-    markGeomDirty();
-    void nextTick(() => {
-      recomputeWindow();
-      const cont = contentEl.value; const grid = gridEl.value;
-      if (cont && grid) { const max = Math.max(0, grid.scrollHeight - cont.clientHeight); if (cont.scrollTop > max) cont.scrollTop = max; }
-    });
-  }
-);
-// 数据本身变化（创建/删除/恢复/重载/扫描）→ 窗口重算（滚动位置保留，必要时钳位）
-watch(
-  () => filteredItems.value.length,
-  () => {
-    markGeomDirty();
-    void nextTick(() => {
-      recomputeWindow();
-      const cont = contentEl.value; const grid = gridEl.value;
-      if (cont && grid) { const max = Math.max(0, grid.scrollHeight - cont.clientHeight); if (cont.scrollTop > max) cont.scrollTop = max; }
-    });
-  }
-);
+// ===== 网格渲染：全量渲染 + content-visibility（方案甲，2026-11-05 用户决策）=====
+// 背景：真人操作冷会话因果对照（ca-A1/ca-B1/ca-FR1，2026-11-05）证实——滚动期虚拟窗口换血
+//       （挂载/销毁格子）是浏览器进程整体停摆（数秒级"卡 2-15 秒"）的触发器；
+//       全量渲染变体（FR1）滚动期零冻结。图标/GPU/透明窗口/运行时版本均已排除。
+// 形态：全部条目一次性渲染；离屏格子的布局/绘制由既有 .app-cell { content-visibility: auto }
+//       原生跳过（无新增虚拟化机制）。滚动位置由浏览器原生钳位（过滤/删除后高度变化自动收敛）。
+// 保留：stagger 入场动画仅首屏批次（INITIAL_RENDER_COUNT）；右键菜单/编辑态/启动中态全部照旧。
+//       历史实现（G7-4 窗口化+离屏回收）见 git 历史（f875909 及其前序）。
+const INITIAL_RENDER_COUNT = 60; // stagger 入场动画只给首屏批次
 
 // P0-#Y：app_type → 中文 + emoji（侧边栏一级 chip）
 // P0-#Y#FIX#UNCAT#REMOVE：删除"未分类"一级
@@ -2099,25 +1963,23 @@ async function confirmDeleteApp(id: number | null) {
         </div>
 
         <!-- 网格：3 列软件卡片（真实图标 + 名称 + 启动） -->
-        <div v-else class="app-grid" ref="gridEl">
-          <!-- G7-4：顶部占位行——撑起被虚拟化回收的上方行高（滚动位置由此保持精确） -->
-          <div class="app-grid-spacer" :style="{ height: win.topSpacer + 'px' }" aria-hidden="true"></div>
-          <!-- G7-3：入场动画只给首屏批次（stagger-item 仅绝对 index<INITIAL_RENDER_COUNT）——
+        <div v-else class="app-grid">
+          <!-- G7-3：入场动画只给首屏批次（stagger-item 仅 index<INITIAL_RENDER_COUNT）——
                60 格并发 350ms 动画是滚动追加期间的主要主线程开销，且滚动中无暇看动画，追加批瞬时出现；
                app-cell-launching = 启动中即时可见态（下一帧出现），配合同卡防重入 launchingIds -->
           <div
-            v-for="(item, index) in windowedItems"
+            v-for="(item, index) in filteredItems"
             :key="item.id"
             class="app-cell"
             :class="{
-              'stagger-item': win.start + index < INITIAL_RENDER_COUNT,
+              'stagger-item': index < INITIAL_RENDER_COUNT,
               'app-cell-editing': editingId === item.id,
               'app-cell-confirming': confirmingDeleteId === item.id,
               'app-cell-missing': item.available === false && (item.app_type || 'app') !== 'url',
               'app-cell-launching': launchingIds.has(item.id)
             }"
             :data-type="item.app_type || 'app'"
-            :style="{ '--delay': `${Math.min((win.start + index) * 0.03, 0.3)}s` }"
+            :style="{ '--delay': `${Math.min(index * 0.03, 0.3)}s` }"
             @click="launchApp(item.id)"
             @contextmenu="openContextMenu($event, item)"
           >
@@ -2197,8 +2059,6 @@ async function confirmDeleteApp(id: number | null) {
               >···</button>
             </template>
           </div>
-          <!-- G7-4：底部占位行——撑起被虚拟化回收的下方行高 -->
-          <div class="app-grid-spacer" :style="{ height: win.bottomSpacer + 'px' }" aria-hidden="true"></div>
         </div>
       </div>
     </div>
@@ -4140,12 +4000,7 @@ AppID：${a.target || a.path}`"
 }
 .scan-count { font-size: 11px; color: var(--text-muted); margin-right: auto; }
 
-/* G7-4：虚拟化占位行——横跨全部列、撑起被回收行的高度（缺此规则 spacer 会被当单列项、布局全乱） */
-.app-grid-spacer {
-  grid-column: 1 / -1;
-  width: 100%;
-  pointer-events: none;
-}
+/* （2026-11-05 方案甲：虚拟化占位行已随滚动期换血机制一并移除，.app-grid-spacer 规则删除） */
 .stagger-item { animation: staggerIn 0.35s var(--ease-out) backwards; }
 @keyframes staggerIn {
   from { opacity: 0; transform: translateY(8px) scale(0.95); }

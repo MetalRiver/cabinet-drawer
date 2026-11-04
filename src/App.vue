@@ -59,6 +59,8 @@ let unlistenToggleMini: (() => void) | null = null;
 // 修复：每 2s 查询后端 lock 状态 → 如果后端 lock 但前端不知道 → 强制切回锁屏
 // 代价：2s 一次 IPC，可忽略不计（< 1KB 返回）
 let pollTimer: number | null = null;
+let pollInFlight = false; // 轮询单飞标志（拥塞期不堆积挂起连接）
+let lastPollOkAt = Date.now(); // 最近一次成功响应时刻（fail-closed 计时基准）
 
 // P0-#IDLE#AUTOLOCK：空闲超时自动锁定（行为偏好 → autoLockMinutes）
 // 用户无操作（鼠标/键盘/触屏）超过 autoLockMinutes 分钟 → 自动锁屏
@@ -142,14 +144,36 @@ onMounted(async () => {
     // 不存在无事件解锁），故锁定期间暂停状态查询；窗口可见/隐藏不做区分：
     // Rust 侧 hide 不通知前端，无法可靠识别隐藏态 → 不降频，安全标准不降。
     if (appStore.isLocked) return;
+    // 2026-11-05 加固（真实冻结取证：进入窗口拥塞曾使轮询响应被堵 270s）：
+    //  a) 单飞——上一轮未返回则跳过本轮，不再堆积挂起连接（此前一次拥塞可耗尽连接池，
+    //     令 launch_app 等 IPC 全部排队 = "点击启动卡住"）；
+    //  b) 10s 超时——超时的轮询不再等待；
+    //  c) 30s 无任何成功响应 → fail-closed：重载前端回到锁屏（释放连接池，且绝不在
+    //     无法确认后端状态时维持旧解锁画面）。检测语义不变（后端锁 → 前端强制锁屏），
+    //     失效路径从"挂起"变"回锁屏"——这是收紧而非放宽 O1.3。
+    // 失效检测（按"最后一次成功响应"计时，与 in-flight 无关——被拒/挂起/超时都算失效）
+    if (Date.now() - lastPollOkAt > 30000) {
+      console.warn("[App.vue] 状态轮询 30s 无成功响应 → fail-closed 重载（回锁屏）");
+      window.location.reload();
+      return;
+    }
+    if (pollInFlight) return;
+    pollInFlight = true;
     try {
-      const status = await getAppStatus();
+      const status = await Promise.race([
+        getAppStatus(),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 10000)),
+      ]);
+      if (status == null) return; // 超时：不计成功，保持 in-flight 计时（30s 后 fail-closed）
+      lastPollOkAt = Date.now();
       if (!status.unlocked && !appStore.isLocked) {
         console.warn("[App.vue] polling detected backend locked → 强制切锁屏");
         appStore.lock();
       }
     } catch {
       // IPC 失败（罕见）忽略，等下个周期
+    } finally {
+      pollInFlight = false;
     }
   }, 2000);
 
