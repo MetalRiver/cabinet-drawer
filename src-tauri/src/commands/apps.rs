@@ -1923,10 +1923,12 @@ pub async fn fill_missing_icons(app: AppHandle) -> Result<usize, String> {
 }
 
 fn fill_missing_icons_sync(state: &AppState) -> Result<usize, String> {
-    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn；spawn_blocking 内同步持有）
-    let _data_gate = state.data_read()?;
-
+    // G7-健康检查修复：数据门**不再**覆盖 1000 条图标存在性检查与批量抽图——
+    // AppView 挂载即调用本命令，原实现在门内做 exists()×N + extract_batch_to_cache，
+    // 期间 launch_app / CRUD / list_apps 的 data_read() 被阻塞（解锁后进软件区即卡数秒）。
+    // 现在门只保护 DB 读与单批回写（锁顺序: gate → master_wrap_gate → db → conn）。
     let apps: Vec<db::AppMeta> = {
+        let _data_gate = state.data_read()?;
         let db = state.db.lock().unwrap();
         db.list_apps("", None).map_err(|e| e.to_string())?
     };
@@ -1945,6 +1947,8 @@ fn fill_missing_icons_sync(state: &AppState) -> Result<usize, String> {
         let extracted = win_icon::extract_batch_to_cache(&exe_paths);
         let icon_map: std::collections::HashMap<String, PathBuf> = extracted.into_iter().collect();
         let mut updated = 0;
+        // [data-gate:shared] 回写短持门（不覆盖抽图）
+        let _data_gate = state.data_read()?;
         let db = state.db.lock().unwrap();
         for (id, path) in missing {
             if let Some(cached) = icon_map.get(&path) {
@@ -2029,33 +2033,32 @@ pub async fn rescan_subtypes(app: AppHandle) -> Result<usize, String> {
 }
 
 fn rescan_subtypes_sync(state: &AppState) -> Result<usize, String> {
-    // [data-gate:shared] Phase 2C-3 统一数据操作门（锁顺序: gate → master_wrap_gate → db → conn）
-    let _data_gate = state.data_read()?;
-
+    // G7-健康检查修复：数据门只保护 DB 读与写；逐条 subtype 路径计算移到门外，
+    // 避免整表处理期间阻塞 launch_app / CRUD（锁顺序: gate → master_wrap_gate → db → conn）。
     eprintln!("[rescan_subtypes] ENTER");
     let apps: Vec<db::AppMeta> = {
+        let _data_gate = state.data_read()?;
         let db = state.db.lock().unwrap();
         db.list_apps("", None).map_err(|e| e.to_string())?
     };
+    // 门外计算待回填列表
+    let pending: Vec<(i64, db::AppMeta, String)> = apps
+        .iter()
+        .filter(|a| a.app_subtype.is_empty())
+        .filter_map(|a| {
+            let p = std::path::Path::new(&a.path);
+            let new_sub = detect_subtype_from_path(p, &a.app_type).to_string();
+            if new_sub.is_empty() { None } else { Some((a.id, a.clone(), new_sub)) }
+        })
+        .collect();
     let mut updated = 0;
-    let db = state.db.lock().unwrap();
-    for a in &apps {
-        if !a.app_subtype.is_empty() {
-            continue;
-        }
-        let p = std::path::Path::new(&a.path);
-        let new_sub = detect_subtype_from_path(p, &a.app_type).to_string();
-        if !new_sub.is_empty() {
+    if !pending.is_empty() {
+        // 门外计算完成后再短持门写回
+        let _data_gate = state.data_read()?;
+        let db = state.db.lock().unwrap();
+        for (id, a, new_sub) in pending {
             if db
-                .update_app(
-                    a.id,
-                    &a.name,
-                    &a.path,
-                    &a.icon_path,
-                    &a.args,
-                    a.category_id,
-                    &new_sub,
-                )
+                .update_app(id, &a.name, &a.path, &a.icon_path, &a.args, a.category_id, &new_sub)
                 .is_ok()
             {
                 updated += 1;
@@ -2852,6 +2855,8 @@ pub fn set_auto_hide_enabled(_enabled: bool) {}
 fn health_check_apps_sync(state: &tauri::State<'_, AppState>) -> Result<usize, String> {
     use std::path::Path;
     let apps: Vec<(i64, String, String, String)> = {
+        // [data-gate:shared] 门只覆盖 DB 读取（短持）
+        let _data_gate = state.data_read()?;
         let db = state.db.lock().unwrap();
         let conn = db.conn.lock().unwrap();
         let mut stmt = conn
@@ -2905,6 +2910,8 @@ fn health_check_apps_sync(state: &tauri::State<'_, AppState>) -> Result<usize, S
                 if let Some(new_path) = try_relocate_app(&name, &path) {
                     if new_path != path {
                         eprintln!("[health_check]   → 重定位: {}", new_path);
+                        // [data-gate:shared] 单条回写短持门（不覆盖文件检查）
+                        let _g = state.data_read()?;
                         let db2 = state.db.lock().unwrap();
                         let _ = db2.update_app_path(id, &new_path);
                         fixed += 1;
@@ -2924,8 +2931,10 @@ fn health_check_apps_sync(state: &tauri::State<'_, AppState>) -> Result<usize, S
 pub async fn health_check_apps(app: AppHandle) -> Result<usize, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state: tauri::State<AppState> = app.state();
-        // [data-gate:shared] Phase 2C-3（spawn_blocking 内同步持有）
-        let _data_gate = state.data_read()?;
+        // G7-健康检查修复：数据门**不再**覆盖整个扫描——原实现全程持有共享数据门，
+        // 1000 条路径存在性检查（实测 290ms~3.5s，随磁盘/杀毒波动）期间所有
+        // launch_app / CRUD 的 data_read() 被阻塞 → 解锁后立即点击"数秒无反应"。
+        // 现在门只保护 DB 读取与单条路径回写（sync 内部短持），文件检查在门外。
         health_check_apps_sync(&state)
     })
     .await
