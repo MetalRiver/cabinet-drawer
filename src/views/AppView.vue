@@ -915,13 +915,20 @@ const WIN_OVERSCAN_PX = 360;     // 上下各约 3 行余量，滚动时不出�
 const gridEl = ref<HTMLElement | null>(null);
 const contentEl = ref<HTMLElement | null>(null);
 const win = reactive({ start: 0, end: INITIAL_RENDER_COUNT, topSpacer: 0, bottomSpacer: 0, cols: 4, rowH: 100 });
-const geom = { cols: 4, rowH: 100 };
+const geom = { cols: 4, rowH: 100, gridTopInContent: 0, viewH: 600 };
+// G7-4 修复（全局健康检查）：几何缓存——G7-4 原实现每次滚动事件都 getComputedStyle+2×getBoundingClientRect
+// （强制同步布局）再触发重渲染 → 读写交替 layout thrashing，快速滚动时主线程饱和（"突然停住"）。
+// 现在只在 mount/resize/数据变化/编辑态变化时重测；滚动期零强制布局。
+let geomDirty = true;
+function markGeomDirty() { geomDirty = true; }
 
 function measureGridGeom(): boolean {
+  if (!geomDirty) return true; // 缓存命中
   const grid = gridEl.value;
   if (!grid) return false;
   const cs = Array.from(grid.querySelectorAll<HTMLElement>(".app-cell"));
   if (!cs.length) return false;
+  const cont = contentEl.value;
   const cols = Math.max(1, getComputedStyle(grid).gridTemplateColumns.split(" ").filter(Boolean).length);
   const r0 = cs[0].getBoundingClientRect();
   let rowH = r0.height + GRID_GAP;
@@ -932,6 +939,12 @@ function measureGridGeom(): boolean {
   }
   geom.cols = cols;
   geom.rowH = Math.max(40, rowH);
+  if (cont) {
+    // 缓存容器几何：网格在内容坐标中的顶部 + 可视高度——滚动期只需读 scrollTop
+    geom.gridTopInContent = grid.getBoundingClientRect().top - cont.getBoundingClientRect().top + cont.scrollTop;
+    geom.viewH = cont.clientHeight;
+  }
+  geomDirty = false;
   return true;
 }
 
@@ -942,29 +955,42 @@ const windowedItems = computed(() => {
   return items.slice(win.start, win.end);
 });
 
+let winPending = false;
+let winRaf: number | null = null;
+let winTimer: number | null = null;
 function scheduleWindow() {
-  // G7-4：在滚动处理器内**同步**重算（~1-2ms：一次 getComputedStyle + 两次 getBoundingClientRect）。
-  // 不用 setTimeout/rAF 调度——G7-4 实测：窗口被遮挡/隐藏时 rAF 暂停、定时器被节流，
-  // 异步调度会让虚拟窗口永不更新（spacer 全 0、行不可达）。同步重算不依赖窗口可见性。
-  recomputeWindow();
+  // G7-4 修复：滚动事件只做轻量调度（合并到每帧一次），重算在帧回调里做且零强制布局。
+  // rAF 为主（60fps 精确）；setTimeout 34ms 兜底（窗口被遮挡时 rAF 暂停，setTimeout 仍执行）。
+  if (winPending) return;
+  winPending = true;
+  const run = () => {
+    if (!winPending) return;
+    winPending = false;
+    if (winRaf != null) { cancelAnimationFrame(winRaf); winRaf = null; }
+    if (winTimer != null) { clearTimeout(winTimer); winTimer = null; }
+    recomputeWindow();
+  };
+  winRaf = requestAnimationFrame(run);
+  winTimer = window.setTimeout(run, 34);
 }
 
 function recomputeWindow() {
-  const grid = gridEl.value;
   const cont = contentEl.value;
   const items = filteredItems.value;
-  if (!grid || !cont || !items.length) return;
+  if (!cont || !items.length) return;
   if (!measureGridGeom()) return;
   const cols = geom.cols;
   const rowH = geom.rowH;
   const totalRows = Math.ceil(items.length / cols);
-  const gridTop = grid.getBoundingClientRect().top - cont.getBoundingClientRect().top + cont.scrollTop;
-  const viewTop = cont.scrollTop - gridTop;
-  const viewH = cont.clientHeight;
+  const viewTop = cont.scrollTop - geom.gridTopInContent; // 只读 scrollTop（不触发强制布局）
   const startRow = Math.max(0, Math.floor((viewTop - WIN_OVERSCAN_PX) / rowH));
-  const endRow = Math.min(totalRows, Math.ceil((viewTop + viewH + WIN_OVERSCAN_PX) / rowH));
-  win.start = startRow * cols;
-  win.end = Math.min(items.length, endRow * cols);
+  const endRow = Math.min(totalRows, Math.ceil((viewTop + geom.viewH + WIN_OVERSCAN_PX) / rowH));
+  const nStart = startRow * cols;
+  const nEnd = Math.min(items.length, endRow * cols);
+  // G7-4 修复：窗口未变化 → 不写响应式状态（避免每滚动帧都触发 Vue 重渲染）
+  if (nStart === win.start && nEnd === win.end) return;
+  win.start = nStart;
+  win.end = nEnd;
   win.topSpacer = startRow * rowH;
   win.bottomSpacer = Math.max(0, (totalRows - endRow) * rowH);
   win.cols = cols;
@@ -976,17 +1002,27 @@ function bindWindowScroll() {
   winScrollEl = gridEl.value?.closest<HTMLElement>(".content-scroll") ?? null;
   contentEl.value = winScrollEl; // G7-4：滚动容器 ref（修复：此前 contentEl 从未赋值 → 虚拟窗口永不重算）
   if (winScrollEl) winScrollEl.addEventListener("scroll", scheduleWindow, { passive: true });
-  window.addEventListener("resize", scheduleWindow, { passive: true });
+  window.addEventListener("resize", onWinResize, { passive: true });
+}
+function onWinResize() {
+  markGeomDirty(); // 列数/行高可能变化（响应式列数）
+  scheduleWindow();
 }
 function unbindWindowScroll() {
   winScrollEl?.removeEventListener("scroll", scheduleWindow);
-  window.removeEventListener("resize", scheduleWindow);
+  window.removeEventListener("resize", onWinResize);
   winScrollEl = null;
 }
 onMounted(() => {
   bindWindowScroll();
+  markGeomDirty();
   void nextTick(() => { recomputeWindow(); }); // 首屏格子渲染完成后测量行高/列数并计算窗口
 });
+// 编辑态变化（行内编辑表单使卡片变高 → 行距变化）→ 几何重测
+watch(
+  () => editingId.value,
+  () => { markGeomDirty(); scheduleWindow(); }
+);
 onUnmounted(() => {
   unbindWindowScroll();
 });
@@ -995,6 +1031,7 @@ onUnmounted(() => {
 watch(
   () => [appStore.searchQuery, softwareStore.activeCategoryId, softwareStore.activeAppType, softwareStore.activeSubtype],
   () => {
+    markGeomDirty();
     void nextTick(() => {
       recomputeWindow();
       const cont = contentEl.value; const grid = gridEl.value;
@@ -1006,6 +1043,7 @@ watch(
 watch(
   () => filteredItems.value.length,
   () => {
+    markGeomDirty();
     void nextTick(() => {
       recomputeWindow();
       const cont = contentEl.value; const grid = gridEl.value;
