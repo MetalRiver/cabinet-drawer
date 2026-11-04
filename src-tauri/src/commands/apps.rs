@@ -2687,10 +2687,8 @@ pub async fn launch_app(state: State<'_, AppState>, id: i64) -> Result<String, S
 /// C1（v0.4.3）：核心逻辑独立于 tauri::State，供单元测试直接构造 AppState 验证
 /// "失败不计数 / 受理成功才计数"契约（见 launch_count_tests.rs）。
 pub(crate) async fn launch_app_inner(state: &AppState, id: i64) -> Result<String, String> {
-    crate::win_launch::trace_stage("cmd.entry", id);
     // [data-gate:shared] Phase 2C-3（同步段持锁，不跨 await）
     let _data_gate = state.data_read()?;
-    crate::win_launch::trace_stage("data.gate", id);
     let (path, args, app_type, app_name): (String, String, String, String) = {
         let db = state.db.lock().unwrap();
         let conn = db.conn.lock().unwrap();
@@ -2703,7 +2701,6 @@ pub(crate) async fn launch_app_inner(state: &AppState, id: i64) -> Result<String
         .map_err(|e| e.to_string())?
     };
     // gate 不跨 await：同步段结束即释放
-    crate::win_launch::trace_stage("db.read", id);
     drop(_data_gate);
     // C1（v0.4.3）：使用次数不再在此处预记——旧实现无论启动成败都 +1，
     // 文件缺失/重定位后仍失败/ShellExecute 报错全部被计为"已使用"。
@@ -2801,7 +2798,6 @@ pub(crate) async fn launch_app_inner(state: &AppState, id: i64) -> Result<String
         };
     }
 
-    crate::win_launch::trace_stage("path.check", id);
     match launch_with_path(
         path.clone(),
         args.clone(),
@@ -2811,9 +2807,7 @@ pub(crate) async fn launch_app_inner(state: &AppState, id: i64) -> Result<String
     .await
     {
         Ok(()) => {
-            crate::win_launch::trace_stage("launch_with_path.ok", id);
             count_launch_success(state, id);
-            crate::win_launch::trace_stage("count.done", id);
             Ok("ok".to_string())
         }
         Err(e) => {

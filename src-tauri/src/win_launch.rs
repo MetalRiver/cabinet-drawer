@@ -109,24 +109,6 @@ pub fn is_url_path(path: &str) -> bool {
 /// # 返回
 /// - `Ok(())`: 成功（返回值 > 32）
 /// - `Err(msg)`: 失败，含 Windows 错误码语义
-/// G7-4 启动链分段诊断（候选诊断构建专用）：设置环境变量 DRAWER_LAUNCH_TRACE 指向
-/// trace 文件时，每个 stage 追加一行 "epoch_ms	id	stage"；未设置则零开销直接返回。
-pub fn trace_stage(stage: &str, id: i64) {
-    let Ok(path) = std::env::var("DRAWER_LAUNCH_TRACE") else { return; };
-    use std::io::Write;
-    let ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-    {
-        let _ = writeln!(f, "{ms}	{id}	{stage}");
-    }
-}
-
 pub fn launch(path: &str, args: &str) -> Result<(), String> {
     // P0-#Y#FIX#BARE#DOMAIN：终极修复裸域名（无协议前缀）无法正确打开的问题
     let path_trim = path.trim();
@@ -167,7 +149,6 @@ pub fn launch(path: &str, args: &str) -> Result<(), String> {
         //   lpParameters = args（命令行参数）← 关键：之前错误地塞进 lpFile
         //   lpDirectory  = NULL（用当前工作目录）
         //   nShowCmd     = SW_SHOWNORMAL = 1
-        trace_stage("shellexecute.call", 0);
         let result = ShellExecuteW(
             ptr::null_mut(),
             ptr::null(),
@@ -177,7 +158,6 @@ pub fn launch(path: &str, args: &str) -> Result<(), String> {
             1,
         );
         let code = result as isize;
-        trace_stage(&format!("shellexecute.ret:{code}"), 0);
         if code > 32 {
             Ok(())
         } else {
