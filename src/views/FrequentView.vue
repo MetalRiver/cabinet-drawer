@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from "vue";
+import { ref, computed, onMounted, watch, onUnmounted } from "vue";
 import { useRouter } from "vue-router";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useAppStore } from "../stores/app";
 import { useSoftwareStore } from "../stores/software";
+import { launchCoolingDown, launchMarkAccepted, launchSuccessToast, launchFailureToast } from "../lib/launch-feedback";
 import { useSnippetsStore } from "../stores/snippets";
 import { useTempStore } from "../stores/temp";
 import { usePasswordStore as usePasswordsStore } from "../stores/passwords";
@@ -242,17 +243,26 @@ const foldedGrid = computed(() => {
   return out;
 });
 
+const launchingIds = ref(new Set<number>());
 async function activate(item: FrequentItem) {
   try {
     if (item.type === "app") {
-      // P0-#F：和 AppView 一样，精确错误反馈
-      const result = await softwareStore.launch(item.id);
-      if (result.ok) {
-        appStore.showClipToast("success", `已启动 ${item.title}`);
-      } else if (result.error === "missing") {
-        appStore.showClipToast("info", `找不到「${item.title}」的安装位置。请重新拖入`);
-      } else {
-        appStore.showClipToast("info", result.message || "启动失败");
+      // 2026-11-05：与软件区同一套启动反馈（launch-feedback 共享实现）——
+      // 单飞 + 2s 冷却（防双击重复启动）+ 启动中视觉态 + no-op/类型区分提示
+      if (launchCoolingDown(item.id)) return;
+      launchingIds.value.add(item.id);
+      try {
+        const result = await softwareStore.launch(item.id);
+        const path = softwareStore.items.find((it) => it.id === item.id)?.path;
+        const info = { name: item.title, path, app_type: item.appType };
+        if (result.ok) {
+          launchMarkAccepted(item.id);
+          launchSuccessToast((kind, msg) => appStore.showClipToast(kind, msg), info);
+        } else {
+          launchFailureToast((kind, msg) => appStore.showClipToast(kind, msg), info, result);
+        }
+      } finally {
+        launchingIds.value.delete(item.id);
       }
     } else if (item.type === "snippet") {
       await snippetsStore.copy(item.id);
@@ -310,7 +320,7 @@ function onIconError(e: Event) {
         v-for="(item, i) in topThree"
         :key="`top-${item.type}-${item.id}`"
         class="top-card tap"
-        :class="`top-${typeLabel[item.type].color}`"
+        :class="[`top-${typeLabel[item.type].color}`, { 'launching': launchingIds.has(item.id) }]"
         @click="activate(item)"
       >
         <div class="type-stripe" :class="`stripe-${item.type}`"></div>
@@ -350,7 +360,7 @@ function onIconError(e: Event) {
         v-for="item in foldedGrid"
         :key="`grid-${item.type}-${item.id}`"
         class="cell tap"
-        :class="`cell-${typeLabel[item.type].color}`"
+        :class="[`cell-${typeLabel[item.type].color}`, { 'launching': launchingIds.has(item.id) }]"
         :title="item.title"
         @click="activate(item)"
       >
@@ -623,4 +633,21 @@ function onIconError(e: Event) {
 
 .grid-enter-active, .grid-leave-active { transition: all 0.3s var(--ease-smooth); }
 .grid-enter-from, .grid-leave-to { opacity: 0; transform: scale(0.8); }
+
+/* 2026-11-05：启动中视觉态（与软件区 app-cell-launching 一致：即时可见反馈） */
+.launching {
+  animation: freqLaunchPulse 0.9s var(--ease-smooth) infinite;
+}
+@keyframes freqLaunchPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.55); }
+  50% { box-shadow: 0 0 0 6px rgba(99, 102, 241, 0); }
+}
+.launching::after {
+  content: "🚀";
+  position: absolute;
+  right: 8px;
+  bottom: 6px;
+  font-size: 13px;
+  opacity: 0.9;
+}
 </style>

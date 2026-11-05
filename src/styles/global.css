@@ -438,6 +438,13 @@ input, select, button, textarea {
 }
 
 .view-header-actions { display: flex; gap: 6px; flex-shrink: 0; align-items: center; }
+/* ===== 2026-11-05 窄窗口响应式（方案甲验收反馈） ===== */
+/* 1) 标题栏标题：禁止两行换行（窄宽度省略号），版本徽标在极窄时隐藏 */
+/* 2) action-btn：禁止"健/康""扫/描"两行换行；≤419px 时只留图标（title 提示仍在） */
+.action-btn { white-space: nowrap; }
+@media (max-width: 419px) {
+  .view-header-actions .action-btn span { display: none; }
+}
 .action-btn {
   display: flex;
   align-items: center;

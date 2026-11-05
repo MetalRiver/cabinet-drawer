@@ -489,6 +489,11 @@ onUnmounted(() => {
 }
 
 /* ===== 标题栏 · 深色玻璃（统一主题） ===== */
+@media (max-width: 379px) {
+  .titlebar-version { display: none; }
+}
+.titlebar-right { flex-shrink: 0; }
+.titlebar-btn { flex-shrink: 0; }
 .titlebar {
   height: 48px;
   padding: 0 10px 0 14px;
@@ -534,6 +539,10 @@ onUnmounted(() => {
 .title {
   font-size: 14px;
   font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
   background: linear-gradient(135deg, #818cf8 0%, #f472b6 100%);
   -webkit-background-clip: text;
   background-clip: text;

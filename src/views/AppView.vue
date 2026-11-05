@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed, h, nextTick, watch } from "vue";
 import { scheduleDeferred } from "../lib/defer-idle";
+import { launchCoolingDown, launchMarkAccepted, launchSuccessToast, launchFailureToast } from "../lib/launch-feedback";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useAppStore } from "../stores/app";
@@ -87,7 +88,55 @@ const isDraggingOver = ref(false);
 let unlistenDragDrop: (() => void) | null = null;
 
 // 左侧 sidebar 展开状态：默认收起（仅图标列），hover 时展开显示文字 + 二级
-const sidebarExpanded = ref(false);
+// ===== 方案甲：右上角「筛选」浮层面板（替代左侧分类栏）=====
+const filterOpen = ref(false);
+const filterPos = ref<Record<string, string>>({});
+const filterBtnEl = ref<HTMLElement | null>(null);
+const activeFilterCount = computed(
+  () => (softwareStore.activeAppType ? 1 : 0) + (softwareStore.activeSubtype ? 1 : 0)
+);
+function toggleFilter() {
+  if (filterOpen.value) { filterOpen.value = false; return; }
+  const el = filterBtnEl.value;
+  if (el) {
+    const r = el.getBoundingClientRect();
+    const width = 248;
+    const left = Math.max(8, Math.min(r.right - width, window.innerWidth - width - 8));
+    filterPos.value = {
+      position: "fixed",
+      top: Math.round(r.bottom + 6) + "px",
+      left: Math.round(left) + "px",
+      width: width + "px",
+    };
+  }
+  filterOpen.value = true;
+}
+function clearFilters() {
+  softwareStore.setAppType(null);
+  softwareStore.setSubtype(null);
+}
+function onFilterOutside(e: MouseEvent) {
+  const t = e.target as HTMLElement | null;
+  if (!t) return;
+  if (t.closest(".filter-panel") || t.closest(".filter-btn")) return;
+  filterOpen.value = false;
+}
+function onFilterEsc(e: KeyboardEvent) {
+  if (e.key === "Escape") filterOpen.value = false;
+}
+watch(filterOpen, (open) => {
+  if (open) {
+    document.addEventListener("mousedown", onFilterOutside, true);
+    document.addEventListener("keydown", onFilterEsc);
+  } else {
+    document.removeEventListener("mousedown", onFilterOutside, true);
+    document.removeEventListener("keydown", onFilterEsc);
+  }
+});
+onUnmounted(() => {
+  document.removeEventListener("mousedown", onFilterOutside, true);
+  document.removeEventListener("keydown", onFilterEsc);
+});
 
 // 修复 P1-#X：图标加载失败追踪。db.icon_path 不为空但 webview 访问失败时
 // 直接切到首字母彩色卡片，避免显示灰方块
@@ -1295,7 +1344,6 @@ const scanTargetLabel = computed(() => {
   return c ? { icon: c.icon, name: c.name } : { icon: "✨", name: "不分类" };
 });
 
-
 // Batch 2.1：批量导入（幂等）——汇总展示 新增/已存在/回收站/失败
 async function confirmScan() {
   const selected = scannedApps.value.filter(
@@ -1599,54 +1647,23 @@ async function openLocation(item: any) {
 
 // G7-3：启动中的卡片（即时可见反馈 + 同卡防重入 + 成功后 2s 冷却）。
 // 用户实测（G7-3）：点击→toast 间隔 100-290ms 且期间卡片零反馈，目标软件窗口出现更慢，
-// 用户误以为点击无效而连点 → 同一软件被启动多次（窗口"陆续出现"）。
-// launchingIds = 进行中防重入；launchedAt = 成功后 2s 冷却（与"已启动"toast 展示期一致——
-// 反馈在屏期间的同卡重击属于冗余操作，忽略之不属于静默吞请求）。
-const launchingIds = ref(new Set<number>());
-const LAUNCH_COOLDOWN_MS = 2000;
-const launchedAt = new Map<number, number>();
+// launchingIds = 进行中防重入（视觉态）；成功后 2s 冷却由 launch-feedback 共享表统一管理（跨页面防重复启动）
 
+const launchingIds = ref(new Set<number>());
 async function launchApp(id: number) {
   // G7-3：同卡防重入——进行中再点直接忽略（首次点击已有可见启动中态，非静默吞操作）
   if (launchingIds.value.has(id)) return;
-  const last = launchedAt.get(id);
-  if (last != null && Date.now() - last < LAUNCH_COOLDOWN_MS) return;
+  if (launchCoolingDown(id)) return;
   launchingIds.value.add(id);
   try {
-    // P0-#F：根据软件类型 + 启动结果给精确 toast
     const item = softwareStore.items.find((it) => it.id === id);
     const result = await softwareStore.launch(id);
+    const info = item ? { name: item.name, path: item.path, app_type: item.app_type } : undefined;
     if (result.ok) {
-      launchedAt.set(id, Date.now()); // G7-3：受理成功即进入 2s 冷却（与 toast 展示期一致）
-      if (!item) return;
-      const p = (item.path || "").toLowerCase();
-      // P0-#Y#URL#TOAST：根据 app_type / path 形式给精确成功提示
-      if (item.app_type === "url" || p.startsWith("http://") || p.startsWith("https://") || p.startsWith("steam://") || p.startsWith("com.epicgames.launcher://")) {
-        appStore.showClipToast("success", `已在浏览器中打开「${item.name}」`);
-      } else if (p.endsWith(".url")) {
-        appStore.showClipToast("success", `已在浏览器中打开「${item.name}」`);
-      } else if (p.endsWith(".lnk")) {
-        appStore.showClipToast("success", `已启动「${item.name}」`);
-      } else if (item.app_type === "folder") {
-        appStore.showClipToast("success", `已打开文件夹「${item.name}」`);
-      } else {
-        appStore.showClipToast("success", `已启动「${item.name}」`);
-      }
-    } else if (result.error === "missing") {
-      // 路径不存在 — 提示用户重新拖入
-      // P0-#Y#URL#TOAST：URL 类型不应该说"重新拖入 .exe 或 .lnk"
-      if (item && (item.app_type === "url" ||
-          (item.path || "").toLowerCase().startsWith("http://") ||
-          (item.path || "").toLowerCase().startsWith("https://") ||
-          (item.path || "").toLowerCase().startsWith("steam://"))) {
-        appStore.showClipToast("info", `网页打开失败：${item.path}`);
-      } else if (item && item.path.toLowerCase().endsWith(".url")) {
-        appStore.showClipToast("info", `「${item?.name}」网页快捷方式已失效。已尝试启动 Steam，请在库中找到该游戏`);
-      } else {
-        appStore.showClipToast("info", `找不到「${item?.name ?? ""}」的安装位置。请重新拖入 .exe 或 .lnk`);
-      }
+      launchMarkAccepted(id); // 受理成功即进入 2s 冷却（与 toast 展示期一致）
+      launchSuccessToast((kind, msg) => appStore.showClipToast(kind, msg), info);
     } else {
-      appStore.showClipToast("info", result.message || "启动失败");
+      launchFailureToast((kind, msg) => appStore.showClipToast(kind, msg), info, result);
     }
   } finally {
     // G7-3：无论成败都解除启动中态（下一帧恢复卡片常规外观）
@@ -1719,15 +1736,21 @@ async function confirmDeleteApp(id: number | null) {
             <span class="view-title-text">软件</span>
             <span class="title-count">{{ filteredItems.length }}</span>
           </h2>
-          <p class="view-subtitle">
-            <template v-if="appStore.searchQuery">
-              搜索 "{{ appStore.searchQuery }}" 的结果
-            </template>
-            <template v-else>点图标启动 · 拖入或扫描导入</template>
-          </p>
         </div>
       </div>
       <div class="view-header-actions">
+        <!-- 2026-11-05 方案甲：分类迁移到右上角「筛选」按钮（原左侧分类栏移除） -->
+        <button
+          ref="filterBtnEl"
+          class="filter-btn tap"
+          :class="{ active: filterOpen || activeFilterCount > 0 }"
+          title="筛选类型 / 细分分类"
+          @click.stop="toggleFilter"
+        >
+          <span class="filter-btn-icon">☰</span>
+          <span class="filter-btn-label">筛选</span>
+          <span v-if="activeFilterCount > 0" class="filter-btn-count">{{ activeFilterCount }}</span>
+        </button>
         <!-- P0-#ICON#MISSING#HINT：缺失图标兜底按钮（手动触发重抽）
              之前：图标丢失时用户只能去设置里点"清空图标缓存 + 重新抽图"——多一步路径
              现在：缺失数 > 0 直接在 header 显示"🎨 重抽图标"按钮（1 步恢复） -->
@@ -1873,56 +1896,7 @@ async function confirmDeleteApp(id: number | null) {
     <!-- P0-#APPC#PER#OVERLAY：展开层改为浮在网格上方（absolute），不再挤压 apps-main ——
          旧实现 hover 时 sidebar 宽度 42→178 动画，apps-main 每帧重排、全部卡片重算布局，
          大列表下滚轮/悬停明显卡顿；浮层方案让网格零重排 -->
-    <div class="apps-body">
-      <!-- 左侧可收缩 sidebar（固定 42px 轨道） -->
-      <div class="filter-sidebar">
-        <div
-          class="sidebar-inner"
-          :class="{ expanded: sidebarExpanded }"
-          @mouseenter="sidebarExpanded = true"
-          @mouseleave="sidebarExpanded = false"
-        >
-        <div class="sidebar-section-label" v-if="sidebarExpanded">类型</div>
-        <div class="type-chips sidebar-chips">
-          <button
-            v-for="t in TYPE_OPTIONS"
-            :key="t.key ?? 'all'"
-            class="type-chip tap"
-            :class="{ active: softwareStore.activeAppType === t.key }"
-            :data-type="t.key ?? 'all'"
-            :title="t.label"
-            @click="softwareStore.setAppType(t.key)"
-          >
-            <span class="type-chip-emoji">{{ t.emoji }}</span>
-            <span class="type-chip-label">{{ t.label }}</span>
-          </button>
-        </div>
-        <!-- P0-#Y#2：二级 chips（按 activeAppType 联动，folder/url 全部时无二级） -->
-        <Transition name="subtype-fade">
-          <div v-if="currentSubtypeOptions.length" class="sidebar-subtype">
-            <div class="sidebar-divider"></div>
-            <div class="sidebar-section-label" v-if="sidebarExpanded">细分</div>
-            <div class="type-chips sidebar-chips">
-              <button
-                v-for="s in currentSubtypeOptions"
-                :key="s.key"
-                class="type-chip tap"
-                :class="{ active: softwareStore.activeSubtype === s.key }"
-                :data-sub="s.key"
-                :title="s.label"
-                @click="softwareStore.setSubtype(s.key)"
-              >
-                <span class="type-chip-emoji">{{ s.emoji }}</span>
-                <span class="type-chip-label">{{ s.label }}</span>
-              </button>
-            </div>
-          </div>
-        </Transition>
-        </div>
-      </div>
-
-      <!-- 右侧主内容 -->
-      <div class="apps-main">
+    
         <!-- P0-#Z：行内 confirm 浮条（软件区，浮在网格上方，全宽不挡卡片） -->
         <Transition name="confirm-bar">
           <div v-if="confirmingDeleteId !== null" class="app-confirm-bar">
@@ -2059,10 +2033,8 @@ async function confirmDeleteApp(id: number | null) {
               >···</button>
             </template>
           </div>
-        </div>
-      </div>
-    </div>
-
+        
+    </div> <!-- /.app-grid -->
     <!-- P0-#Y：系统级拖入提示遮罩（Tauri 2 webview drag-drop 事件驱动） -->
     <Transition name="drop-fade">
       <div v-if="isDraggingOver" class="drop-overlay">
@@ -2539,128 +2511,148 @@ AppID：${a.target || a.path}`"
         </div>
       </div>
     </Transition>
-  </div>
+  </div>    <!-- 2026-11-05 方案甲：右上角「筛选」浮层面板（Teleport 到 body，不受滚动容器裁剪） -->
+    <Teleport to="body">
+      <Transition name="filter-pop">
+        <div v-if="filterOpen" class="filter-panel" :style="filterPos" @click.stop>
+          <div class="filter-panel-head">
+            <span class="filter-panel-title">类型筛选</span>
+            <button
+              v-if="activeFilterCount > 0"
+              class="filter-clear tap"
+              @click="clearFilters"
+            >清除</button>
+          </div>
+          <div class="type-chips">
+            <button
+              v-for="t in TYPE_OPTIONS"
+              :key="t.key ?? 'all'"
+              class="type-chip tap"
+              :class="{ active: softwareStore.activeAppType === t.key }"
+              @click="softwareStore.setAppType(t.key)"
+            >
+              <span class="type-chip-emoji">{{ t.emoji }}</span>
+              <span>{{ t.label }}</span>
+            </button>
+          </div>
+          <template v-if="currentSubtypeOptions.length">
+            <div class="filter-panel-head sub">
+              <span class="filter-panel-title">细分分类</span>
+            </div>
+            <div class="type-chips">
+              <button
+                v-for="s in currentSubtypeOptions"
+                :key="s.key"
+                class="type-chip tap"
+                :class="{ active: softwareStore.activeSubtype === s.key }"
+                @click="softwareStore.setSubtype(s.key)"
+              >
+                <span class="type-chip-emoji">{{ s.emoji }}</span>
+                <span>{{ s.label }}</span>
+              </button>
+            </div>
+          </template>
+        </div>
+      </Transition>
+    </Teleport>
 </template>
 
 <style scoped>
 .view { padding-bottom: 20px; }
-
-/* ============ P0-#Y-Collapsible：左侧可收缩 sidebar ============ */
-/* P0-#APPC#PER#OVERLAY：外层只占 42px 轨道；展开是 inner 浮层，网格零重排 */
-.apps-body {
-  display: flex;
-  gap: 8px;
-  align-items: flex-start;
-}
-.apps-main {
-  flex: 1;
-  min-width: 0;
-}
-.filter-sidebar {
-  width: 42px; /* 固定轨道：只显示 emoji 列 */
-  flex-shrink: 0;
-  position: relative;
-  align-self: stretch;
-}
-.sidebar-inner {
-  position: absolute;
-  left: 0;
+/* ===== 方案甲（2026-11-05）：顶部工具栏 sticky + 右上角筛选按钮/浮层面板 ===== */
+/* 工具栏固定：软件网格在 .content-scroll 内独立滚动，滚到任意深度工具栏始终可见 */
+.view-header {
+  position: sticky;
   top: 0;
-  bottom: 0;
-  width: 42px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 6px 4px;
-  background: var(--bg-primary);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  transition: width 0.22s var(--ease-smooth), box-shadow 0.22s var(--ease-smooth), background-color 0.22s var(--ease-smooth);
-  overflow: hidden;
-  z-index: 30; /* 浮在网格上方；展开不挤压 apps-main（零重排） */
+  z-index: 20;
+  background: #16121f; /* 与窗口渐变顶部同色系的不透明底（避免滚动内容透出） */
+  padding: 4px 0 10px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
 }
-.sidebar-inner:hover,
-.sidebar-inner.expanded {
-  width: 178px; /* 展开态：emoji + label */
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
-  background: var(--bg-secondary);
-}
-/* 收起态：右侧半透明提示条，提示"hover 可展开"（挂在轨道上，不随浮层展开移动） */
-.filter-sidebar::after {
-  content: "";
-  position: absolute;
-  top: 50%;
-  right: 2px;
-  width: 2px;
-  height: 28px;
-  margin-top: -14px;
-  background: linear-gradient(180deg, transparent, var(--accent) 50%, transparent);
-  opacity: 0.4;
-  border-radius: 1px;
-  transition: opacity 0.2s;
-  pointer-events: none;
-  z-index: 31;
-}
-.filter-sidebar:hover::after { opacity: 0; }
-
-.sidebar-section-label {
-  font-size: 10px;
-  color: var(--text-faint);
-  padding: 0 6px 2px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
+.filter-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  font-size: 12px;
   font-weight: 600;
+  cursor: pointer;
+  background: var(--bg-secondary);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  transition: all 0.15s var(--ease-smooth);
+  -webkit-app-region: no-drag;
   white-space: nowrap;
-  overflow: hidden;
 }
-.sidebar-divider {
-  height: 1px;
-  background: var(--border);
-  margin: 4px 4px;
-  flex-shrink: 0;
+.filter-btn:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  border-color: var(--border-strong);
 }
-.sidebar-subtype {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+.filter-btn.active {
+  background: var(--accent-soft);
+  color: var(--accent-bright);
+  border-color: var(--accent);
 }
-.filter-sidebar .type-chips {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  flex-wrap: nowrap;
-  margin-bottom: 0;
-  width: 100%;
-}
-.filter-sidebar .type-chip {
-  width: 100%;
-  justify-content: flex-start;
-  padding: 6px 8px;
-  font-size: 11.5px;
+.filter-btn-icon { font-size: 13px; line-height: 1; }
+.filter-btn-count {
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
   border-radius: 8px;
-  min-height: 28px;
-}
-.filter-sidebar .type-chip-emoji {
-  font-size: 14px;
-  flex-shrink: 0;
-  width: 18px;
-  text-align: center;
+  background: var(--accent);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   line-height: 1;
 }
-.filter-sidebar .type-chip-label {
-  max-width: 0;
-  opacity: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  transition: max-width 0.22s var(--ease-smooth) 0.04s, opacity 0.16s;
-  pointer-events: none;
+.filter-panel {
+  position: fixed;
+  z-index: 60;
+  background: #1b1727; /* 不透明深色（与窗口渐变同色系）：避免网格从面板后透出 */
+  backdrop-filter: none;
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+  padding: 12px;
+  max-height: min(420px, calc(100vh - 140px));
+  overflow-y: auto;
 }
-.sidebar-inner:hover .type-chip-label,
-.sidebar-inner.expanded .type-chip-label {
-  max-width: 110px;
-  opacity: 1;
-  pointer-events: auto;
+.filter-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
 }
+.filter-panel-head.sub { margin-top: 12px; }
+.filter-panel-title {
+  font-size: 11px;
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 700;
+}
+.filter-clear {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.filter-clear:hover { color: var(--text-primary); border-color: var(--border-strong); }
+.filter-panel .type-chips { margin-bottom: 4px; }
+.filter-pop-enter-active,
+.filter-pop-leave-active { transition: opacity 0.15s var(--ease-smooth), transform 0.15s var(--ease-smooth); }
+.filter-pop-enter-from,
+.filter-pop-leave-to { opacity: 0; transform: translateY(-6px); }
 
 /* AppView 专属的扫描模态框样式（其它 view-header / 按钮 / chip 样式都用 global） */
 .scan-target {
