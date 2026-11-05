@@ -20,7 +20,7 @@ export interface LaunchTargetInfo {
   app_type?: string;
 }
 
-type ShowToast = (kind: "success" | "info", msg: string) => void;
+type ShowToast = (kind: "success" | "info", msg: string, durationMs?: number) => void;
 
 /** 启动请求成功提交后的提示（区分 no-op 测试目标 / 网址 / 快捷方式 / 文件夹 / 程序） */
 export function launchSuccessToast(show: ShowToast, item?: LaunchTargetInfo): void {
@@ -28,7 +28,7 @@ export function launchSuccessToast(show: ShowToast, item?: LaunchTargetInfo): vo
   const p = (item?.path || "").toLowerCase();
   // no-op 测试目标：瞬启即退、不打开任何真实程序——必须让用户知道，避免误判"点了没反应"
   if (/noop/i.test(p)) {
-    show("success", `🧪 已启动测试目标（no-op，不打开真实程序）「${name}」`);
+    show("success", `🧪 已启动测试目标（no-op，不打开真实程序）「${name}」`, 3000);
     return;
   }
   if (
@@ -39,18 +39,18 @@ export function launchSuccessToast(show: ShowToast, item?: LaunchTargetInfo): vo
     p.startsWith("com.epicgames.launcher://") ||
     p.endsWith(".url")
   ) {
-    show("success", `已在浏览器中打开「${name}」`);
+    show("success", `已在浏览器中打开「${name}」`, 3000);
     return;
   }
   if (p.endsWith(".lnk")) {
-    show("success", `已启动「${name}」`);
+    show("success", `已启动「${name}」`, 3000);
     return;
   }
   if (item?.app_type === "folder") {
-    show("success", `已打开文件夹「${name}」`);
+    show("success", `已打开文件夹「${name}」`, 3000);
     return;
   }
-  show("success", `已启动「${name}」`);
+  show("success", `已启动「${name}」`, 3000);
 }
 
 /** 启动失败提示（missing = 路径不存在；其余按后端消息） */
@@ -64,15 +64,15 @@ export function launchFailureToast(
     const isUrl =
       item && (item.app_type === "url" || p.startsWith("http://") || p.startsWith("https://") || p.startsWith("steam://"));
     if (isUrl) {
-      show("info", `网页打开失败：${item?.path}`);
+      show("info", `网页打开失败：${item?.path}`, 3500);
       return;
     }
     if (item && p.endsWith(".url")) {
-      show("info", `「${item?.name ?? ""}」网页快捷方式已失效。已尝试启动 Steam，请在库中找到该游戏`);
+      show("info", `「${item?.name ?? ""}」网页快捷方式已失效。已尝试启动 Steam，请在库中找到该游戏`, 3500);
       return;
     }
-    show("info", `找不到「${item?.name ?? ""}」的安装位置。请重新拖入 .exe 或 .lnk`);
+    show("info", `找不到「${item?.name ?? ""}」的安装位置。请重新拖入 .exe 或 .lnk`, 3500);
     return;
   }
-  show("info", result.message || "启动失败");
+  show("info", result.message || "启动失败", 3500);
 }

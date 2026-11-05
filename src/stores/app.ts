@@ -81,11 +81,11 @@ export const useAppStore = defineStore("app", () => {
     isFirstRun.value = v;
   }
 
-  function showClipToast(type: "success" | "info", text: string) {
+  function showClipToast(type: "success" | "info", text: string, durationMs = 2200) {
     clipToast.value = { type, text };
     setTimeout(() => {
       clipToast.value = null;
-    }, 2200);
+    }, durationMs);
   }
 
   return {

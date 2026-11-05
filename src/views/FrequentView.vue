@@ -257,9 +257,9 @@ async function activate(item: FrequentItem) {
         const info = { name: item.title, path, app_type: item.appType };
         if (result.ok) {
           launchMarkAccepted(item.id);
-          launchSuccessToast((kind, msg) => appStore.showClipToast(kind, msg), info);
+          launchSuccessToast((kind, msg, dur) => appStore.showClipToast(kind, msg, dur), info);
         } else {
-          launchFailureToast((kind, msg) => appStore.showClipToast(kind, msg), info, result);
+          launchFailureToast((kind, msg, dur) => appStore.showClipToast(kind, msg, dur), info, result);
         }
       } finally {
         launchingIds.value.delete(item.id);
@@ -634,6 +634,13 @@ function onIconError(e: Event) {
 .grid-enter-active, .grid-leave-active { transition: all 0.3s var(--ease-smooth); }
 .grid-enter-from, .grid-leave-to { opacity: 0; transform: scale(0.8); }
 
+/* 2026-11-05：白色方块修复——.tap::after 涟漪用 currentcolor（卡片文字色=白），
+   点击时 scale(1.6)+白 12% 覆盖图标区域，被用户当成"白色方块"。
+   常用页卡片涟漪改用主题靛色（与 accent 体系一致），不再出现白色覆盖。 */
+.top-card.tap::after,
+.grid .cell.tap::after {
+  background: var(--accent-bright);
+}
 /* 2026-11-05：启动中视觉态（与软件区 app-cell-launching 一致：即时可见反馈） */
 .launching {
   animation: freqLaunchPulse 0.9s var(--ease-smooth) infinite;
@@ -642,12 +649,6 @@ function onIconError(e: Event) {
   0%, 100% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.55); }
   50% { box-shadow: 0 0 0 6px rgba(99, 102, 241, 0); }
 }
-.launching::after {
-  content: "🚀";
-  position: absolute;
-  right: 8px;
-  bottom: 6px;
-  font-size: 13px;
-  opacity: 0.9;
-}
+/* （2026-11-06：::after 徽章已移除——与全局 .tap::after 涟漪级联合并会变成
+   整卡不透明覆盖层；启动中反馈由脉冲动画 + 3s 结果 toast 承担，视觉更干净） */
 </style>

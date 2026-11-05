@@ -1661,9 +1661,9 @@ async function launchApp(id: number) {
     const info = item ? { name: item.name, path: item.path, app_type: item.app_type } : undefined;
     if (result.ok) {
       launchMarkAccepted(id); // 受理成功即进入 2s 冷却（与 toast 展示期一致）
-      launchSuccessToast((kind, msg) => appStore.showClipToast(kind, msg), info);
+      launchSuccessToast((kind, msg, dur) => appStore.showClipToast(kind, msg, dur), info);
     } else {
-      launchFailureToast((kind, msg) => appStore.showClipToast(kind, msg), info, result);
+      launchFailureToast((kind, msg, dur) => appStore.showClipToast(kind, msg, dur), info, result);
     }
   } finally {
     // G7-3：无论成败都解除启动中态（下一帧恢复卡片常规外观）
