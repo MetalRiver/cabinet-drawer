@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed, h, nextTick, watch } from "vue";
 import { scheduleDeferred } from "../lib/defer-idle";
-import { launchCoolingDown, launchMarkAccepted, launchSuccessToast, launchFailureToast } from "../lib/launch-feedback";
+import { launchCoolingDown, launchMarkAccepted, launchSuccessToast, launchFailureToast, nextLaunchSeq, isLatestLaunch } from "../lib/launch-feedback";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useAppStore } from "../stores/app";
@@ -1651,16 +1651,24 @@ async function openLocation(item: any) {
 
 const launchingIds = ref(new Set<number>());
 async function launchApp(id: number) {
-  // G7-3：同卡防重入——进行中再点直接忽略（首次点击已有可见启动中态，非静默吞操作）
-  if (launchingIds.value.has(id)) return;
-  if (launchCoolingDown(id)) return;
+  const item = softwareStore.items.find((it) => it.id === id);
+  const name = item?.name ?? "";
+  // A：防重复启动（进行中/冷却期拦截）——但 B：拦截必须给出明确提示，不能静默
+  if (launchingIds.value.has(id) || launchCoolingDown(id)) {
+    appStore.showClipToast("info", `⏳ 「${name}」正在处理中，请勿重复启动`, 1200);
+    return;
+  }
+  const seq = nextLaunchSeq();
   launchingIds.value.add(id);
+  // B：点击即确认收到（结果返回前用户就有反馈；结果返回后本条被结果提示替换）
+  appStore.showClipToast("info", `🚀 已收到启动请求：「${name}」`, 3000);
   try {
-    const item = softwareStore.items.find((it) => it.id === id);
     const result = await softwareStore.launch(id);
+    if (result.ok) launchMarkAccepted(id);
+    // 序号守卫：仅最近一次点击展示结果（旧请求迟到不覆盖新提示）
+    if (!isLatestLaunch(seq)) return;
     const info = item ? { name: item.name, path: item.path, app_type: item.app_type } : undefined;
     if (result.ok) {
-      launchMarkAccepted(id); // 受理成功即进入 2s 冷却（与 toast 展示期一致）
       launchSuccessToast((kind, msg, dur) => appStore.showClipToast(kind, msg, dur), info);
     } else {
       launchFailureToast((kind, msg, dur) => appStore.showClipToast(kind, msg, dur), info, result);

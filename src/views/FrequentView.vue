@@ -4,7 +4,7 @@ import { useRouter } from "vue-router";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useAppStore } from "../stores/app";
 import { useSoftwareStore } from "../stores/software";
-import { launchCoolingDown, launchMarkAccepted, launchSuccessToast, launchFailureToast } from "../lib/launch-feedback";
+import { launchCoolingDown, launchMarkAccepted, launchSuccessToast, launchFailureToast, nextLaunchSeq, isLatestLaunch } from "../lib/launch-feedback";
 import { useSnippetsStore } from "../stores/snippets";
 import { useTempStore } from "../stores/temp";
 import { usePasswordStore as usePasswordsStore } from "../stores/passwords";
@@ -247,16 +247,22 @@ const launchingIds = ref(new Set<number>());
 async function activate(item: FrequentItem) {
   try {
     if (item.type === "app") {
-      // 2026-11-05：与软件区同一套启动反馈（launch-feedback 共享实现）——
-      // 单飞 + 2s 冷却（防双击重复启动）+ 启动中视觉态 + no-op/类型区分提示
-      if (launchCoolingDown(item.id)) return;
+      // 2026-11-06：与软件区完全一致——拦截给提示、点击即确认、序号守卫防迟到覆盖
+      const name = item.title;
+      if (launchingIds.value.has(item.id) || launchCoolingDown(item.id)) {
+        appStore.showClipToast("info", `⏳ 「${name}」正在处理中，请勿重复启动`, 1200);
+        return;
+      }
+      const seq = nextLaunchSeq();
       launchingIds.value.add(item.id);
+      appStore.showClipToast("info", `🚀 已收到启动请求：「${name}」`, 3000);
       try {
         const result = await softwareStore.launch(item.id);
+        if (result.ok) launchMarkAccepted(item.id);
+        if (!isLatestLaunch(seq)) return;
         const path = softwareStore.items.find((it) => it.id === item.id)?.path;
         const info = { name: item.title, path, app_type: item.appType };
         if (result.ok) {
-          launchMarkAccepted(item.id);
           launchSuccessToast((kind, msg, dur) => appStore.showClipToast(kind, msg, dur), info);
         } else {
           launchFailureToast((kind, msg, dur) => appStore.showClipToast(kind, msg, dur), info, result);

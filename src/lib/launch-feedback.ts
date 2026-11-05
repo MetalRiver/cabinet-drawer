@@ -14,6 +14,16 @@ export function launchMarkAccepted(id: number): void {
   launchedAt.set(id, Date.now());
 }
 
+// ===== 启动序号守卫：旧请求迟到不得覆盖新提示 =====
+let launchSeq = 0;
+export function nextLaunchSeq(): number {
+  return ++launchSeq;
+}
+export function isLatestLaunch(seq: number): boolean {
+  return seq === launchSeq;
+}
+
+
 export interface LaunchTargetInfo {
   name?: string;
   path?: string;
