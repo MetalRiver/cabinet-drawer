@@ -1675,6 +1675,43 @@ fn read_icon_as_data_url_inner(path: String) -> Option<String> {
     Some(format!("data:{};base64,{}", mime, b64))
 }
 
+// ============================================================
+// 🛡️ M0 安全修复（2026-11-06）：图标缓存路径校验器
+// 背景：read_icon_as_data_url 原为任意路径直读通道（隔离运行时实证：解锁态可读
+//   C:\Windows\win.ini，锁定态同样可达）；get_app_icon_data_url 原用 starts_with
+//   词法比较，可被 `icons\..\..` 穿越绕过。
+// 规则：目标路径必须 canonicalize（解析 `..` 与符号链接，文件须存在）后仍位于
+//   图标缓存根内，且为缓存根的直接子级、扩展名为 .png（缓存布局扁平 {hash}.png，
+//   由 extract_to_cache / write_fallback_icon 写入方保证）。
+// 防御：路径穿越、符号链接逃逸、越权目录、非 PNG 文件。
+// 返回 canonical 化路径；任何不满足 → None（调用方按"拒绝读取"处理）。
+// ============================================================
+fn validated_cache_icon_path(path: &str) -> Option<std::path::PathBuf> {
+    validated_cache_icon_path_under(&std::path::PathBuf::from(win_icon::cache_root()), path)
+}
+
+/// 可注入缓存根的校验核心（便于单测注入临时目录；生产走 validated_cache_icon_path）。
+fn validated_cache_icon_path_under(root: &std::path::Path, path: &str) -> Option<std::path::PathBuf> {
+    if path.is_empty() {
+        return None;
+    }
+    let target = std::path::Path::new(path);
+    // canonicalize：解析 `..` 与符号链接；文件必须真实存在
+    let canon_target = target.canonicalize().ok()?;
+    // 缓存根同样 canonicalize（根不存在 → 无图标可读 → 拒绝）
+    let canon_root = root.canonicalize().ok()?;
+    // 必须是缓存根的直接子级（拒绝越界目录/嵌套逃逸）
+    if canon_target.parent().as_deref() != Some(canon_root.as_path()) {
+        return None;
+    }
+    // 扩展名白名单：仅 .png（Windows 大小写不敏感）
+    match canon_target.extension().and_then(|e| e.to_str()) {
+        Some(ext) if ext.eq_ignore_ascii_case("png") => {}
+        _ => return None,
+    }
+    Some(canon_target)
+}
+
 #[tauri::command]
 pub async fn list_apps_with_icons(
     app: AppHandle,
@@ -1708,13 +1745,18 @@ fn list_apps_with_icons_sync(
         db.list_apps(&query, category_id)
             .map_err(|e| e.to_string())?
     };
+    // M0 安全修复（2026-11-06）：本兼容接口内嵌图标 base64 曾按 DB icon_path
+    // **无校验**直读（等效于 read_icon_as_data_url 旧通道的绕过面）。现与受限接口
+    // 同规则：锁定态不读 + canonicalize 缓存根边界校验；越界/缺失 → None。
+    let unlocked = state.is_unlocked();
     let result: Vec<AppWithIcon> = apps
         .into_iter()
         .map(|a| {
-            let icon_data_url = if a.icon_path.is_empty() {
+            let icon_data_url = if a.icon_path.is_empty() || !unlocked {
                 None
             } else {
-                read_icon_as_data_url_inner(a.icon_path.clone())
+                validated_cache_icon_path(&a.icon_path)
+                    .and_then(|p| read_icon_as_data_url_inner(p.to_string_lossy().to_string()))
             };
             AppWithIcon {
                 id: a.id,
@@ -1806,21 +1848,34 @@ pub fn get_app_status(state: State<AppState>) -> serde_json::Value {
 }
 
 // ============================================================
-// 🛡️ 5. 读图标 → base64 data URL
+// 🛡️ 5. 读图标 → base64 data URL（M0 安全修复后=受限图标读取）
 // ============================================================
 #[tauri::command]
-pub fn read_icon_as_data_url(path: String) -> Option<String> {
-    read_icon_as_data_url_inner(path)
+pub fn read_icon_as_data_url(state: State<AppState>, path: String) -> Option<String> {
+    // M0 安全修复（2026-11-06）：原实现为任意路径直读（隔离运行时实证：解锁态可读
+    // C:\Windows\win.ini，锁定态同样可达，与 list_passwords 的锁定 fail-closed 不一致）。
+    // 现收敛为受限图标读取：
+    //   1. 锁定态一律拒绝（None）；
+    //   2. 路径必须 canonicalize 后位于图标缓存根内且为直接子级 .png（防穿越/逃逸）。
+    // 扫描弹窗（loadScanIcons）与软件库遗留 loadIconDataUrls 传入的均为缓存根内路径，
+    // 合法使用行为不变；任意文件读取能力移除。
+    if !state.is_unlocked() {
+        return None;
+    }
+    validated_cache_icon_path(&path)
+        .and_then(|p| read_icon_as_data_url_inner(p.to_string_lossy().to_string()))
 }
 
 // ============================================================
 // 🛡️ G3-1C：基于软件 ID 的受控图标读取（资产 URL 失败时的定向回退）
 // 安全约束（与旧的按路径直读接口 read_icon_as_data_url 不同）：
 //   1. 只接受软件 id；icon_path 必须来自 DB 中该记录本身（不接受前端传路径）；
-//   2. 路径必须位于图标缓存根（win_icon::cache_root）内，越界直接拒绝；
+//   2. 路径必须位于图标缓存根（win_icon::cache_root）内——M0 起 canonicalize 校验
+//      （原 starts_with 词法比较可被 `..` 穿越绕过），越界/穿越/逃逸/缺失 → None；
 //   3. 文件大小上限 512KB（正常 64x64 PNG ≈ 0.3-3.5KB）；
 //   4. 记录已软删 / icon_path 为空 / 文件缺失 → 返回 None（前端降级 SVG/emoji）；
-//   5. 读取在 spawn_blocking 中执行，gate→db 顺序与既有命令一致（读门共享，锁内仅一次轻量查询）。
+//   5. 读取在 spawn_blocking 中执行，gate→db 顺序与既有命令一致（读门共享，锁内仅一次轻量查询）；
+//   6. M0 起：锁定态禁止读取（is_unlocked 检查，fail-closed）。
 // 重试与并发控制在前端（同一 id 单飞、失败不自动重试）。
 // ============================================================
 #[tauri::command]
@@ -1835,6 +1890,11 @@ pub async fn get_app_icon_data_url(app: AppHandle, id: i64) -> Result<Option<Str
 
 fn get_app_icon_data_url_sync(state: &AppState, id: i64) -> Result<Option<String>, String> {
     const MAX_ICON_BYTES: u64 = 512 * 1024;
+    // M0 安全修复（2026-11-06）：锁定态禁止读取（与 read_icon_as_data_url /
+    // list_passwords 的锁定语义一致，fail-closed）。
+    if !state.is_unlocked() {
+        return Ok(None);
+    }
     let icon_path: Option<String> = {
         let _data_gate = state.data_read()?;
         let db = state.db.lock().unwrap();
@@ -1851,16 +1911,17 @@ fn get_app_icon_data_url_sync(state: &AppState, id: i64) -> Result<Option<String
     let Some(p) = icon_path.filter(|s| !s.is_empty()) else {
         return Ok(None);
     };
-    let root = win_icon::cache_root();
-    let pb = std::path::PathBuf::from(&p);
-    if !pb.starts_with(&root) {
-        return Err("图标路径越界（不在图标缓存根内）".to_string());
-    }
-    match std::fs::metadata(&p) {
+    // M0 安全修复：canonicalize + 缓存根边界校验。原 starts_with 为**词法**比较，
+    // `icons\..\..\secret` 这类穿越路径可绕过；canonicalize 同时解析符号链接防逃逸。
+    // 校验失败（越界/穿越/逃逸/缺失/非 png）→ Ok(None)（拒绝读取，前端降级 SVG/emoji）。
+    let Some(canon) = validated_cache_icon_path(&p) else {
+        return Ok(None);
+    };
+    match std::fs::metadata(&canon) {
         Ok(m) if m.len() <= MAX_ICON_BYTES => {}
         _ => return Ok(None),
     }
-    Ok(read_icon_as_data_url_inner(p))
+    Ok(read_icon_as_data_url_inner(canon.to_string_lossy().to_string()))
 }
 
 // ============================================================
@@ -3413,4 +3474,104 @@ pub fn force_dock_reveal(_app: AppHandle) -> Result<(), String> {
 fn _unused() {
     let _ = crypto::generate_salt;
     let _ = BASE64.encode(b"");
+}
+
+// ============================================================
+// 🛡️ M0 安全修复（2026-11-06）单测：图标缓存路径校验器
+// 覆盖：合法缓存路径放行；路径穿越（..）拒绝；越界绝对路径拒绝；
+//       文件缺失拒绝；非 png 扩展名拒绝；缓存根子目录拒绝（直接子级约束）。
+// ============================================================
+#[cfg(test)]
+mod m0_icon_guard_tests {
+    use super::validated_cache_icon_path_under;
+    use std::fs;
+    use std::path::PathBuf;
+
+    struct TempRoot(PathBuf);
+    impl TempRoot {
+        fn new(tag: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "drawer-m0-icon-guard-{}-{}",
+                std::process::id(),
+                tag
+            ));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).expect("create temp root");
+            TempRoot(dir)
+        }
+        fn root(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+    impl Drop for TempRoot {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn t1_valid_png_in_root_allowed() {
+        let t = TempRoot::new("t1");
+        let icon = t.root().join("abc123.png");
+        fs::write(&icon, b"fake-png").unwrap();
+        let got = validated_cache_icon_path_under(t.root(), &icon.to_string_lossy());
+        assert!(got.is_some(), "缓存根内直接子级 .png 必须放行");
+    }
+
+    #[test]
+    fn t2_traversal_dotdot_rejected() {
+        let t = TempRoot::new("t2");
+        // 越界文件：与缓存根同级的 secret.png（真实存在，canonicalize 可解析）
+        let secret = t.root().parent().unwrap().join("drawer-m0-secret-t2.png");
+        fs::write(&secret, b"secret").unwrap();
+        let attack = t.root().join("..").join("drawer-m0-secret-t2.png");
+        let got = validated_cache_icon_path_under(t.root(), &attack.to_string_lossy());
+        assert!(got.is_none(), ".. 穿越到缓存根外必须拒绝");
+        let _ = fs::remove_file(&secret);
+    }
+
+    #[test]
+    fn t3_outside_absolute_path_rejected() {
+        let t = TempRoot::new("t3");
+        let outside = t.root().parent().unwrap().join("drawer-m0-secret-t3.png");
+        fs::write(&outside, b"secret").unwrap();
+        let got = validated_cache_icon_path_under(t.root(), &outside.to_string_lossy());
+        assert!(got.is_none(), "缓存根外的绝对路径必须拒绝");
+        let _ = fs::remove_file(&outside);
+    }
+
+    #[test]
+    fn t4_missing_file_rejected() {
+        let t = TempRoot::new("t4");
+        let missing = t.root().join("nope.png");
+        let got = validated_cache_icon_path_under(t.root(), &missing.to_string_lossy());
+        assert!(got.is_none(), "不存在的文件必须拒绝（canonicalize 失败）");
+    }
+
+    #[test]
+    fn t5_non_png_extension_rejected() {
+        let t = TempRoot::new("t5");
+        let txt = t.root().join("innocent.txt");
+        fs::write(&txt, b"hello").unwrap();
+        let got = validated_cache_icon_path_under(t.root(), &txt.to_string_lossy());
+        assert!(got.is_none(), "非 .png 扩展名必须拒绝（防止借缓存根读任意文本）");
+    }
+
+    #[test]
+    fn t6_subdirectory_png_rejected() {
+        let t = TempRoot::new("t6");
+        let sub = t.root().join("sub");
+        fs::create_dir_all(&sub).unwrap();
+        let nested = sub.join("nested.png");
+        fs::write(&nested, b"fake-png").unwrap();
+        let got = validated_cache_icon_path_under(t.root(), &nested.to_string_lossy());
+        assert!(got.is_none(), "缓存根子目录内文件必须拒绝（仅允许直接子级，缓存布局扁平）");
+    }
+
+    #[test]
+    fn t7_empty_path_rejected() {
+        let t = TempRoot::new("t7");
+        let got = validated_cache_icon_path_under(t.root(), "");
+        assert!(got.is_none(), "空路径必须拒绝");
+    }
 }

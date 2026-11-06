@@ -418,9 +418,11 @@ export const updateApp = (params: {
 export const deleteApp = (id: number) =>
   invoke("delete_app", { id });
 
-/** 读图标转 base64 data URL（绕过 Tauri asset protocol 加载失败）
- *  G3-1C 备注：按任意路径读取的旧通道，前端主链路已不再使用；保留仅作兼容。
- *  新链路请使用 getAppIconDataUrl(id)（受控：路径来自 DB 记录、限缓存根内、限大小）。 */
+/** 读图标转 base64 data URL（M0 安全修复 2026-11-06 后=受限图标读取）
+ *  仅允许图标缓存根内直接子级 .png（canonicalize 防穿越/符号链接逃逸）；锁定态拒绝；
+ *  越界/缺失返回 null。任意路径直读能力已移除（隔离测试曾实证可读 win.ini）。
+ *  现存调用方：扫描弹窗 loadScanIcons（路径来自后端扫描缓存）与遗留 loadIconDataUrls。
+ *  按 id 的受控读取用 getAppIconDataUrl(id)（M0 起同样带锁定守卫+canonicalize 校验）。 */
 export const readIconAsDataUrl = (path: string): Promise<string | null> =>
   invoke("read_icon_as_data_url", { path });
 
