@@ -1,6 +1,10 @@
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
 import {
+  bumpAfterIconRefresh,
+  iconDataUrls as moduleIconDataUrls,
+} from "../lib/app-icon-state";
+import {
   listApps as apiListApps,
   listAppCategories as apiListAppCategories,
   createApp as apiCreateApp,
@@ -15,8 +19,6 @@ import {
   importScannedApps as apiImportScanned,
   scanCustomDir as apiScanCustomDir,
   cancelScan as apiCancelScan,
-  readIconAsDataUrl,
-  getAppIconDataUrl,
   fillMissingIcons as apiFillMissingIcons,
   forceReextractIcons as apiForceReextractIcons,
   listAppsWithIcons,
@@ -51,10 +53,10 @@ export const useSoftwareStore = defineStore("software", () => {
   // 修复后：首次加载显示骨架（不闪），加载完确实为空才显示纸箱子
   const hasLoaded = ref(false);
 
-  // 图标 data URL 缓存：id → "data:image/png;base64,..."
-  // 关键修复：Tauri 2 asset protocol 加载本地 PNG 在 WebView2 不可靠，
-  // 改为后端读 png → base64 data URL，前端 100% 能渲染
-  const iconDataUrls = ref<Record<number, string>>({});
+  // 图标状态（M1-P2 F1）：data URL 受控回退缓存与失败/恢复状态统一收归
+  // src/lib/app-icon-state.ts 模块（asset URL 版本化/失败链/单次恢复重试）。
+  // store 仅保留同一引用的导出（AppView 模板与性能探针沿用 softwareStore.iconDataUrls）。
+  const iconDataUrls = moduleIconDataUrls;
 
   async function loadCategories() {
     try {
@@ -108,25 +110,6 @@ export const useSoftwareStore = defineStore("software", () => {
     await loadItems();
   }
 
-  /// 关键修复：异步批量把 icon_path 转 data URL
-  /// 不阻塞列表渲染：fire-and-forget，9 个软件 ~10-30ms 完成
-  /// 失败项静默忽略（前端走 v-else 显示首字母卡片）
-  async function loadIconDataUrls(list: AppMeta[]) {
-    const promises = list
-      .filter((a) => a.icon_path && !iconDataUrls.value[a.id])
-      .map(async (a) => {
-        try {
-          const dataUrl = await readIconAsDataUrl(a.icon_path);
-          if (dataUrl) {
-            iconDataUrls.value = { ...iconDataUrls.value, [a.id]: dataUrl };
-          }
-        } catch {
-          // 静默忽略
-        }
-      });
-    await Promise.all(promises);
-  }
-
   // P1-#APPC#ICON#SYNC：图标重建互斥锁 + 一次性刷新接口
   // 之前问题：
   //   1. AppView onMounted 调 fillMissingIcons（耗时 10-30s）
@@ -147,29 +130,8 @@ export const useSoftwareStore = defineStore("software", () => {
   // 修复：fillMissingIcons 返回 0 → 不清 cache，不重 load
   //        fillMissingIcons > 0 → 必须清（icon_path 变了，旧的 data URL 失效）
   // ===== G3-1C：受控图标回退（资产 URL 失败 → 按 id 定向取一次 base64） =====
-  // 并发控制：同一 id 单飞；失败记录在案，不自动重试（重试 = 下一轮列表刷新周期）。
-  const iconFallbackFailed = ref<Record<number, boolean>>({});
-  const iconFallbackInflight = new Set<number>();
-  async function fetchAppIconFallback(id: number) {
-    if (iconFallbackInflight.has(id)) return;
-    if (iconDataUrls.value[id] || iconFallbackFailed.value[id]) return;
-    iconFallbackInflight.add(id);
-    try {
-      const url = await getAppIconDataUrl(id);
-      if (url) iconDataUrls.value = { ...iconDataUrls.value, [id]: url };
-      else iconFallbackFailed.value = { ...iconFallbackFailed.value, [id]: true };
-    } catch {
-      iconFallbackFailed.value = { ...iconFallbackFailed.value, [id]: true };
-    } finally {
-      iconFallbackInflight.delete(id);
-    }
-  }
-  function dropAppIconFallback(id: number) {
-    if (iconDataUrls.value[id] === undefined) return;
-    const { [id]: _drop, ...rest } = iconDataUrls.value;
-    iconDataUrls.value = rest;
-    iconFallbackFailed.value = { ...iconFallbackFailed.value, [id]: true };
-  }
+  // M1-P2：受控回退/失败状态全部迁入 app-icon-state 模块（onAssetError 统一入口），
+  // AppView/FrequentView 直接调用模块；store 不再持有失败状态。
 
   let iconBusyPromise: Promise<number> | null = null;
   async function refreshAllIcons(opts: { forceClear?: boolean } = {}): Promise<number> {
@@ -191,8 +153,9 @@ export const useSoftwareStore = defineStore("software", () => {
           return n;
         }
         // 清空前端缓存 → 否则 UI 还显示旧图标（G3-1C：同时清回退失败记录，允许重试）
-        iconDataUrls.value = {};
-        iconFallbackFailed.value = {};
+        // M1-P2 F4：交给统一状态模块——n>0 时失败 icon 的 asset URL 版本化重新请求，
+        // 文件恢复后无需 reload 即可显示（E1 闭环）；data URL 回退缓存同步清理。
+        bumpAfterIconRefresh(n);
         // G3-1B：重新拉元数据（新 icon_path）→ 资产 URL 自动更新。
         // 修复：此处曾调用遗留 loadIconDataUrls(items) 把全部图标按旧通道
         // read_icon_as_data_url 逐条拉回 base64（G3-1 验证实测 500 条全部回填），
@@ -421,8 +384,9 @@ export const useSoftwareStore = defineStore("software", () => {
 
   // 导入备份后整体刷新：分类 + 列表 + 图标缓存全部重拉
   async function reloadAll() {
+    // M1-P2：旧 data URL 缓存作废 + 失败标记清零（新数据的路径由模块按 path 变化自动接管）
     iconDataUrls.value = {};
-    iconFallbackFailed.value = {};
+    bumpAfterIconRefresh(0);
     await loadCategories();
     await loadItems();
   }
@@ -510,14 +474,10 @@ export const useSoftwareStore = defineStore("software", () => {
     error,
     hasLoaded,
     iconDataUrls,
-    iconFallbackFailed,
-    fetchAppIconFallback,
-    dropAppIconFallback,
     filteredCount,
     loadCategories,
     loadItems,
     loadItemsIfNeeded,
-    loadIconDataUrls,
     reloadAll,
     // P1-#APPC#ICON#SYNC：暴露 refreshAllIcons 给 SettingsView/AppView 共用
     refreshAllIcons,

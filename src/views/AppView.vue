@@ -2,6 +2,7 @@
 import { ref, onMounted, onUnmounted, computed, h, nextTick, watch } from "vue";
 import { scheduleDeferred } from "../lib/defer-idle";
 import { launchCoolingDown, launchMarkAccepted, launchSuccessToast, launchFailureToast, nextLaunchSeq, isLatestLaunch } from "../lib/launch-feedback";
+import { assetUrl, assetFailed as iconAssetFailed, onAssetError as onIconAssetError, dropFallback as dropIconFallback } from "../lib/app-icon-state";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useAppStore } from "../stores/app";
@@ -138,18 +139,15 @@ onUnmounted(() => {
   document.removeEventListener("keydown", onFilterEsc);
 });
 
-// 修复 P1-#X：图标加载失败追踪。db.icon_path 不为空但 webview 访问失败时
-// 直接切到首字母彩色卡片，避免显示灰方块
-const iconError = ref<Record<number, boolean>>({});
-function onAppIconError(id: number) {
-  if (iconError.value[id]) return;
-  iconError.value = { ...iconError.value, [id]: true };
-  // G3-1C：资产 URL 失败 → 定向受控回退（按 id 取 base64 一次；失败则 SVG/emoji 兜底）
-  void softwareStore.fetchAppIconFallback(id);
+// M1-P2（F1）：图标失败/回退/恢复状态统一收归 app-icon-state 模块（原组件内 iconError
+// 永不复位是「图标变默认后不自愈」的根因之一——E1 实验实证）。asset 失败→受控 data URL
+// 回退→SVG/emoji 兜底→单次 30s 延迟恢复重试（fill 恢复文件后 URL 版本化自动重新请求）。
+function onAppIconError(id: number, iconPath: string | null | undefined) {
+  onIconAssetError(id, iconPath);
 }
 function onFallbackIconError(id: number) {
-  // 回退 base64 也失败 → 移除 data URL，模板落到 SVG/emoji（不重试）
-  softwareStore.dropAppIconFallback(id);
+  // 回退 base64 也失败 → 移除 data URL，模板落到 SVG/emoji（恢复由模块单次重试/下次挂载接管）
+  dropIconFallback(id);
 }
 // 扫描结果专用：路径级别（不是 db id），用于扫描模态框里的图标
 const scanIconError = ref<Record<string, boolean>>({});
@@ -521,7 +519,7 @@ const debugSample = computed(() => {
     hasDataUrl: !!softwareStore.iconDataUrls[it.id],
     dataUrlLen: (softwareStore.iconDataUrls[it.id] || "").length,
     dataUrlPrefix: (softwareStore.iconDataUrls[it.id] || "").slice(0, 60),
-    iconError: !!iconError.value[it.id],
+    iconError: iconAssetFailed(it.id),
   }));
 });
 
@@ -732,12 +730,14 @@ onUnmounted(() => {
 // ===== 真实图标渲染（核心：convertFileSrc 包装 Windows 路径） =====
 // Tauri assetProtocol 必须开启（tauri.conf.json 已配）
 // icon_path 形如 "C:\Windows\System32\notepad.exe" → convertFileSrc 转 "http://asset.localhost/..."
-function iconSrc(iconPath: string | null | undefined): string {
+function iconSrc(id: number, iconPath: string | null | undefined): string {
   if (!iconPath) return "";
   // 已经是 http(s) / data: 开头直接返回
   if (iconPath.startsWith("http") || iconPath.startsWith("data:")) return iconPath;
   try {
-    return convertFileSrc(iconPath);
+    // M1-P2（F1）：走统一状态模块——按 (id, path, attempt) 版本化 URL，
+    // 恢复后自动重新请求（不再显示浏览器缓存的旧位图）
+    return assetUrl(id, iconPath);
   } catch {
     return "";
   }
@@ -790,7 +790,8 @@ async function loadScanIcons() {
   }
 }
 function scanIconUrl(a: ScannedApp): string {
-  return scanIconDataUrls.value[a.path] || iconSrc(a.icon_path);
+  // 扫描条目无 db id（路径级）——data URL 主路径 + 原样 asset 兜底，不走 id 状态机
+  return scanIconDataUrls.value[a.path] || convertFileSrc(a.icon_path);
 }
 
 function scanTypeIcon(a: ScannedApp): string {
@@ -1995,13 +1996,13 @@ async function confirmDeleteApp(id: number | null) {
                      base64（iconDataUrls）降为按需回退缓存（G3-1C 受控回退产物）；
                      两者都不可用 → 内置 SVG / emoji 兜底（与 v0.4.5 视觉一致） -->
                 <img
-                  v-if="item.icon_path && !iconError[item.id]"
-                  :src="iconSrc(item.icon_path)"
+                  v-if="item.icon_path && !iconAssetFailed(item.id)"
+                  :src="iconSrc(item.id, item.icon_path)"
                   :alt="item.name"
                   class="app-icon-img"
                   loading="lazy"
                   decoding="async"
-                  @error="onAppIconError(item.id)"
+                  @error="onAppIconError(item.id, item.icon_path)"
                 />
                 <img
                   v-else-if="softwareStore.iconDataUrls[item.id]"

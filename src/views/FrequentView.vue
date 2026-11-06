@@ -5,6 +5,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { useAppStore } from "../stores/app";
 import { useSoftwareStore } from "../stores/software";
 import { launchCoolingDown, launchMarkAccepted, launchSuccessToast, launchFailureToast, nextLaunchSeq, isLatestLaunch } from "../lib/launch-feedback";
+import { assetUrl as moduleAssetUrl, assetFailed as moduleAssetFailed, onAssetError as moduleOnAssetError } from "../lib/app-icon-state";
 import { useSnippetsStore } from "../stores/snippets";
 import { useTempStore } from "../stores/temp";
 import { usePasswordStore as usePasswordsStore } from "../stores/passwords";
@@ -84,13 +85,17 @@ const items = ref<FrequentItem[]>([]);
 // 关键修复：app 类型实时从 store 读 data URL
 // 不依赖 watch 链（FrequentView 的 watch 在 setup 阶段注册，store 异步填充时偶尔不 trigger）
 // 这样 store 变化时模板自动 reactive 更新
+// M1-P2（F1）：与软件区完全一致——统一走 app-icon-state 模块（asset URL 主路径 + 版本化 +
+// 受控回退 + 恢复重试）；原「base64 优先」与注释矛盾的实现一并修正，消除两视图机制分裂。
 function getIcon(item: FrequentItem): string {
   if (item.type === "app") {
-    // G3-1B：与软件区一致——资产 URL 主路径；base64 仅作按需回退缓存
+    if (item.iconPath && !moduleAssetFailed(item.id)) return moduleAssetUrl(item.id, item.iconPath);
     if (softwareStore.iconDataUrls[item.id]) return softwareStore.iconDataUrls[item.id];
-    return item.iconPath ? convertFileSrc(item.iconPath) : "";
+    return "";
   }
-  return item.icon;
+  // M1-P2：非 app 类型（snippet/password/temp）不再渲染 img（src=emoji 本就不可加载，
+  // 旧 DOM 隐藏 hack 依赖不存在的 v-else 兄弟节点）——返回空让 iconFallback span 正常显示。
+  return "";
 }
 
 onMounted(() => {
@@ -297,11 +302,13 @@ const _typeEmoji = {
 } as const;
 
 // 图标加载失败时切到 fallback（首字母 / emoji）
-function onIconError(e: Event) {
-  const img = e.target as HTMLImageElement;
-  img.style.display = "none";
-  const fallback = img.nextElementSibling as HTMLElement | null;
-  if (fallback) fallback.style.display = "flex";
+// M1-P2（F1）：不再用 DOM display hack——与软件区同走统一状态模块
+// （asset 失败 → 受控回退 → SVG/emoji 兜底 → 单次恢复重试），失败状态随模块响应式驱动模板。
+// 非 app 类型不产生 img（getIcon 返回空），不会进入本函数。
+function onIconError(item: FrequentItem) {
+  if (item.type === "app" && item.iconPath) {
+    moduleOnAssetError(item.id, item.iconPath);
+  }
 }
 </script>
 
@@ -343,7 +350,7 @@ function onIconError(e: Event) {
             :src="getIcon(item)"
             :alt="item.title"
             class="top-icon-img"
-            @error="onIconError"
+            @error="onIconError(item)"
           />
           <span
             v-else
@@ -376,7 +383,7 @@ function onIconError(e: Event) {
             :src="getIcon(item)"
             :alt="item.title"
             class="cell-icon-img"
-            @error="onIconError"
+            @error="onIconError(item)"
           />
           <span
             v-else

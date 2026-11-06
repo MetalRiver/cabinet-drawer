@@ -200,7 +200,7 @@ pub fn cache_root() -> PathBuf {
 
 /// 计算 cache 文件名（SHA256 前 16 字符）
 /// 注意：lowercase 标准化路径，避免大小写差异导致 cache miss
-fn cache_key(exe_path: &str) -> String {
+pub fn cache_key(exe_path: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(exe_path.to_lowercase().as_bytes());
     let result = hasher.finalize();
@@ -214,22 +214,24 @@ fn cache_key(exe_path: &str) -> String {
 
 /// 单个抽图：调 windows-icons 抽图，存为 64x64 PNG
 /// 命中缓存时直接返回，0 延迟
-/// .lnk 文件自动解析 target 后抽 target 的图标（解决 UWP/Store 应用图标问题）
+/// 图标来源优先级（M1-P2 F2 统一）：快捷方式自身 > 解析出的目标程序 > 无图标（前端类型 SVG 兜底）
+/// —— .lnk 直接抽自身（Windows 按 Explorer 显示抽图，Steam/Epic/UWP 游戏图标正确）；
+///    lnk 抽取失败再试 resolve_lnk_target 解析出的 target（两级候选）。
 ///
-/// 抽图失败时：写一个彩色方块占位图到 cache，保证"图标不消失"（tray/无图标资源程序）
+/// 抽图全部失败时：**不写占位图、不返回路径**（M1-P2 F2：占位图曾以"成功"身份入库并被
+/// 当真实图标显示——运行时实证）。缓存键 cache_key 恒按**入口路径**计算：同一入口永远
+/// 映射同一缓存文件，fill_missing_icons 据此实现确定性重基（cache_key 归属校验）。
+/// 失败重试为事件驱动（视图挂载/手动刷新/单次延迟重试），非周期轮询，单次成本有界。
 pub fn extract_to_cache(exe_path: &str) -> Option<PathBuf> {
     if !Path::new(exe_path).exists() {
-        return None;
-    }
-    let actual_path = pick_extract_path(exe_path);
-    if !Path::new(&actual_path).exists() {
         return None;
     }
     let cache_dir = cache_root();
     if !cache_dir.exists() {
         let _ = fs::create_dir_all(&cache_dir);
     }
-    let key = cache_key(&actual_path);
+    // 归属键恒按入口路径（不随候选源变化）——重抽/重基后 DB 引用保持确定性
+    let key = cache_key(exe_path);
     let cache_path = cache_dir.join(format!("{}.png", key));
 
     // G3-1 取证守卫：目标不在守卫根内 → 不写任何文件（fail-closed）
@@ -242,64 +244,40 @@ pub fn extract_to_cache(exe_path: &str) -> Option<PathBuf> {
         return Some(cache_path);
     }
 
-    // windows-icons 内部调 Windows API ExtractIconW，返回 RgbaImage
-    match get_icon_by_path(&actual_path) {
-        Ok(img) => {
-            if let Err(e) = img.save_with_format(&cache_path, image::ImageFormat::Png) {
-                eprintln!("[win_icon] save failed for {}: {}", actual_path, e);
-                return None;
+    // 两级候选：lnk 自身优先；失败再试解析出的 target。非 lnk 仅自身一级。
+    let mut candidates: Vec<String> = vec![pick_extract_path(exe_path)];
+    if exe_path.to_lowercase().ends_with(".lnk") {
+        if let Some(target) = resolve_lnk_target(exe_path) {
+            if Path::new(&target).exists() && !candidates.contains(&target) {
+                candidates.push(target);
             }
-            Some(cache_path)
-        }
-        Err(e) => {
-            eprintln!("[win_icon] extract failed for {}: {}", actual_path, e);
-            // P0-#N：抽图失败时写 fallback 占位图（保证图标不消失）
-            write_fallback_icon(&cache_path, &actual_path);
-            Some(cache_path)
         }
     }
+    for cand in &candidates {
+        if !Path::new(cand).exists() {
+            continue;
+        }
+        // windows-icons 内调 Windows API ExtractIconW，返回 RgbaImage
+        match get_icon_by_path(cand) {
+            Ok(img) => {
+                if let Err(e) = img.save_with_format(&cache_path, image::ImageFormat::Png) {
+                    eprintln!("[win_icon] save failed for {}: {}", cand, e);
+                    return None;
+                }
+                return Some(cache_path);
+            }
+            Err(e) => {
+                eprintln!("[win_icon] extract failed for {}: {}", cand, e);
+            }
+        }
+    }
+    // 全部候选失败 → 不写占位、不落库（fill 不回写 → icon_path 保持空 → 前端类型 SVG 兜底）
+    None
 }
 
-/// 写 fallback 占位图（64x64 PNG）
-/// 策略：根据文件名生成稳定哈希色 → 纯色方块，区别于"图标消失"
-fn write_fallback_icon(cache_path: &Path, source_path: &str) {
-    // G3-1 取证守卫（纵深防御）：与 extract_to_cache 同一断言
-    if let Err(e) = icon_write_guard(cache_path, source_path, "write_fallback_icon") {
-        eprintln!("{}", e);
-        return;
-    }
-    use image::{Rgba, RgbaImage};
-    let mut img = RgbaImage::new(64, 64);
-    // 用文件路径哈希 → 稳定颜色（同一文件总生成同一颜色，便于识别）
-    let mut hasher = Sha256::new();
-    hasher.update(source_path.to_lowercase().as_bytes());
-    let hash = hasher.finalize();
-    // 取 3 字节作为 RGB
-    let r = hash[0];
-    let g = hash[1];
-    let b = hash[2];
-    // 浅色背景 + 深色前景边框（让方块有层次）
-    let bg = Rgba([r / 2 + 60, g / 2 + 60, b / 2 + 60, 255]);
-    let fg = Rgba([r, g, b, 255]);
-    for y in 0..64 {
-        for x in 0..64 {
-            // 边框 4px + 圆角简化（4 角少 6px）
-            let on_border = x < 3 || x > 60 || y < 3 || y > 60;
-            let in_corner_cut = (x < 6 && y < 6)
-                || (x > 57 && y < 6)
-                || (x < 6 && y > 57)
-                || (x > 57 && y > 57);
-            if on_border && !in_corner_cut {
-                img.put_pixel(x, y, fg);
-            } else {
-                img.put_pixel(x, y, bg);
-            }
-        }
-    }
-    if let Err(e) = img.save_with_format(cache_path, image::ImageFormat::Png) {
-        eprintln!("[win_icon] fallback save failed for {:?}: {}", cache_path, e);
-    }
-}
+// M1-P2（F2）：write_fallback_icon 已移除——占位图曾以"成功"身份入库并被当真实图标
+// 显示（运行时实证），且一旦落盘即永久毒化缓存判定。抽图失败现返回 None，由前端
+// 类型 SVG/emoji 诚实兜底；历史占位 PNG 由 force_reextract（清缓存+全量重抽）清理。
 
 /// 批量抽图：分离缓存命中与未命中，未命中项串行抽图
 /// 注意：windows-icons 内部有 COM 调用（Shell），并发抽图可能 COM 初始化冲突；
@@ -347,4 +325,36 @@ pub fn extract_batch_to_cache(exe_paths: &[String]) -> Vec<(String, PathBuf)> {
     );
 
     cached
+}
+
+// ============================================================
+// M1-P2（F2/F3）单测：缓存键归属确定性（fill 确定性重基的证据基础）
+// 覆盖：同一入口路径恒产生同一缓存键（大小写不敏感）；不同入口不同键。
+// 注意：不测试 extract_to_cache 的写盘行为——测试进程的 cache_root 指向真实
+// %LOCALAPPDATA% 缓存（生产边界），写盘行为由隔离环境运行时探针验证。
+// ============================================================
+#[cfg(test)]
+mod m1_cache_key_tests {
+    use super::cache_key;
+
+    #[test]
+    fn t1_entry_path_deterministic_case_insensitive() {
+        let a = cache_key(r"D:\Drawer-Upg-Rehearsal\perf-fix-v043\h1-exes\notepad.exe");
+        let b = cache_key(r"d:\drawer-upg-rehearsal\perf-fix-v043\h1-exes\NOTEPAD.EXE");
+        assert_eq!(a, b, "同一入口路径（大小写差异）必须映射同一缓存键——fill 重基依赖此性质");
+    }
+
+    #[test]
+    fn t2_different_entries_different_keys() {
+        let a = cache_key(r"D:\x\a.lnk");
+        let b = cache_key(r"D:\x\b.lnk");
+        assert_ne!(a, b, "不同入口路径必须不同缓存键（防错误关联图标）");
+    }
+
+    #[test]
+    fn t3_key_is_flat_hex_filename_base() {
+        let k = cache_key(r"C:\Windows\System32\notepad.exe");
+        assert_eq!(k.len(), 16, "cache_key 为 SHA256 前 8 字节的 16 位 hex——缓存布局扁平 key.png");
+        assert!(k.chars().all(|c| c.is_ascii_hexdigit()));
+    }
 }

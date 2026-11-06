@@ -1071,29 +1071,20 @@ fn build_candidates_with(
         });
     }
 
-    // ---- 图标提取（目标优先，失败回退入口自身）----
+    // ---- 图标提取（M1-P2 F2：来源统一）----
+    // 不再在扫描层做 target-first 预选（曾与 win_icon::pick_extract_path 的
+    // lnk 自身优先设计互相矛盾：同一 .lnk 扫描导入与 fill 重抽产出不同图标——
+    // Steam/Epic 类 target 是启动器 exe 时尤为明显）。现统一把入口路径交给
+    // extract_to_cache：其内部优先级 = lnk 自身 > 解析出的 target > 无图标，
+    // 且缓存键恒按入口路径计算（fill 的确定性重基依赖此归属）。
     #[cfg(windows)]
     {
-        let mut to_extract: Vec<(String, String)> = Vec::new();
-        for app in results.iter() {
-            let icon_src = if !app.target.is_empty()
-                && (app.app_type != "url")
-                && std::path::Path::new(&app.target).is_file()
-            {
-                app.target.clone()
-            } else {
-                app.path.clone()
-            };
-            to_extract.push((icon_src, app.path.clone()));
-        }
-        let exe_paths: Vec<String> = to_extract.iter().map(|(t, _)| t.clone()).collect();
+        let exe_paths: Vec<String> = results.iter().map(|a| a.path.clone()).collect();
         let extracted = win_icon::extract_batch_to_cache(&exe_paths);
         let icon_map: std::collections::HashMap<String, PathBuf> = extracted.into_iter().collect();
-        for (icon_src, key) in to_extract.iter() {
-            if let Some(a) = results.iter_mut().find(|a| &a.path == key) {
-                if let Some(cached) = icon_map.get(icon_src) {
-                    a.icon_path = cached.to_string_lossy().to_string();
-                }
+        for app in results.iter_mut() {
+            if let Some(cached) = icon_map.get(&app.path) {
+                app.icon_path = cached.to_string_lossy().to_string();
             }
         }
     }
@@ -1682,7 +1673,7 @@ fn read_icon_as_data_url_inner(path: String) -> Option<String> {
 //   词法比较，可被 `icons\..\..` 穿越绕过。
 // 规则：目标路径必须 canonicalize（解析 `..` 与符号链接，文件须存在）后仍位于
 //   图标缓存根内，且为缓存根的直接子级、扩展名为 .png（缓存布局扁平 {hash}.png，
-//   由 extract_to_cache / write_fallback_icon 写入方保证）。
+//   由 extract_to_cache 写入方保证（M1-P2 起抽图失败不落盘、占位图机制已移除）。
 // 防御：路径穿越、符号链接逃逸、越权目录、非 PNG 文件。
 // 返回 canonical 化路径；任何不满足 → None（调用方按"拒绝读取"处理）。
 // ============================================================
@@ -1996,7 +1987,21 @@ fn fill_missing_icons_sync(state: &AppState) -> Result<usize, String> {
     let missing: Vec<(i64, String)> = apps
         .into_iter()
         .filter(|a| !a.path.is_empty())
-        .filter(|a| a.icon_path.is_empty() || !std::path::Path::new(&a.icon_path).exists())
+        // M1-P2（F3 归属校验）：icon_path 非空且文件存在 ≠ 归属正确——错误关联（指向他人
+        // 缓存文件）时 fill 曾不纠正。缓存键恒按**入口路径**计算（cache_key(app.path)，见
+        // extract_to_cache），basename 不匹配 = 归属错误 → 视同缺失重抽（确定性对应：同一
+        // 入口永远映射同一键；历史 target-first 时代导入的 lnk 会被一次性统一到入口键，
+        // 与 F2 来源统一一致）。已有合法图标（归属匹配）不受影响、不被覆盖。
+        .filter(|a| {
+            let missing_or_dead = a.icon_path.is_empty()
+                || !std::path::Path::new(&a.icon_path).exists()
+                || std::path::Path::new(&a.icon_path)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .map(|stem| stem != win_icon::cache_key(&a.path))
+                    .unwrap_or(true);
+            missing_or_dead
+        })
         .map(|a| (a.id, a.path))
         .collect();
     if missing.is_empty() {
