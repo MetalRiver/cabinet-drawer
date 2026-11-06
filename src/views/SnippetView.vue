@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { ref, onMounted, onUnmounted, watch, computed } from "vue";
 import { useAppStore } from "../stores/app";
 import { useSnippetsStore } from "../stores/snippets";
 import ConfirmInline from "../components/ConfirmInline.vue";
@@ -24,7 +24,47 @@ const form = ref({
 });
 
 // 左侧 sidebar 展开状态（默认收起，hover 展开）
-const sidebarExpanded = ref(false);
+// ===== 语言分组迁移：右上角「筛选」浮层面板（替代左侧分组栏）=====
+const filterOpen = ref(false);
+const filterPos = ref<Record<string, string>>({});
+const filterBtnEl = ref<HTMLElement | null>(null);
+const activeFilterCount = computed(() => (snippetsStore.activeLanguage ? 1 : 0));
+function toggleFilter() {
+  if (filterOpen.value) { filterOpen.value = false; return; }
+  const el = filterBtnEl.value;
+  if (el) {
+    const r = el.getBoundingClientRect();
+    const width = 220;
+    const left = Math.max(8, Math.min(r.right - width, window.innerWidth - width - 8));
+    filterPos.value = { position: "fixed", top: Math.round(r.bottom + 6) + "px", left: Math.round(left) + "px", width: width + "px" };
+  }
+  filterOpen.value = true;
+}
+function clearFilters() {
+  snippetsStore.setLanguage(null);
+}
+function onFilterOutside(e: MouseEvent) {
+  const t = e.target as HTMLElement | null;
+  if (!t) return;
+  if (t.closest(".filter-panel") || t.closest(".filter-btn")) return;
+  filterOpen.value = false;
+}
+function onFilterEsc(e: KeyboardEvent) {
+  if (e.key === "Escape") filterOpen.value = false;
+}
+watch(filterOpen, (open: boolean) => {
+  if (open) {
+    document.addEventListener("mousedown", onFilterOutside, true);
+    document.addEventListener("keydown", onFilterEsc);
+  } else {
+    document.removeEventListener("mousedown", onFilterOutside, true);
+    document.removeEventListener("keydown", onFilterEsc);
+  }
+});
+onUnmounted(() => {
+  document.removeEventListener("mousedown", onFilterOutside, true);
+  document.removeEventListener("keydown", onFilterEsc);
+});
 
 // 语言分类：emoji + label
 // P0-#Y#FIX#UNCAT#REMOVE：删除"未分类"分类
@@ -165,42 +205,27 @@ async function confirmRemove(id: number) {
             <span class="view-title-text">命令行</span>
             <span class="title-count">{{ snippetsStore.filteredItems.length }}</span>
           </h2>
-          <p class="view-subtitle">
-            <template v-if="appStore.searchQuery">搜索 "{{ appStore.searchQuery }}" 的结果</template>
-            <template v-else>保存常用的命令、代码片段和文本模板</template>
-          </p>
         </div>
       </div>
       <div class="view-header-actions">
+        <!-- 2026-11-05：语言分组迁移到右上角「筛选」按钮（原左侧分组栏移除） -->
+        <button
+          ref="filterBtnEl"
+          class="filter-btn tap"
+          :class="{ active: filterOpen || activeFilterCount > 0 }"
+          title="筛选语言分组"
+          @click.stop="toggleFilter"
+        >
+          <span class="filter-btn-icon">☰</span>
+          <span class="filter-btn-label">筛选</span>
+          <span v-if="activeFilterCount > 0" class="filter-btn-count">{{ activeFilterCount }}</span>
+        </button>
         <button class="action-btn action-btn-primary tap" title="添加命令" @click="openAdd">+</button>
       </div>
     </div>
 
     <!-- 主体：左 sidebar + 右列表 -->
-    <div class="snippets-body">
-      <!-- 左侧可收缩 sidebar（按语言分类） -->
-      <div class="filter-sidebar" :class="{ expanded: sidebarExpanded }"
-           @mouseenter="sidebarExpanded = true"
-           @mouseleave="sidebarExpanded = false">
-        <div class="sidebar-section-label" v-if="sidebarExpanded">语言</div>
-        <div class="lang-chips">
-          <button
-            v-for="l in LANG_OPTIONS"
-            :key="l.key ?? 'all'"
-            class="lang-chip tap"
-            :class="{ active: snippetsStore.activeLanguage === l.key }"
-            :data-lang="l.key ?? 'all'"
-            :title="l.label"
-            @click="snippetsStore.setLanguage(l.key)"
-          >
-            <span class="lang-chip-emoji">{{ l.emoji }}</span>
-            <span class="lang-chip-label">{{ l.label }}</span>
-          </button>
-        </div>
-      </div>
-
-      <!-- 右侧主内容 -->
-      <div class="snippets-main">
+    
         <!-- 空状态 -->
         <div v-if="snippetsStore.filteredItems.length === 0 && !snippetsStore.loading" class="empty">
           <div class="empty-icon">💻</div>
@@ -250,10 +275,9 @@ async function confirmRemove(id: number) {
               />
             </div>
           </div>
-        </TransitionGroup>
-      </div>
-    </div>
+        
 
+        </TransitionGroup>
     <!-- 剪贴板倒计时提示 -->
     <Transition name="toast">
       <div v-if="appStore.clipboardCountdown > 0" class="clipboard-toast">
@@ -301,70 +325,111 @@ async function confirmRemove(id: number) {
       </div>
     </Transition>
   </div>
+    <!-- 2026-11-05：语言分组「筛选」浮层面板（Teleport 到 body，不受滚动容器裁剪） -->
+    <Teleport to="body">
+      <Transition name="filter-pop">
+        <div v-if="filterOpen" class="filter-panel" :style="filterPos" @click.stop>
+          <div class="filter-panel-head">
+            <span class="filter-panel-title">语言分组</span>
+            <button v-if="activeFilterCount > 0" class="filter-clear tap" @click="clearFilters">清除</button>
+          </div>
+          <div class="lang-chips">
+            <button
+              v-for="l in LANG_OPTIONS"
+              :key="l.key ?? 'all'"
+              class="lang-chip tap"
+              :class="{ active: snippetsStore.activeLanguage === l.key }"
+              @click="snippetsStore.setLanguage(l.key)"
+            >
+              <span class="lang-chip-emoji">{{ l.emoji }}</span>
+              <span>{{ l.label }}</span>
+            </button>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
 </template>
 
 <style scoped>
 .form-select-block { width: 100%; }
 
 .view { padding-bottom: 20px; }
+/* ===== 2026-11-05：顶部工具栏 sticky + 右上角筛选按钮/浮层面板 ===== */
+.view-header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: #16121f;
+  padding: 4px 0 10px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
+}
+.filter-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  background: var(--bg-secondary);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  transition: all 0.15s var(--ease-smooth);
+  -webkit-app-region: no-drag;
+  white-space: nowrap;
+}
+.filter-btn:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+.filter-btn.active {
+  background: var(--accent-soft);
+  color: var(--accent-bright);
+  border-color: var(--accent);
+}
+.filter-btn-icon { font-size: 13px; line-height: 1; }
+.filter-btn-count {
+  min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px;
+  background: var(--accent); color: #fff; font-size: 10px; font-weight: 700;
+  display: inline-flex; align-items: center; justify-content: center; line-height: 1;
+}
+.filter-panel {
+  position: fixed;
+  z-index: 60;
+  background: #1b1727;
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+  padding: 12px;
+  max-height: min(420px, calc(100vh - 140px));
+  overflow-y: auto;
+}
+.filter-panel-head {
+  display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;
+}
+.filter-panel-title {
+  font-size: 11px; color: var(--text-faint); text-transform: uppercase;
+  letter-spacing: 0.5px; font-weight: 700;
+}
+.filter-clear {
+  border: 1px solid var(--border); background: transparent; color: var(--text-muted);
+  font-size: 11px; padding: 2px 8px; border-radius: 8px; cursor: pointer;
+}
+.filter-clear:hover { color: var(--text-primary); border-color: var(--border-strong); }
+.filter-panel .lang-chips { display: flex; flex-direction: column; gap: 4px; margin-bottom: 0; }
+.filter-panel .lang-chip { width: 100%; justify-content: flex-start; }
+.filter-pop-enter-active,
+.filter-pop-leave-active { transition: opacity 0.15s var(--ease-smooth), transform 0.15s var(--ease-smooth); }
+.filter-pop-enter-from,
+.filter-pop-leave-to { opacity: 0; transform: translateY(-6px); }
+
 
 /* ============ 左侧可收缩 sidebar（语言分类） ============ */
-.snippets-body {
-  display: flex;
-  gap: 8px;
-  align-items: flex-start;
-}
-.snippets-main {
-  flex: 1;
-  min-width: 0;
-}
-.filter-sidebar {
-  width: 42px;
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 6px 4px;
-  background: var(--bg-primary);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  transition: width 0.22s var(--ease-smooth), box-shadow 0.22s var(--ease-smooth);
-  overflow: hidden;
-  position: relative;
-  align-self: stretch;
-}
-.filter-sidebar:hover,
-.filter-sidebar.expanded {
-  width: 168px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
-  background: var(--bg-secondary);
-}
-.filter-sidebar::after {
-  content: "";
-  position: absolute;
-  top: 50%;
-  right: 2px;
-  width: 2px;
-  height: 28px;
-  margin-top: -14px;
-  background: linear-gradient(180deg, transparent, var(--accent) 50%, transparent);
-  opacity: 0.4;
-  border-radius: 1px;
-  transition: opacity 0.2s;
-  pointer-events: none;
-}
-.filter-sidebar:hover::after { opacity: 0; }
 
-.sidebar-section-label {
-  font-size: 10px;
-  color: var(--text-faint);
-  padding: 0 6px 2px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
-}
 .lang-chips {
   display: flex;
   flex-direction: column;
@@ -416,12 +481,6 @@ async function confirmRemove(id: number) {
   white-space: nowrap;
   transition: max-width 0.22s var(--ease-smooth) 0.04s, opacity 0.16s;
   pointer-events: none;
-}
-.filter-sidebar:hover .lang-chip-label,
-.filter-sidebar.expanded .lang-chip-label {
-  max-width: 110px;
-  opacity: 1;
-  pointer-events: auto;
 }
 
 /* view-header / view-title 等都用 global 统一样式 */
