@@ -124,7 +124,6 @@ function onMiniMouseDown(e: MouseEvent) {
 }
 
 // 暴露给模板
-defineExpose({});
 
 // P0-#Y#FIX#TRASH#OPEN：设置界面"打开回收站"按钮派发的 window 事件处理
 // （提升到 setup 作用域供 onUnmounted 移除；MainLayout 每次锁屏-解锁重新挂载，
@@ -270,7 +269,7 @@ onUnmounted(() => {
       <!-- 图标列 -->
       <div class="mini-icons">
         <button
-          v-for="t in tabs.slice(0, 6)"
+          v-for="t in tabs"
           :key="t.key"
           class="mini-icon tap"
           :class="{ active: isActive(t) }"
@@ -574,21 +573,6 @@ onUnmounted(() => {
 }
 .titlebar-right { display: flex; align-items: center; gap: 2px; }
 
-.debug-info {
-  margin-left: 10px;
-  padding: 2px 8px;
-  background: rgba(0, 0, 0, 0.3);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  font-size: 10px;
-  font-family: monospace;
-  color: var(--text-faint);
-  -webkit-app-region: no-drag;
-  app-region: no-drag;
-  user-select: text;
-  cursor: text;
-  white-space: nowrap;
-}
 
 .titlebar-btn {
   width: 30px;
@@ -612,33 +596,9 @@ onUnmounted(() => {
 .titlebar-btn:hover { background: var(--accent-soft); color: var(--text-primary); }
 .titlebar-btn.close:hover { background: var(--danger); color: #fff; }
 /* 回收站按钮 — 高可见性 */
-.titlebar-btn.trash-btn {
-  position: relative;
-  font-size: 15px;
-}
 .titlebar-btn.trash-btn.has-items {
   background: rgba(239, 68, 68, 0.12);
   color: #fca5a5;
-}
-.titlebar-trash-badge {
-  position: absolute;
-  top: -2px;
-  right: -2px;
-  min-width: 14px;
-  height: 14px;
-  padding: 0 4px;
-  background: linear-gradient(135deg, #ef4444, #dc2626);
-  color: white;
-  font-size: 9px;
-  font-weight: 700;
-  border-radius: 7px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  line-height: 1;
-  border: 1.5px solid var(--bg-primary, #0f1115);
-  box-shadow: 0 1px 4px rgba(239, 68, 68, 0.5);
-  animation: trashBadgePulse 2s ease-in-out infinite;
 }
 @keyframes trashBadgePulse {
   0%, 100% { transform: scale(1); }
@@ -856,26 +816,6 @@ onUnmounted(() => {
 .bottom-tab {
   position: relative;
 }
-.bottom-tab-badge {
-  position: absolute;
-  top: 4px;
-  right: 14px;
-  min-width: 16px;
-  height: 16px;
-  border-radius: 8px;
-  background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
-  color: #fff;
-  font-size: 10px;
-  font-weight: 700;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0 4px;
-  box-shadow: 0 2px 6px rgba(239, 68, 68, 0.5);
-  animation: badgePop 0.4s var(--ease-smooth);
-  pointer-events: none;
-  line-height: 1;
-}
 @keyframes badgePop {
   from { transform: scale(0); opacity: 0; }
   60% { transform: scale(1.2); opacity: 1; }
@@ -941,8 +881,6 @@ onUnmounted(() => {
 
 .page-wrapper { min-height: 100%; }
 
-.page-enter-active { animation: pageIn 0.3s var(--ease-out); }
-.page-leave-active { animation: pageOut 0.18s var(--ease-smooth); position: absolute; width: calc(100% - 32px); }
 @keyframes pageIn {
   from { opacity: 0; transform: translateY(8px); filter: blur(4px); }
   to { opacity: 1; transform: translateY(0); filter: blur(0); }

@@ -420,7 +420,6 @@ async function confirmRemove(id: number) {
 .filter-pop-enter-from,
 .filter-pop-leave-to { opacity: 0; transform: translateY(-6px); }
 
-
 /* ============ 左侧可收缩 sidebar（语言分类） ============ */
 
 .lang-chips {
@@ -467,26 +466,8 @@ async function confirmRemove(id: number) {
   text-align: center;
   line-height: 1;
 }
-.lang-chip-label {
-  max-width: 0;
-  opacity: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  transition: max-width 0.22s var(--ease-smooth) 0.04s, opacity 0.16s;
-  pointer-events: none;
-}
-
 /* view-header / view-title 等都用 global 统一样式 */
-.view-subtitle { font-size: 12px; color: var(--text-muted); }
-.btn-add {
-  display: flex; align-items: center; gap: 6px; padding: 9px 18px; border-radius: var(--radius); font-size: 13px; font-weight: 500;
-  background: linear-gradient(135deg, var(--accent) 0%, #4fc3f7 100%); color: white; border: none; cursor: pointer;
-  box-shadow: 0 2px 8px rgba(79, 124, 255, 0.3); transition: all 0.2s var(--ease-smooth);
-  -webkit-app-region: no-drag;
-}
-.btn-add:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(79, 124, 255, 0.4); }
-.btn-icon { font-size: 16px; font-weight: 600; }
-
+.view-subtitle { font-size: 12px; color: var(--text-muted); }.btn-add:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(79, 124, 255, 0.4); }
 .empty { text-align: center; padding: 60px 20px; color: var(--text-muted); }
 .empty-icon { font-size: 48px; margin-bottom: 12px; opacity: 0.5; }
 .empty-text { font-size: 13px; }
@@ -565,14 +546,6 @@ async function confirmRemove(id: number) {
   -webkit-app-region: no-drag;
 }
 .action-btn:hover { background: var(--accent); color: white; transform: scale(1.08); }
-
-.clipboard-toast {
-  position: fixed; bottom: 16px; right: 16px; padding: 10px 16px;
-  background: rgba(0, 0, 0, 0.8); backdrop-filter: blur(8px);
-  border: 1px solid var(--accent); border-radius: 10px;
-  display: flex; align-items: center; gap: 8px; font-size: 12px; z-index: 99;
-  box-shadow: 0 4px 16px rgba(79, 124, 255, 0.3);
-}
 
 .modal-mask { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.6); backdrop-filter: blur(8px); display: flex; align-items: center; justify-content: center; z-index: 100; }
 .modal { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px; width: 90%; max-width: 420px; max-height: 85vh; display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5); }

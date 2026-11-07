@@ -81,7 +81,6 @@ export const useWidgetStore = defineStore("widget", () => {
       // if (mini === "true") miniMode.value = true;
 
       const ct = await loadWidgetConfig("click_through");
-      if (ct === "true") clickThrough.value = true;
 
       // 记忆位置（独立坐标，Settings UI V2）
       await loadMemoryPosition();
@@ -621,28 +620,18 @@ export const useWidgetStore = defineStore("widget", () => {
     ready,
     init,
     reloadAll,
-    setAutoHide,
     setEdgeHidden,
     toggleAlwaysOnTop,
     setAutoLockMinutes,
     setClipboardClearSeconds,
     setTempExpireDays,
     toggleMiniMode,
-    toggleClickThrough,
     _testResetSaveQueues,
-    setClickThroughForHover,
     scheduleSavePosition,
     savePositionNow,
-    restorePosition,
-    moveTo,
-    snapToEdge,
-    scheduleCheckEdgeProximity,
-    performAutoHide,
     performAutoReveal,
     startEdgeProximityWatch,
     stopEdgeProximityWatch,
-    startEdgePolling,
-    stopEdgePolling,
     applyPresetPosition,
     forceExpand,
     memoryX,

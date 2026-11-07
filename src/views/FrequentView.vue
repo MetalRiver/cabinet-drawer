@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch, onUnmounted } from "vue";
 import { useRouter } from "vue-router";
-import { convertFileSrc } from "@tauri-apps/api/core";
 import { useAppStore } from "../stores/app";
 import { useSoftwareStore } from "../stores/software";
 import { launchCoolingDown, launchMarkAccepted, launchSuccessToast, launchFailureToast, nextLaunchSeq, isLatestLaunch } from "../lib/launch-feedback";
@@ -16,18 +15,6 @@ const softwareStore = useSoftwareStore();
 const snippetsStore = useSnippetsStore();
 const tempStore = useTempStore();
 const passwordsStore = usePasswordsStore();
-
-// 包装 iconSrc：本地路径 → webview 可访问的 URL（asset protocol）
-// 优先用 softwareStore.iconDataUrls[id]（base64 data URL，100% 可渲染）
-function _iconSrc(iconPath: string | null | undefined): string {
-  if (!iconPath) return "";
-  if (iconPath.startsWith("http") || iconPath.startsWith("data:")) return iconPath;
-  try {
-    return convertFileSrc(iconPath);
-  } catch {
-    return "";
-  }
-}
 
 interface FrequentItem {
   type: "password" | "app" | "snippet" | "temp";
@@ -294,12 +281,6 @@ const typeLabel = {
   password: { label: "密码", color: "purple" },
   temp: { label: "临时", color: "orange" },
 } as const;
-const _typeEmoji = {
-  app: "🚀",
-  password: "🔑",
-  snippet: "💻",
-  temp: "⏳",
-} as const;
 
 // 图标加载失败时切到 fallback（首字母 / emoji）
 // M1-P2（F1）：不再用 DOM display hack——与软件区同走统一状态模块
@@ -512,7 +493,6 @@ function onIconError(item: FrequentItem) {
   font-weight: 700;
   font-size: 22px;
 }
-.top-icon-img[style*="display: none"] + .top-icon-fallback { display: flex !important; }
 .top-info { text-align: center; width: 100%; min-width: 0; max-width: 100%; }
 .top-title {
   font-size: 12px;
@@ -534,7 +514,6 @@ function onIconError(item: FrequentItem) {
   color: var(--text-muted);
 }
 .top-type { color: var(--text-faint); }
-.top-uses { color: #ff8a5e; font-weight: 600; }
 
 /* ===== 8 列网格 ===== */
 .grid {
@@ -614,7 +593,6 @@ function onIconError(item: FrequentItem) {
   font-weight: 700;
   font-size: 14px;
 }
-.cell-icon-img[style*="display: none"] + .cell-icon-fallback { display: flex !important; }
 .cell-name {
   font-size: 10px;
   font-weight: 500;

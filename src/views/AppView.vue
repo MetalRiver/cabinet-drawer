@@ -614,10 +614,6 @@ onMounted(() => {
       const errCount = result.errors.length;
       // P1-#APPC#ICON#SYNC：改用 store.refreshAllIcons() 走互斥路径
       void softwareStore.refreshAllIcons();
-      void appStore.showClipToast(
-        "success",
-        `已导入 ${newCount} 个（跳过 ${skipCount}）`
-      );
       // 拼 toast：区分新增/跳过/失败
       const parts: string[] = [];
       if (newCount > 0) parts.push(`✅ 新增 ${newCount}`);
@@ -691,7 +687,6 @@ onMounted(() => {
   // P1-#APPC#CTX#EDGE：窗口 resize 时重新钳位右键菜单位置
   window.addEventListener("resize", repositionCtxMenu);
 
-  window.addEventListener("click", onDocClick);
 });
 
 // 自定义下拉"导入到"点击外部关闭（提升到 setup 作用域，供 onUnmounted 移除；
@@ -713,7 +708,6 @@ onUnmounted(() => {
   window.removeEventListener("click", closeContextMenu);
   window.removeEventListener("contextmenu", closeContextMenu);
   window.removeEventListener("scroll", closeContextMenu, true);
-  window.removeEventListener("click", onDocClick);
   document.removeEventListener("keydown", onIconDebugKeydown);
 });
 

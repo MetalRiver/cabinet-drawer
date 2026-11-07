@@ -78,9 +78,6 @@ export const confirmLegacyMigration = (
 export const cancelLegacyMigration = (migrationToken: string) =>
   invoke<void>("cancel_legacy_migration", { migrationToken });
 
-export const setupMasterPassword = (masterPassword: string, recoveryPhrase: string[]) =>
-  invoke<void>("setup_master_password", { masterPassword, recoveryPhrase });
-
 export const unlockApp = (masterPassword: string) =>
   invoke<string[]>("unlock_app", { masterPassword });
 
@@ -95,8 +92,6 @@ export const verifyPasswordForPwView = (inputPassword: string) =>
   invoke<boolean>("verify_password_for_pw_view", { inputPassword });
 
 // 兼容旧调用（内部直接路由到 verify_password_for_pw_view，推荐新代码用 verifyPasswordForPwView）
-export const verifyMasterPassword = (masterPassword: string) =>
-  invoke<boolean>("verify_master_password", { masterPassword });
 
 // P0-#PW#2ND：是否启用了独立二次验证密码（true=独立；false=跟随主密码）
 export const hasSecondPassword = () =>
@@ -196,8 +191,6 @@ export const passwordStrength = (password: string) =>
 export const copyToClipboardWithTimeout = (text: string, timeoutSecs: number) =>
   invoke<void>("copy_to_clipboard_with_timeout", { text, timeoutSecs });
 
-export const toggleWindow = () => invoke<void>("toggle_window");
-export const showWindow = () => invoke<void>("show_window");
 export const hideWindow = () => invoke<void>("hide_window");
 
 // ===== Widget 窗口配置 =====
@@ -228,9 +221,6 @@ export const setIgnoreCursorEvents = (ignore: boolean) =>
   invoke<void>("set_ignore_cursor_events", { ignore });
 
 /** 切换迷你模式（仅改变窗口尺寸） */
-export const setMiniMode = (mini: boolean) =>
-  invoke<void>("set_mini_mode", { mini });
-
 /** 切换迷你模式并自动调整位置（保持原 X） */
 export const setMiniModeWithPos = (mini: boolean) =>
   invoke<void>("set_mini_mode_with_pos", { mini });
@@ -239,10 +229,7 @@ export const applyWidgetConfig = () =>
   invoke<void>("apply_widget_config");
 
 // ===== 贴边自动隐藏（Rust 端 Win32 钩子）=====
-export const setAutoHideEnabled = (enabled: boolean) =>
-  invoke<void>("set_auto_hide_enabled", { enabled });
 export const isDockHidden = () => invoke<boolean>("is_dock_hidden");
-export const forceDockReveal = () => invoke<void>("force_dock_reveal");
 
 // ===== 软件（apps）相关 =====
 
@@ -629,8 +616,6 @@ export const permanentDelete = (table: string, id: number) =>
   invoke<number>("permanent_delete", { table, id });
 export const emptyTrash = (table: string) =>
   invoke<number>("empty_trash", { table });
-export const cleanupTrash = (retentionDays: number) =>
-  invoke<[string, number][]>("cleanup_trash", { retentionDays });
 export const trashCount = () => invoke<number>("trash_count");
 
 // kind → table 反向映射

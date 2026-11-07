@@ -928,30 +928,7 @@ function fmtTime(ts: number) {
 .passwords-view { padding-bottom: 8px; }
 /* view-header 等用 global 统一样式（这里只补 PasswordView 专属样式） */
 
-.btn-add,
-.btn-cancel {
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-bright) 100%);
-  color: white;
-  border: none;
-  cursor: pointer;
-  font-size: 16px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  box-shadow: 0 2px 8px rgba(79, 124, 255, 0.4);
-  transition: all 0.2s;
-}
-.btn-add:hover { transform: scale(1.1); box-shadow: 0 4px 12px rgba(79, 124, 255, 0.5); }
-.btn-cancel {
-  background: var(--bg-tertiary);
-  color: var(--text-secondary);
-  font-size: 11px;
-  box-shadow: none;
-}
-
+.btn-add,.btn-add:hover { transform: scale(1.1); box-shadow: 0 4px 12px rgba(79, 124, 255, 0.5); }
 /* 通用表单 */
 .add-form,
 .row-editing {

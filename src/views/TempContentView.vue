@@ -1305,8 +1305,6 @@ async function submitPromote() {
 }
 .renew-error { font-size: 12px; color: #f87171; margin: 4px 0 0; }
 
-.clipboard-toast { position: fixed; bottom: 16px; right: 16px; padding: 10px 16px; background: rgba(0, 0, 0, 0.8); backdrop-filter: blur(8px); border: 1px solid var(--accent); border-radius: 10px; display: flex; align-items: center; gap: 8px; font-size: 12px; z-index: 99; }
-
 .modal-mask { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.6); backdrop-filter: blur(8px); display: flex; align-items: center; justify-content: center; z-index: 100; padding: 12px; }
 .modal { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px; width: 92%; max-width: 420px; max-height: 85vh; display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5); }
 .modal-header { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--border); font-size: 14px; font-weight: 600; }
