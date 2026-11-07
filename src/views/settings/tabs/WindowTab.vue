@@ -95,7 +95,7 @@ async function onRestoreMemory() {
             class="s-seg-btn tap"
             :class="{ active: !widgetStore.miniMode }"
             data-interactive
-            @click="!widgetStore.miniMode && widgetStore.toggleMiniMode()"
+            @click="widgetStore.miniMode && widgetStore.toggleMiniMode()"
           >
             <span class="s-seg-label-inner">🗂️ 完整卡片</span>
           </button>

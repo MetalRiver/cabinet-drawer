@@ -526,7 +526,7 @@ function fmtTime(ts: number) {
             <span class="view-title-text">密码区</span>
             <span class="title-count">{{ filteredItems.length }}</span>
           </h2>
-          <p class="view-subtitle">加密存储 · 剪贴板 15s 自动清空</p>
+          <p class="view-subtitle">加密存储 · 复制的密码会自动定时清空剪贴板</p>
         </div>
       </div>
       <div class="view-header-actions">

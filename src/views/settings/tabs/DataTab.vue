@@ -275,7 +275,7 @@ async function onExportBackup() {
     const result: ExportResult = await exportEncryptedBackup(pw);
     let msg = `✓ 已导出备份：\n${result.path}\n\n`;
     if (result.security_model === "stable-dek-v2") {
-      msg += `安全格式：v${result.backup_version} Stable DEK 完整快照\n`;
+      msg += `安全格式：v${result.backup_version} 新版加密完整快照\n`;
       msg += `完整业务记录：${result.business_rows} 条`;
       if (result.trash_passwords > 0) msg += `（含回收站密码 ${result.trash_passwords} 条）`;
       msg += "\n密码密文与 UUID 已原样保存，未产生明文密码。";
@@ -323,12 +323,12 @@ async function onPickImportFile() {
 function fmtStats(s: ImportStats): string {
   if (s.full_restore && s.security_model === "stable-dek-v2") {
     return [
-      `安全格式：v${s.backup_version} Stable DEK 完整恢复`,
+      `安全格式：v${s.backup_version} 新版加密完整恢复`,
       `软件：${s.apps_inserted} ｜密码：${s.passwords_inserted}`,
       `代码段：${s.snippets_inserted} ｜便签：${s.temps_inserted}`,
       `分类：${s.categories_inserted} ｜设置项：${s.settings}`,
-      `数据库快照：${(s.total_bytes / 1024).toFixed(1)} KB`,
-      "原主密码与 Recovery Phrase 均保持有效。",
+      `备份体积：${(s.total_bytes / 1024).toFixed(1)} KB`,
+      "原主密码与恢复短语均保持有效。",
     ].join("\n");
   }
   const lines: string[] = [];
@@ -503,7 +503,7 @@ watch(
     <h4 class="s-sub-title section-title">备份与恢复</h4>
     <SettingsCard
       title="导出加密备份"
-      subtitle="打包为 .drawerbox 单文件（AES-256-GCM + zstd），纯离线。"
+      subtitle="打包为单个加密备份文件，纯离线保存，无需联网。"
       :badge="{ text: '跨设备', tone: 'green' }"
       collapsible
       v-model:open="exportOpen"

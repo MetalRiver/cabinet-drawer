@@ -29,10 +29,6 @@ const query = computed({
       title="清空"
       @click="query = ''"
     >×</button>
-    <span v-else class="search-shortcut">
-      <span class="kbd">Ctrl</span>
-      <span class="kbd">K</span>
-    </span>
   </div>
 </template>
 
@@ -121,32 +117,5 @@ const query = computed({
   background: var(--highlight);
   color: white;
   transform: scale(1.1);
-}
-
-.search-shortcut {
-  display: flex;
-  gap: 3px;
-  opacity: 0.5;
-  transition: opacity 0.2s;
-  flex-shrink: 0;
-}
-
-.search-box:focus-within .search-shortcut {
-  opacity: 0;
-}
-
-.kbd {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 20px;
-  height: 20px;
-  padding: 0 5px;
-  background: var(--bg-tertiary);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  font-size: 10px;
-  font-family: monospace;
-  color: var(--text-muted);
 }
 </style>

@@ -278,13 +278,6 @@ async function confirmRemove(id: number) {
         
 
         </TransitionGroup>
-    <!-- 剪贴板倒计时提示 -->
-    <Transition name="toast">
-      <div v-if="appStore.clipboardCountdown > 0" class="clipboard-toast">
-        <span>📋</span>
-        <span>剪贴板将在 {{ appStore.clipboardCountdown }} 秒后清空</span>
-      </div>
-    </Transition>
 
     <!-- 表单 -->
     <Transition name="modal">

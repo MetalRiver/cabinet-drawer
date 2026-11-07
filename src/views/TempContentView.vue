@@ -876,14 +876,6 @@ async function submitPromote() {
       </div>
     </Transition>
 
-    <!-- 剪贴板倒计时提示 -->
-    <Transition name="toast">
-      <div v-if="appStore.clipboardCountdown > 0" class="clipboard-toast">
-        <span>📋</span>
-        <span>剪贴板将在 {{ appStore.clipboardCountdown }} 秒后清空</span>
-      </div>
-    </Transition>
-
     <!-- 添加表单 -->
     <Transition name="modal">
       <div v-if="showAdd" class="modal-mask" @click.self="showAdd = false">

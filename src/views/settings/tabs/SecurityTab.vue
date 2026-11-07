@@ -306,7 +306,7 @@ watch(
       subtitle="解锁抽屉柜与加密密码数据的钥匙，请务必牢记。"
     >
       <p class="s-hintbox" :class="isV2Security ? 's-hintbox-purple' : ''">
-        <template v-if="isV2Security">修改后只更新主密码保护，密码数据与 Recovery Phrase 保持不变。</template>
+        <template v-if="isV2Security">修改后只更新主密码保护，密码数据与恢复短语保持不变。</template>
         <template v-else>修改后会立即用新密码重加密所有密码条目和恢复短语（保持解锁状态）。<br />
           <b>注意：</b>修改主密码<b>不会</b>影响「独立二次验证密码」（两套密码独立）。</template>
       </p>

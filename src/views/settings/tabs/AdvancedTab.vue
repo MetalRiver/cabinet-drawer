@@ -110,7 +110,7 @@ const restartConfirmOpen = ref(false);
 
 async function doReextractIcons() {
   iconBusy.value = true;
-  lastIconResult.value = "正在清空缓存…";
+  lastIconResult.value = "正在重新抽图…";
   try {
     const n = await softwareStore.refreshAllIcons({ forceClear: true });
     lastIconResult.value = `✓ 已清空并重新抽图（${n} 个软件）`;
@@ -326,24 +326,24 @@ onUnmounted(() => {
 
     <SettingsCard
       title="软件图标诊断"
-      subtitle="图标与资源管理器显示不一致时：先清空缓存重抽，再重启应用让它自动重新抽图。"
+      subtitle="应用图标显示不正常时：重新抽取图标；必要时重启应用。"
     >
       <div class="s-action-row" style="border-top: none; padding-top: 0;">
         <button class="s-btn-primary" @click="onReextractIcons" :disabled="iconBusy" data-interactive>
-          {{ iconBusy ? "处理中…" : "🗑️ 清空缓存 + 重新抽图" }}
+          {{ iconBusy ? "处理中…" : "🎨 重新抽图" }}
         </button>
         <button class="s-btn-secondary" @click="onRestartApp" :disabled="iconBusy" data-interactive>🔄 重启应用</button>
       </div>
       <ConfirmInline
         v-if="iconClearConfirmOpen"
-        title="确定要清空所有图标缓存吗？清空后抽屉柜会自动重新抽图，首次启动会慢 1-2 分钟。"
-        confirm-text="确认清空重抽"
+        title="确定要重新抽取全部应用图标吗？现有图标会被清除重建，过程约 1-2 分钟。"
+        confirm-text="确认重抽"
         @cancel="iconClearConfirmOpen = false"
         @confirm="onReextractIcons"
       />
       <ConfirmInline
         v-if="restartConfirmOpen"
-        title="确定要重启抽屉柜吗？（用于让 webview 重新加载新代码）"
+        title="确定要重启抽屉柜吗？"
         confirm-text="确认重启"
         @cancel="restartConfirmOpen = false"
         @confirm="onRestartApp"
