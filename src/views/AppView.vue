@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed, h, nextTick, watch } from "vue";
+import { ref, onMounted, onUnmounted, onDeactivated, computed, h, nextTick, watch } from "vue";
 import { scheduleDeferred } from "../lib/defer-idle";
 import { launchCoolingDown, launchMarkAccepted, launchSuccessToast, launchFailureToast, nextLaunchSeq, isLatestLaunch } from "../lib/launch-feedback";
 import { assetUrl, assetFailed as iconAssetFailed, onAssetError as onIconAssetError, dropFallback as dropIconFallback } from "../lib/app-icon-state";
@@ -959,6 +959,13 @@ const filteredItems = computed(() => softwareStore.filteredItems);
 // 保留：stagger 入场动画仅首屏批次（INITIAL_RENDER_COUNT）；右键菜单/编辑态/启动中态全部照旧。
 //       历史实现（G7-4 窗口化+离屏回收）见 git 历史（f875909 及其前序）。
 const INITIAL_RENDER_COUNT = 60; // stagger 入场动画只给首屏批次
+
+// P3-R2（2026-11-08）：stagger 入场动画每会话只播一次。
+// 依据：KeepAlive 重激活会把缓存 DOM 重新插入文档，Chromium 对重新插入的元素
+// 重启 CSS 动画 → 每次切回软件区都重播 42 卡 0.35s+延迟动画（页面切换不顺滑实锤）。
+// 离开本页（onDeactivated）即关闸：之后切回，卡片直接呈现（无重播）。
+const staggerEnabled = ref(true);
+onDeactivated(() => { staggerEnabled.value = false; });
 
 // P0-#Y：app_type → 中文 + emoji（侧边栏一级 chip）
 // P0-#Y#FIX#UNCAT#REMOVE：删除"未分类"一级
@@ -1949,7 +1956,7 @@ async function confirmDeleteApp(id: number | null) {
             :key="item.id"
             class="app-cell"
             :class="{
-              'stagger-item': index < INITIAL_RENDER_COUNT,
+              'stagger-item': staggerEnabled && index < INITIAL_RENDER_COUNT,
               'app-cell-editing': editingId === item.id,
               'app-cell-confirming': confirmingDeleteId === item.id,
               'app-cell-missing': item.available === false && (item.app_type || 'app') !== 'url',
@@ -2865,21 +2872,21 @@ AppID：${a.target || a.path}`"
   /* P0-#APPC#PER：旧 transition:all 会连带过渡布局属性（width 等）——
      侧栏展开/窗口缩放触发网格重排时全部卡片同步跑布局过渡动画，
      大列表下造成持续 style/layout 开销（v0.4.3 滚动/点击卡顿诱因之一）。
-     收窄为合成器友好属性。 */
+     P3-R2（2026-11-08）：hover 已无 transform/阴影效果，transition 收窄为
+     实际仍在变化的 bg/border 两属性。 */
   transition:
-    transform 0.16s var(--ease-smooth),
-    box-shadow 0.16s var(--ease-smooth),
     background-color 0.16s var(--ease-smooth),
     border-color 0.16s var(--ease-smooth);
   user-select: none;
   -webkit-app-region: no-drag;
   overflow: hidden;
   min-width: 0;
-  /* G7-3：视口外卡片跳过 layout/paint（1000 格全渲染时滚动/交互的主线程成本大降）。
-     auto 尺寸记忆实际渲染高度（占位 96px 与真实高度接近，滚动条几乎不跳动）；
-     展开编辑/确认删除/右键菜单均作用于可见卡片，交互不受影响。 */
-  content-visibility: auto;
-  contain-intrinsic-size: auto 96px;
+  /* P3-R2（2026-11-08）：移除 content-visibility:auto + contain-intrinsic-size。
+     依据：c-v:auto 为 1000 条规模设计（G7-3），生产实际 42 条——滚动时每帧有
+     ~10-15 个新格子进入视口，每格都要现场 layout+paint（含图片首绘），
+     且 contain 估算(96px)与实际高度差引发滚动锚定修正 = 持续主线程工作
+     （掉帧/粘滞/追赶感）。42 条全量布局一次性完成（毫秒级）后，
+     滚动成为纯合成器驱动（零主线程每帧成本）。列表规模数百条以上时再议分级方案。 */
 }
 /* G7-3：启动中即时可见态——图标呼吸脉冲 + 边框高亮，下一帧即出现；
    配合同卡防重入（launchingIds），用户在目标软件窗口出现前就能看到"已点击"。 */
@@ -2965,7 +2972,11 @@ AppID：${a.target || a.path}`"
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
-  word-break: break-word;
+  /* P3-R2：break-word 会把 "WorkBuddy" 拆成 "WorkBud/dy"——
+     改 normal（英文单词保持完整，按词换行）+ overflow-wrap 兜底
+     （仅单个词超行宽时才拆，中文换行不受影响） */
+  word-break: normal;
+  overflow-wrap: break-word;
   line-height: 1.3;
 }
 .app-icon-warn {

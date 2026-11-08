@@ -1107,8 +1107,10 @@ function fmtTime(ts: number) {
    不再固定 80/88/96px 留大片右侧空白；卡片最小 84px 保证名称可读 */
 .pwd-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
-  gap: 8px;
+  /* P3-R2（2026-11-08）视觉精修：80→72 起步——卡片更小巧（同宽度多一列密度），
+     auto-fill 宽窗自动加密；gap 8→7 */
+  grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+  gap: 7px;
   align-content: start;
   min-height: 60px;
 }
@@ -1117,13 +1119,13 @@ function fmtTime(ts: number) {
   position: relative;
   width: 100%;
   aspect-ratio: 1;
-  border-radius: 12px;
+  border-radius: 10px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 4px;
-  padding: 7px 4px 6px;
+  gap: 3px;
+  padding: 6px 4px 5px;
   cursor: pointer;
   overflow: hidden;
   transition: transform 0.15s var(--ease-smooth), box-shadow 0.15s var(--ease-smooth), border-color 0.15s var(--ease-smooth);
@@ -1149,9 +1151,9 @@ function fmtTime(ts: number) {
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45), 0 0 12px var(--accent-soft);
 }
 .pwd-tile-letter {
-  /* 2026-11-08 尺寸收敛：26px → 20px（原字号占 84px 卡宽 ~31%，视觉发胀；
-     收后仍保持首字母识别性，与小卡 .small 14px 拉开层级） */
-  font-size: 20px;
+  /* P3-R2（2026-11-08）视觉精修：20px → 16px（二轮收敛；上一轮 26→20 仍偏大，
+     16px 在 ~72-80px 卡内占比 ~21%，精致收纳面板比例；.small 14px 层级仍保留下调至 12px） */
+  font-size: 16px;
   font-weight: 700;
   color: rgba(255, 255, 255, 0.96);
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
@@ -1166,7 +1168,9 @@ function fmtTime(ts: number) {
   text-align: center;
   max-width: 100%;
   white-space: normal;
-  word-break: break-all;
+  /* P3-R2：break-all 拆英文单词（同 app-name 问题）→ normal + overflow-wrap 兜底 */
+  word-break: normal;
+  overflow-wrap: break-word;
   line-height: 1.25;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -1198,7 +1202,7 @@ function fmtTime(ts: number) {
   border-radius: 10px;
   flex-shrink: 0;
 }
-.pwd-tile.small .pwd-tile-letter { font-size: 14px; }
+.pwd-tile.small .pwd-tile-letter { font-size: 12px; }
 
 /* 8 种 hue（基于标题 hash 取模） */
 .hue-0 { background: linear-gradient(135deg, #ff8a5e, #ffb84d); }
