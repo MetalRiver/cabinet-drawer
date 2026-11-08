@@ -347,23 +347,17 @@ async function confirmRemove(id: number) {
 .form-select-block { width: 100%; }
 
 .view { padding-bottom: 20px; }
-/* ===== 2026-11-05：顶部工具栏 sticky + 右上角筛选按钮/浮层面板 ===== */
+/* 2026-11-08：移除 sticky 悬浮工具栏（与 AppView 同批）——回落普通流式 header，
+   消除不透明贴片+阴影的漂浮感与滚动重绘；筛选浮层面板 position:fixed 不受影响。 */
 .view-header {
-  position: sticky;
-  top: 0;
-  z-index: 20;
-  background: #16121f;
-  padding: 4px 0 10px;
-  margin-bottom: 12px;
-  border-bottom: 1px solid var(--border);
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
+  padding: 2px 0 8px;
 }
 .filter-btn {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 6px 10px;
-  border-radius: 10px;
+  gap: 4px;
+  padding: 4px 9px;
+  border-radius: 8px;
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;

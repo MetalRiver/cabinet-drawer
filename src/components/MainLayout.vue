@@ -619,7 +619,7 @@ onUnmounted(() => {
   app-region: drag;
 }
 .top-header-inner {
-  padding: 10px 14px 8px;
+  padding: 6px 12px 6px; /* 2026-11-08 尺寸收敛：10px 14px 8px → 6px（顶区高度 -6px） */
   -webkit-app-region: drag;
   app-region: drag;
   /* P0-T#FIX：flex 布局，搜索框占剩余空间，回收站贴右自适应 */
@@ -851,7 +851,7 @@ onUnmounted(() => {
 /* 中等宽度（560-800px） */
 @media (min-width: 560px) {
   .content-scroll { padding: 14px 20px 20px; }
-  .top-header-inner { padding: 12px 20px 10px; }
+  .top-header-inner { padding: 8px 16px 7px; }
   .titlebar { padding: 0 12px 0 18px; }
   .titlebar-btn { width: 32px; height: 32px; font-size: 16px; }
   .logo { width: 20px; height: 20px; }
@@ -860,7 +860,7 @@ onUnmounted(() => {
 /* 大宽度（800-1100px）：双列布局的容器 */
 @media (min-width: 800px) {
   .content-scroll { padding: 16px 28px 24px; }
-  .top-header-inner { padding: 14px 28px 12px; }
+  .top-header-inner { padding: 9px 20px 8px; }
   .titlebar { padding: 0 16px 0 22px; }
   .titlebar-btn { width: 32px; height: 32px; font-size: 16px; }
   .logo { width: 22px; height: 22px; }

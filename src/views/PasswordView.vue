@@ -1107,8 +1107,8 @@ function fmtTime(ts: number) {
    不再固定 80/88/96px 留大片右侧空白；卡片最小 84px 保证名称可读 */
 .pwd-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
+  gap: 8px;
   align-content: start;
   min-height: 60px;
 }
@@ -1117,13 +1117,13 @@ function fmtTime(ts: number) {
   position: relative;
   width: 100%;
   aspect-ratio: 1;
-  border-radius: 14px;
+  border-radius: 12px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 4px;
-  padding: 8px 4px 6px;
+  padding: 7px 4px 6px;
   cursor: pointer;
   overflow: hidden;
   transition: transform 0.15s var(--ease-smooth), box-shadow 0.15s var(--ease-smooth), border-color 0.15s var(--ease-smooth);
@@ -1131,8 +1131,8 @@ function fmtTime(ts: number) {
   border: 1px solid rgba(255, 255, 255, 0.08);
 }
 .pwd-tile:hover {
-  transform: translateY(-2px) scale(1.04);
-  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.4);
+  transform: scale(1.02);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
   border-color: rgba(255, 255, 255, 0.18);
 }
 .pwd-tile:active {
@@ -1149,7 +1149,9 @@ function fmtTime(ts: number) {
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45), 0 0 12px var(--accent-soft);
 }
 .pwd-tile-letter {
-  font-size: 26px;
+  /* 2026-11-08 尺寸收敛：26px → 20px（原字号占 84px 卡宽 ~31%，视觉发胀；
+     收后仍保持首字母识别性，与小卡 .small 14px 拉开层级） */
+  font-size: 20px;
   font-weight: 700;
   color: rgba(255, 255, 255, 0.96);
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);

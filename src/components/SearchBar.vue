@@ -37,7 +37,7 @@ const query = computed({
   background: var(--bg-primary);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 12px 16px;
+  padding: 7px 12px; /* 2026-11-08 尺寸收敛：12px 16px → 7px 12px（顶区高度 -12px） */
   display: flex;
   align-items: center;
   /* 父容器 .top-header-inner 是 flex:1（搜索框） + auto（回收站），
@@ -57,16 +57,13 @@ const query = computed({
 .search-box.active {
   border-color: var(--accent);
   background: var(--bg-secondary);
-  box-shadow:
-    0 0 0 3px var(--accent-soft),
-    0 4px 20px rgba(79, 124, 255, 0.15);
-  transform: translateY(-1px);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
 .search-icon {
   color: var(--text-muted);
-  margin-right: 12px;
-  font-size: 16px;
+  margin-right: 9px;
+  font-size: 13px;
   transition: color 0.2s;
   flex-shrink: 0;
 }
@@ -83,7 +80,7 @@ const query = computed({
   border: none;
   outline: none;
   color: var(--text-primary);
-  font-size: 14px;
+  font-size: 13px;
 }
 
 .search-input::placeholder {
@@ -96,12 +93,12 @@ const query = computed({
 }
 
 .search-clear {
-  width: 22px;
-  height: 22px;
+  width: 20px;
+  height: 20px;
   border: none;
   background: var(--bg-tertiary);
   color: var(--text-muted);
-  font-size: 16px;
+  font-size: 14px;
   border-radius: 50%;
   cursor: pointer;
   display: flex;

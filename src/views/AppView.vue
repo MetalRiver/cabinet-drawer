@@ -2562,24 +2562,20 @@ AppID：${a.target || a.path}`"
 
 <style scoped>
 .view { padding-bottom: 20px; }
-/* ===== 方案甲（2026-11-05）：顶部工具栏 sticky + 右上角筛选按钮/浮层面板 ===== */
-/* 工具栏固定：软件网格在 .content-scroll 内独立滚动，滚到任意深度工具栏始终可见 */
+/* ===== 2026-11-08：移除方案甲 sticky 悬浮工具栏 =====
+   原 sticky+不透明底+box-shadow 使 header 成"悬浮贴片"：
+   ① 与玻璃窗口底色割裂（漂浮感主因）；② 内容从阴影带下滚过=首排被压；
+   ③ 每帧重绘 header 阴影带（滚动开销）。现回落普通流式 header（与密码/常用区一致），
+   筛选浮层面板为 position:fixed 不受影响。 */
 .view-header {
-  position: sticky;
-  top: 0;
-  z-index: 20;
-  background: #16121f; /* 与窗口渐变顶部同色系的不透明底（避免滚动内容透出） */
-  padding: 4px 0 10px;
-  margin-bottom: 12px;
-  border-bottom: 1px solid var(--border);
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
+  padding: 2px 0 8px;
 }
 .filter-btn {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 6px 10px;
-  border-radius: 10px;
+  gap: 4px;
+  padding: 4px 9px;
+  border-radius: 8px;
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
@@ -2897,22 +2893,14 @@ AppID：${a.target || a.path}`"
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: 0.55; transform: scale(0.92); }
 }
-.app-cell::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(135deg, rgba(99, 102, 241, 0) 0%, rgba(99, 102, 241, 0.08) 100%);
-  opacity: 0;
-  transition: opacity 0.2s;
-  pointer-events: none;
-}
+/* 2026-11-08 滚动减负：滚轮滚动时鼠标静止、卡片从光标下移过，
+   每张新进入光标的卡片都会触发 :hover → translateY+20px 模糊阴影+渐变叠层
+   连续 style/paint（42 卡滚动期 hover 抖动链）。现 hover 只变底色与描边
+   （零 transform/零阴影），视觉反馈保留、绘制成本大降；:active 保留按压感。 */
 .app-cell:hover {
   background: var(--bg-tertiary);
   border-color: var(--accent-soft);
-  transform: translateY(-2px);
-  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.4), 0 0 0 1px var(--accent-soft);
 }
-.app-cell:hover::before { opacity: 1; }
 .app-cell:active { transform: translateY(0) scale(0.97); }
 @media (max-width: 419px) {
   .app-cell { padding: 8px 3px 7px; gap: 4px; }
@@ -2921,14 +2909,16 @@ AppID：${a.target || a.path}`"
 }
 
 .app-icon {
-  width: 44px;
-  height: 44px;
+  /* 2026-11-08 尺寸收敛：44 → 40（与常用区 top-icon 一档；≤419px 仍 34） */
+  width: 40px;
+  height: 40px;
   display: flex;
   align-items: center;
   justify-content: center;
   border-radius: 10px;
   background: var(--bg-tertiary);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  /* 2026-11-08：移除每卡静态 box-shadow（42 卡 × 12px 模糊阴影，滚动重绘放大成本；
+     也让观感更"轻"，与整体尺寸收敛一致） */
   flex-shrink: 0;
   overflow: hidden;
   position: relative;
@@ -2940,7 +2930,7 @@ AppID：${a.target || a.path}`"
   display: block;
 }
 .app-icon-text {
-  font-size: 22px;
+  font-size: 20px; /* 2026-11-08 收敛：22 → 20（随 app-icon 44→40 同步） */
   font-weight: 700;
   line-height: 1;
   display: flex;

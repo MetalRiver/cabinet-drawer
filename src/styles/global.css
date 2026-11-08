@@ -336,29 +336,32 @@ input, select, button, textarea {
 }
 .input::placeholder { color: var(--text-faint); }
 
-/* ===== 统一 View Header（P0 重构）===== */
+/* ===== 统一 View Header（P0 重构；2026-11-08 尺寸收敛）=====
+   原体系在 600/800/1100px 逐级放大（标题 20→26px、图标 40→52px），
+   对轻量整理工具是反向响应式：窗口越宽顶部越臃肿，420-599px 区间无收缩规则
+   导致标题竖排折行。现改单一紧凑基准，全窗口尺寸一致（轻、稳、统一）。 */
 .view-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 14px;
-  gap: 12px;
+  margin-bottom: 10px;
+  gap: 8px;
 }
 .view-header-left {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
   flex: 1;
   min-width: 0;
 }
 .view-icon {
-  width: 40px;
-  height: 40px;
-  border-radius: 12px;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 20px;
+  font-size: 15px;
   flex-shrink: 0;
   position: relative;
   overflow: hidden;
@@ -378,25 +381,32 @@ input, select, button, textarea {
 
 .view-header-info { flex: 1; min-width: 0; }
 .view-title {
-  font-size: 20px;
+  font-size: 16px;
   font-weight: 700;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   margin-bottom: 2px;
   color: var(--text-primary);
   line-height: 1.2;
   letter-spacing: -0.2px;
+  white-space: nowrap; /* 窄窗下禁止"软/件"竖排折行 */
+}
+.view-title-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .title-count {
   background: var(--bg-tertiary);
   color: var(--text-muted);
   font-size: 11px;
   font-weight: 600;
-  padding: 2px 8px;
+  padding: 2px 7px;
   border-radius: 10px;
   line-height: 1.4;
   border: 1px solid var(--border);
+  flex-shrink: 0;
 }
 .view-subtitle {
   font-size: 12px;
@@ -406,38 +416,14 @@ input, select, button, textarea {
   text-overflow: ellipsis;
 }
 
-/* ===== View Header 响应式：窗口拉大时标题区更醒目 ===== */
-/* 中等宽度（600+）：icon 大、title 字号略增 */
+/* ===== View Header 响应式 ===== */
 /* 窄窗（≤419）：标题独占一行，操作按钮换到第二行，避免标题被挤成竖排 */
 @media (max-width: 419px) {
-  .view-header { flex-wrap: wrap; row-gap: 10px; }
+  .view-header { flex-wrap: wrap; row-gap: 8px; }
   .view-header-actions { width: 100%; justify-content: flex-end; }
 }
 
-@media (min-width: 600px) {
-  .view-header { margin-bottom: 16px; gap: 14px; }
-  .view-icon { width: 44px; height: 44px; font-size: 22px; border-radius: 13px; }
-  .view-title { font-size: 22px; }
-  .view-subtitle { font-size: 13px; }
-}
-/* 大宽度（800+）：更大 */
-@media (min-width: 800px) {
-  .view-header { margin-bottom: 18px; gap: 16px; }
-  .view-icon { width: 48px; height: 48px; font-size: 24px; border-radius: 14px; }
-  .view-title { font-size: 24px; }
-  .view-subtitle { font-size: 13px; }
-  .title-count { font-size: 12px; padding: 3px 10px; }
-}
-/* 超大宽度（1100+）：超宽屏最大展示 */
-@media (min-width: 1100px) {
-  .view-header { margin-bottom: 20px; gap: 18px; }
-  .view-icon { width: 52px; height: 52px; font-size: 26px; border-radius: 15px; }
-  .view-title { font-size: 26px; }
-  .view-subtitle { font-size: 14px; }
-  .title-count { font-size: 13px; padding: 3px 12px; }
-}
-
-.view-header-actions { display: flex; gap: 6px; flex-shrink: 0; align-items: center; }
+.view-header-actions { display: flex; gap: 5px; flex-shrink: 0; align-items: center; }
 /* ===== 2026-11-05 窄窗口响应式（方案甲验收反馈） ===== */
 /* 1) 标题栏标题：禁止两行换行（窄宽度省略号），版本徽标在极窄时隐藏 */
 /* 2) action-btn：禁止"健/康""扫/描"两行换行；≤419px 时只留图标（title 提示仍在） */
@@ -450,18 +436,18 @@ input, select, button, textarea {
   align-items: center;
   justify-content: center;
   border: none;
-  border-radius: 10px;
+  border-radius: 8px;
   cursor: pointer;
   font-weight: 500;
   transition: all 0.18s var(--ease-smooth);
   -webkit-app-region: no-drag;
   user-select: none;
-  gap: 5px;
+  gap: 4px;
 }
 .action-btn-primary {
-  width: 36px;
-  height: 36px;
-  font-size: 18px;
+  width: 28px;
+  height: 28px;
+  font-size: 15px;
   background: linear-gradient(135deg, var(--accent) 0%, #4fc3f7 100%);
   color: white;
   box-shadow: 0 2px 8px rgba(79, 124, 255, 0.3);
@@ -469,9 +455,9 @@ input, select, button, textarea {
 .action-btn-primary:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(79, 124, 255, 0.45); }
 .action-btn-primary:active { transform: translateY(0) scale(0.95); }
 .action-btn-secondary {
-  width: 36px;
-  height: 36px;
-  font-size: 15px;
+  width: 28px;
+  height: 28px;
+  font-size: 13px;
   background: var(--bg-tertiary);
   color: var(--text-secondary);
   border: 1px solid var(--border);
@@ -482,9 +468,9 @@ input, select, button, textarea {
   border-color: var(--accent);
 }
 .action-btn-text {
-  height: 36px;
-  padding: 0 14px;
-  font-size: 13px;
+  height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
   background: linear-gradient(135deg, var(--accent) 0%, #4fc3f7 100%);
   color: white;
   box-shadow: 0 2px 8px rgba(79, 124, 255, 0.3);
@@ -497,17 +483,17 @@ input, select, button, textarea {
 .action-btn-text.orange:hover { box-shadow: 0 4px 12px rgba(255, 184, 77, 0.45); }
 /* P0-#ICON#MISSING#HINT：警告色按钮（用于"重抽图标"等恢复操作）
    区别于 action-btn-text（蓝色 / 常规）和 action-btn-text.orange（橙色 / 通知）
-   用紫色（accent 的同色系但更柔和）+ 边框 → 不刺眼但能引起注意 */
+   用紫色（accent 的同色系但更柔和）+ 边框 → 不刺眼但能引起注意。
+   2026-11-08：移除 warn-pulse 无限脉动动画——图标缺失期间持续合成器活动
+   （滚动掉帧贡献项），静态警告样式已足够引起注意。 */
 .action-btn-warn {
-  height: 36px;
-  padding: 0 12px;
+  height: 28px;
+  padding: 0 10px;
   font-size: 12px;
   font-weight: 600;
   background: rgba(168, 85, 247, 0.15);
   color: #c084fc;
   border: 1px solid rgba(168, 85, 247, 0.4);
-  box-shadow: 0 0 0 0 rgba(168, 85, 247, 0);
-  animation: warn-pulse 2s ease-in-out infinite;
 }
 .action-btn-warn:hover:not(:disabled) {
   background: rgba(168, 85, 247, 0.25);
@@ -517,10 +503,6 @@ input, select, button, textarea {
 }
 .action-btn-warn:active:not(:disabled) { transform: translateY(0) scale(0.96); }
 .action-btn-warn:disabled { opacity: 0.6; cursor: not-allowed; }
-@keyframes warn-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(168, 85, 247, 0); }
-  50% { box-shadow: 0 0 0 4px rgba(168, 85, 247, 0.15); }
-}
 
 /* ===== 常用区类型色条 / 角标 ===== */
 .type-stripe {

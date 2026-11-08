@@ -404,8 +404,8 @@ function onIconError(item: FrequentItem) {
   flex-direction: column;
   min-width: 0;
   align-items: center;
-  gap: 6px;
-  padding: 12px 8px 10px;
+  gap: 5px;
+  padding: 10px 8px 9px; /* 2026-11-08 尺寸收敛：12/10 → 10/9（轻量收敛，不改结构） */
   border-radius: 12px;
   background: var(--bg-secondary);
   border: 1.5px solid var(--border);
@@ -422,7 +422,8 @@ function onIconError(item: FrequentItem) {
   background: linear-gradient(135deg, transparent 0%, rgba(255, 255, 255, 0.06) 100%);
   pointer-events: none;
 }
-.top-card:hover { transform: translateY(-2px); border-color: var(--accent); box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4); }
+/* 2026-11-08：hover 去位移、阴影减负（与软件区同策略），保留描边高亮 */
+.top-card:hover { border-color: var(--accent); box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3); }
 .top-card:active { transform: translateY(0) scale(0.97); }
 .top-rank {
   position: absolute;
@@ -455,13 +456,14 @@ function onIconError(item: FrequentItem) {
   pointer-events: none;
 }
 .top-icon {
-  width: 52px;
-  height: 52px;
-  border-radius: 12px;
+  /* 2026-11-08 尺寸收敛：52 → 44（与软件区 app-icon 一致） */
+  width: 44px;
+  height: 44px;
+  border-radius: 11px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 22px;
+  font-size: 19px;
   font-weight: 700;
   background: var(--bg-tertiary);
   position: relative;
@@ -474,7 +476,7 @@ function onIconError(item: FrequentItem) {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 26px;
+  font-size: 22px;
   /* P0-#Y#FIX#FREQ#EMOJI：emoji 不能用 background-clip:text
    * 之前：linear-gradient + -webkit-text-fill-color:transparent → emoji 透明变乱码
    * 现在：emoji 直接显示（用字体 emoji 颜色） + 普通文字（首字母）才用渐变
