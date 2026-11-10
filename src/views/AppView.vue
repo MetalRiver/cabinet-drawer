@@ -10,6 +10,8 @@ import { useSoftwareStore } from "../stores/software";
 import { useRouter } from "vue-router";
 import { type ScannedApp, relinkApp, openAppLocation, pickPath, getAppEdition, readIconAsDataUrl, restoreFromTrash, perfProbeEnabled, perfProbeReport } from "../api";
 import ConfirmModal from "../components/ConfirmModal.vue";
+import { refetchAppIcon } from "../api";
+import { isIconIgnored, ignoreIcon, clearIconIgnore } from "../lib/icon-ignore";
 
 // P0-#Y#FIX#ICON#FOLDER：folder/url/document 没真实图标时显示内置 SVG（Windows 风格）
 // 之前：emoji 📁 / 🔗 / 📄（不真实，看起来像字符而不是图标）
@@ -320,7 +322,7 @@ async function reextractIcons() {
       n > 0 ? `已重新抽取 ${n} 个图标` : "图标已是最新"
     );
   } catch (e) {
-    appStore.showClipToast("info", "重抽失败：" + String(e));
+    appStore.showClipToast("warning", "重抽失败：" + String(e));
   } finally {
     reextractingIcons.value = false;
   }
@@ -1490,6 +1492,38 @@ async function relinkMissing(item: any) {
   }
 }
 
+// ===== R5：图标三态治理——单卡重试 / 用户忽略 =====
+const retryingIconIds = ref<Set<number>>(new Set());
+async function retryIcon(item: { id: number; name: string; app_type?: string }) {
+  if ((item.app_type || "app") === "url") {
+    appStore.showClipToast("info", "网址类记录没有可提取的应用图标");
+    return;
+  }
+  if (retryingIconIds.value.has(item.id)) return;
+  retryingIconIds.value = new Set([...retryingIconIds.value, item.id]);
+  try {
+    const png = await refetchAppIcon(item.id);
+    if (png) {
+      clearIconIgnore(item.id);
+      appStore.showClipToast("success", `已重新提取「${item.name}」的图标`);
+      await softwareStore.loadItems();
+    } else {
+      appStore.showClipToast("warning", `「${item.name}」的图标提取失败：程序路径可能无效`);
+    }
+  } catch (e) {
+    appStore.showClipToast("warning", "重试失败：" + String(e));
+  } finally {
+    const next = new Set(retryingIconIds.value);
+    next.delete(item.id);
+    retryingIconIds.value = next;
+  }
+}
+
+function ignoreIconState(item: { id: number; icon_path?: string | null }) {
+  ignoreIcon(item.id, item.icon_path ?? null);
+  appStore.showClipToast("info", "已忽略该图标问题（重新提取成功后自动恢复）");
+}
+
 
 // G7-3：启动中的卡片（即时可见反馈 + 同卡防重入 + 成功后 2s 冷却）。
 // 用户实测（G7-3）：点击→toast 间隔 100-290ms 且期间卡片零反馈，目标软件窗口出现更慢，
@@ -1840,6 +1874,23 @@ async function confirmDeleteApp(id: number | null) {
           >
             <span class="ctx-menu-emoji">📂</span>
             <span>打开所在位置</span>
+          </button>
+          <!-- R5：图标三态治理入口 -->
+          <button
+            v-if="ctxMenu.item && (ctxMenu.item.app_type || 'app') !== 'url'"
+            class="ctx-menu-item tap"
+            @click="(closeContextMenu(), retryIcon(ctxMenu.item))"
+          >
+            <span class="ctx-menu-emoji">🔄</span>
+            <span>重试提取图标</span>
+          </button>
+          <button
+            v-if="ctxMenu.item && ctxMenu.item.icon_path && iconAssetFailed(ctxMenu.item.id) && !isIconIgnored(ctxMenu.item.id, ctxMenu.item.icon_path)"
+            class="ctx-menu-item tap"
+            @click="(closeContextMenu(), ignoreIconState(ctxMenu.item))"
+          >
+            <span class="ctx-menu-emoji">🙈</span>
+            <span>忽略此图标问题</span>
           </button>
           <button class="ctx-menu-item tap" @click="(closeContextMenu(), startEdit(ctxMenu.item))">
             <span class="ctx-menu-emoji">✏️</span>

@@ -21,7 +21,7 @@ export const useAppStore = defineStore("app", () => {
   const clipboardCountdown = ref(0); // 剪贴板倒计时（秒），0=未触发
   // 修复 P1-#16：恢复短语不再放到全局 store（之前 DevTools 可读、关掉 LockScreen 不清），
   // 改为 LockScreen 组件内部 ref，组件 unmount 时自动 GC。
-  const clipToast = ref<{ type: "success" | "info"; text: string } | null>(null);
+  const clipToast = ref<{ type: "success" | "info" | "warning"; text: string } | null>(null);
   // P0-#T：回收站计数（全局共享，SearchBar 徽章用）
   const trashCount = ref(0);
 
@@ -81,7 +81,7 @@ export const useAppStore = defineStore("app", () => {
     isFirstRun.value = v;
   }
 
-  function showClipToast(type: "success" | "info", text: string, durationMs = 2200) {
+  function showClipToast(type: "success" | "info" | "warning", text: string, durationMs = 2200) {
     clipToast.value = { type, text };
     setTimeout(() => {
       clipToast.value = null;

@@ -322,6 +322,8 @@ export const fillMissingIcons = () => invoke<number>("fill_missing_icons");
 
 /** P0-#Y#FIX#ICON#REEXTRACT：用户反馈"图标不对"时强制清空 + 重新抽图 */
 export const forceReextractIcons = () => invoke<number>("force_reextract_icons");
+// R5：单条图标重取（只处理指定记录；Some=成功回写路径，None=提取失败如实返回）
+export const refetchAppIcon = (id: number) => invoke<string | null>("refetch_app_icon", { id });
 
 /** P0-#Y#FIX#ICON#RESTART：重启 app（让 webview 加载新代码） */
 export const restartApp = () => invoke<void>("restart_app");

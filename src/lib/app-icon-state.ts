@@ -19,6 +19,7 @@
 import { ref } from "vue";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { getAppIconDataUrl, fillMissingIcons } from "../api";
+import { isIconIgnored } from "./icon-ignore";
 
 interface IconFailState {
   /** 当前 icon_path（路径变化检测——路径变了旧状态即作废） */
@@ -140,6 +141,8 @@ function scheduleRecoveryOnce(id: number, path: string): void {
       const cur = failures.value[id];
       // 重试前校验：仍处于同一失败态（未被路径变化/手动刷新处理过）
       if (!cur || cur.path !== path || !cur.recoveryPending) return;
+      // R5：用户忽略态 → 自动重试跳过（手动重试不受限）
+      if (isIconIgnored(id, path)) return;
       failures.value = { ...failures.value, [id]: { ...cur, recoveryPending: false, recoveryDone: true } };
       try {
         await fillMissingIcons();

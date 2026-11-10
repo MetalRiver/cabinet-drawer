@@ -2052,6 +2052,51 @@ pub fn force_reextract_icons(state: State<AppState>) -> Result<usize, String> {
 }
 
 // ============================================================
+// R5（0.4.7）：单条图标重取——只处理指定记录，不动其他软件图标
+// 语义：icon_path 置空（数据级）→ 按入口路径重新提取 → 成功回写 / 失败返回 None
+// 不可用场景（程序路径无效等）返回 None，前端据此给出如实提示
+// ============================================================
+#[tauri::command]
+pub fn refetch_app_icon(state: State<AppState>, id: i64) -> Result<Option<String>, String> {
+    // [data-gate:shared] 统一数据操作门
+    let _data_gate = state.data_read()?;
+    let app_path: String = {
+        let db = state.db.lock().unwrap();
+        let conn = db.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT path FROM apps WHERE id = ?1 AND deleted_at IS NULL",
+            rusqlite::params![id],
+            |r| r.get::<_, String>(0),
+        )
+        .map_err(|e| format!("记录不存在或已删除: {}", e))?
+    };
+    if app_path.is_empty() {
+        return Ok(None); // url 等无实体路径的记录，没有可提取对象
+    }
+    // 置空 icon_path（失败态落库，重试中不残留旧路径）
+    {
+        let db = state.db.lock().unwrap();
+        db.update_app_icon(id, "").map_err(|e| e.to_string())?;
+    }
+    #[cfg(windows)]
+    {
+        let extracted = win_icon::extract_batch_to_cache(&[app_path.clone()]);
+        if let Some(png) = extracted.iter().find(|(p, _)| *p == app_path).map(|(_, png)| png) {
+            let pngs = png.to_string_lossy().to_string();
+            {
+                let db = state.db.lock().unwrap();
+                db.update_app_icon(id, &pngs).map_err(|e| e.to_string())?;
+            }
+            return Ok(Some(pngs));
+        }
+        return Ok(None); // 提取失败（路径无效等）——如实返回，不假装成功
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(None)
+    }
+}
+// ============================================================
 // 🛡️ 9. 重启 App（让新代码生效）
 // ============================================================
 #[tauri::command]

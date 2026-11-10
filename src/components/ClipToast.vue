@@ -29,7 +29,7 @@ const widgetStore = useWidgetStore();
           </div>
           <!-- 普通提示 -->
           <div v-else-if="appStore.clipToast" :key="appStore.clipToast.text" class="clip-toast">
-            <div class="clip-icon">{{ appStore.clipToast.type === "success" ? "✓" : "ℹ" }}</div>
+            <div class="clip-icon" :class="appStore.clipToast.type">{{ appStore.clipToast.type === "success" ? "✓" : appStore.clipToast.type === "warning" ? "⚠" : "ℹ" }}</div>
             <div class="clip-info">
               <div class="clip-title">{{ appStore.clipToast.text }}</div>
             </div>
