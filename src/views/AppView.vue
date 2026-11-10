@@ -1771,8 +1771,8 @@ async function confirmDeleteApp(id: number | null) {
           :title="`${missingIconCount} 个软件图标缺失，点击重抽`"
           @click="reextractIcons"
         >
-          <span v-if="!reextractingIcons">🎨 重抽 ({{ missingIconCount }})</span>
-          <span v-else>抽图中…</span>
+          <template v-if="!reextractingIcons">🎨 <span>重抽 ({{ missingIconCount }})</span></template>
+          <template v-else><span>抽图中…</span></template>
         </button>
         <!-- 任务 A：健康检查常驻入口（正常=健康态，异常=失效数） -->
         <button
