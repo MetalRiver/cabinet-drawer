@@ -13,7 +13,7 @@ import {
 } from "../api";
 import type { PasswordMeta } from "../api";
 import { useClipboardCountdown } from "../composables/useClipboardCountdown";
-import ConfirmInline from "../components/ConfirmInline.vue";
+import ConfirmModal from "../components/ConfirmModal.vue";
 
 const appStore = useAppStore();
 const widgetStore = useWidgetStore();
@@ -849,8 +849,15 @@ function fmtTime(ts: number) {
 
             <!-- 删除确认 -->
             <div v-else-if="getRowState(item.id).mode === 'deleting'" class="pwd-deleting-body">
-              <ConfirmInline
-                :title="`确定删除「${item.title}」？`"
+              <ConfirmModal
+                :open="getRowState(item.id).mode === 'deleting'"
+                icon="🔑"
+                :title="`删除「${item.title}」？`"
+                subtitle="密码记录"
+                consequence="该密码记录将从列表中移除。"
+                recovery="可在回收站恢复"
+                tone="warn"
+                confirm-text="移入回收站"
                 :loading="deletingId === item.id"
                 @cancel="cancelDelete(item.id)"
                 @confirm="confirmDelete(item.id)"

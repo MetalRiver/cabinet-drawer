@@ -18,7 +18,7 @@ import {
 } from "../../../api";
 import { useAppStore } from "../../../stores/app";
 import { usePasswordStore } from "../../../stores/passwords";
-import ConfirmInline from "../../../components/ConfirmInline.vue";
+import ConfirmModal from "../../../components/ConfirmModal.vue";
 import SettingsCard from "../../../components/settings/SettingsCard.vue";
 import StatusLine from "../../../components/settings/StatusLine.vue";
 
@@ -329,10 +329,15 @@ watch(
           {{ pwChanging ? (isV2Security ? "保存中…" : "重加密中…") : "🔐 修改主密码" }}
         </button>
       </div>
-      <ConfirmInline
-        v-if="pwChangeConfirmOpen"
-        title="修改主密码将重新加密所有密码和恢复短语（约 1-3 秒），确定继续吗？"
+      <ConfirmModal
+        :open="pwChangeConfirmOpen"
+        icon="🔐"
+        title="修改主密码？"
+        consequence="将重新加密所有密码和恢复短语（约 1-3 秒）。"
+        recovery="安全配置变更 · 加密流程不变，可再次修改"
+        tone="warn"
         confirm-text="确认重加密"
+        :loading="pwChanging"
         @cancel="pwChangeConfirmOpen = false"
         @confirm="onChangePassword"
       />
@@ -442,18 +447,24 @@ watch(
           data-interactive
         >🗑️ 清空，改回跟随主密码</button>
       </div>
-      <ConfirmInline
-        v-if="pw2ndConfirm === 'set'"
-        :title="pw2ndEnabled
-          ? '将修改独立二次验证密码（≠主密码），确定继续吗？'
-          : '即将启用独立二次验证密码：启用后，查看/复制任何密码需再输它（主密码无效），且它不能与主密码相同。确定继续吗？'"
+      <ConfirmModal
+        :open="pw2ndConfirm === 'set'"
+        icon="🛡️"
+        :title="pw2ndEnabled ? '修改独立二次验证密码？' : '启用独立二次验证密码？'"
+        consequence="启用/修改后，查看/复制任何密码需再输它（主密码无效），且它不能与主密码相同。"
+        recovery="安全配置变更 · 可随时清空改回跟随主密码"
+        tone="warn"
         confirm-text="确认"
         @cancel="pw2ndConfirm = ''"
         @confirm="onSetPw2nd"
       />
-      <ConfirmInline
-        v-if="pw2ndConfirm === 'clear'"
-        title="即将清空独立二次验证密码，改回「跟随主密码」。确定继续吗？"
+      <ConfirmModal
+        :open="pw2ndConfirm === 'clear'"
+        icon="🛡️"
+        title="清空独立二次验证密码？"
+        consequence="清空后改回「跟随主密码」。"
+        recovery="安全配置变更 · 可再次启用独立密码"
+        tone="warn"
         confirm-text="确认清空"
         @cancel="pw2ndConfirm = ''"
         @confirm="onClearPw2nd"
@@ -481,10 +492,16 @@ watch(
           {{ rescuePw.busy ? "救援中…" : "🚨 立刻救回我的密码" }}
         </button>
       </div>
-      <ConfirmInline
-        v-if="rescueConfirmOpen"
-        title="将用「当初加密时用的主密码」尝试解密所有密码，并用当前主密钥重新加密写回。确定继续吗？"
+      <ConfirmModal
+        :open="rescueConfirmOpen"
+        icon="🚨"
+        title="开始紧急救援？"
+        subtitle="使用「当初加密时用的主密码」"
+        consequence="尝试解密所有密码，并用当前主密钥重新加密写回。"
+        recovery="结果将逐条报告（成功 / 仍失败）"
+        tone="warn"
         confirm-text="开始救援"
+        :loading="rescuePw.busy"
         @cancel="rescueConfirmOpen = false"
         @confirm="onRescuePasswords"
       />

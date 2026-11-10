@@ -30,7 +30,7 @@ import {
   type ExportResult,
   type RetainedSourceInfo,
 } from "../../../api";
-import ConfirmInline from "../../../components/ConfirmInline.vue";
+import ConfirmModal from "../../../components/ConfirmModal.vue";
 import SettingsCard from "../../../components/settings/SettingsCard.vue";
 import SettingsRow from "../../../components/settings/SettingsRow.vue";
 import StatusLine from "../../../components/settings/StatusLine.vue";
@@ -601,12 +601,15 @@ watch(
             <button class="s-btn-mini tap" data-interactive @click="openRetained(r.op_id)">📂 打开</button>
             <button class="s-btn-mini tap" data-interactive @click="removeRetained(r.op_id)">🗑️ 删除副本</button>
           </div>
-          <ConfirmInline
-            v-else
-            :title="deleteStage === 1
-              ? '删除后将无法再通过这个旧数据副本恢复迁移前状态。确认删除？'
-              : '再次确认：这个操作不可撤销，删除旧数据副本吗？'"
+          <ConfirmModal
+            :open="pendingDeleteOp === r.op_id"
+            icon="🗂️"
+            title="删除迁移旧数据副本？"
+            :subtitle="deleteStage === 1 ? '删除后将无法再通过这个旧数据副本恢复迁移前状态。' : '再次确认：这个操作不可撤销。'"
+            consequence="旧数据副本删除后不可恢复。请确认迁移已完成且备份已保留。"
+            tone="danger"
             confirm-text="删除旧数据副本"
+            require-text="删除"
             @cancel="cancelDelete"
             @confirm="confirmDelete(r.op_id)"
           />
@@ -628,10 +631,15 @@ watch(
         </div>
         <button class="s-btn-secondary s-btn-warn" data-interactive @click="onClearTrash">清空</button>
       </div>
-      <ConfirmInline
-        v-if="clearTrashConfirmOpen"
-        title="确定要立即清空回收站吗？所有已删除项将被永久删除，不可恢复。"
+      <ConfirmModal
+        :open="clearTrashConfirmOpen"
+        icon="🗑️"
+        title="立即清空回收站？"
+        subtitle="所有已删除项（软件收录 / 密码 / 命令 / 便签）"
+        consequence="全部永久删除，不可恢复。"
+        tone="danger"
         confirm-text="立即清空"
+        require-text="清空"
         :loading="trashActionBusy"
         @cancel="clearTrashConfirmOpen = false"
         @confirm="doClearTrash"
@@ -680,9 +688,13 @@ watch(
             {{ resetBusy ? "重置中…（即将自动重启）" : resetReady ? "🔴 确认：重置所有数据（不可恢复）" : "☑️ 请先勾选并输入 4 个字" }}
           </button>
         </div>
-        <ConfirmInline
-          v-if="resetFinalConfirmOpen"
-          title="最后确认：真的要删除所有数据并重启吗？操作一旦执行不可恢复！"
+        <ConfirmModal
+          :open="resetFinalConfirmOpen"
+          icon="🔥"
+          title="删除所有数据并重启？"
+          subtitle="已完成勾选确认 + 四字输入两道前置门"
+          consequence="全部数据永久删除：密码 / 软件 / 命令 / 便签 / 回收站 / 图标缓存 / 全局设置 / 二次验证密码。"
+          tone="danger"
           confirm-text="确认重置所有数据"
           @cancel="resetFinalConfirmOpen = false"
           @confirm="onResetAllData"

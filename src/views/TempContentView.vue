@@ -6,7 +6,7 @@ import { useTempStore } from "../stores/temp";
 import { useSnippetsStore } from "../stores/snippets";
 import { TEMP_NEVER_EXPIRES_MS, isTempPermanent, type TempMeta } from "../api";
 import DarkSelect from "../components/DarkSelect.vue";
-import ConfirmInline from "../components/ConfirmInline.vue";
+import ConfirmModal from "../components/ConfirmModal.vue";
 
 const appStore = useAppStore();
 const widgetStore = useWidgetStore();
@@ -755,10 +755,14 @@ async function submitPromote() {
                 <button class="btn-secondary danger-text tap" data-interactive @click="forceCloseDetail">放弃修改</button>
               </div>
 
-              <ConfirmInline
-                v-if="detailDeleteConfirm"
-                title="确定删除这张便签？删除后可在回收站恢复。"
-                confirm-text="删除"
+              <ConfirmModal
+                :open="detailDeleteConfirm"
+                icon="⏳"
+                :title="`删除便签「${detailTarget?.title ?? ''}」？`"
+                consequence="该便签将从列表中移除。"
+                recovery="可在回收站恢复"
+                tone="warn"
+                confirm-text="移入回收站"
                 @cancel="detailDeleteConfirm = false"
                 @confirm="confirmDetailDelete"
               />

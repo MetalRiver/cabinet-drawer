@@ -2,7 +2,7 @@
 import { ref, onMounted, onUnmounted, watch, computed } from "vue";
 import { useAppStore } from "../stores/app";
 import { useSnippetsStore } from "../stores/snippets";
-import ConfirmInline from "../components/ConfirmInline.vue";
+import ConfirmModal from "../components/ConfirmModal.vue";
 import DarkSelect from "../components/DarkSelect.vue";
 
 const appStore = useAppStore();
@@ -173,6 +173,12 @@ async function copy(item: any) {
   }
 }
 
+const confirmingItem = computed(() =>
+  confirmingDeleteId.value === null
+    ? null
+    : snippetsStore.filteredItems.find((x) => x.id === confirmingDeleteId.value) ?? null
+);
+
 function askRemove(id: number) {
   confirmingDeleteId.value = id;
 }
@@ -260,24 +266,30 @@ async function confirmRemove(id: number) {
                 </div>
               </div>
             </div>
-            <div v-if="confirmingDeleteId !== item.id" class="item-actions">
+            <div class="item-actions">
               <span v-if="item.use_count > 0" class="item-flame" :title="`已使用 ${item.use_count} 次`">🔥 {{ item.use_count }}</span>
               <button class="action-btn" title="复制" @click="copy(item)">📋</button>
               <button class="action-btn" title="编辑" @click="openEdit(item)">✏️</button>
               <button class="action-btn" title="删除" @click="askRemove(item.id)">🗑️</button>
             </div>
-            <div v-else class="item-confirm-wrap">
-              <ConfirmInline
-                :title="`确定删除「${item.title}」？`"
-                :loading="deletingId === item.id"
-                @cancel="cancelRemove"
-                @confirm="confirmRemove(item.id)"
-              />
-            </div>
           </div>
         
 
         </TransitionGroup>
+    <!-- R2：删除确认统一中心模态 -->
+    <ConfirmModal
+      :open="confirmingItem !== null"
+      icon="📋"
+      :title="`删除「${confirmingItem?.title ?? ''}」？`"
+      :subtitle="confirmingItem ? `${(confirmingItem.content || '').split('\n').length} 行 · ${languageLabel(confirmingItem.language || 'text')}` : ''"
+      consequence="该命令行记录将从列表中移除。"
+      recovery="可在回收站恢复"
+      tone="warn"
+      confirm-text="移入回收站"
+      :loading="deletingId !== null"
+      @cancel="cancelRemove"
+      @confirm="confirmingItem && confirmRemove(confirmingItem.id)"
+    />
 
     <!-- 表单 -->
     <Transition name="modal">

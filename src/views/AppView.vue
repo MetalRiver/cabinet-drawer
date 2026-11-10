@@ -8,7 +8,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useAppStore } from "../stores/app";
 import { useSoftwareStore } from "../stores/software";
 import { type ScannedApp, relinkApp, openAppLocation, pickPath, getAppEdition, readIconAsDataUrl, restoreFromTrash, perfProbeEnabled, perfProbeReport } from "../api";
-import ConfirmInline from "../components/ConfirmInline.vue";
+import ConfirmModal from "../components/ConfirmModal.vue";
 import StatusInline from "../components/settings/StatusLine.vue";
 
 // P0-#Y#FIX#ICON#FOLDER：folder/url/document 没真实图标时显示内置 SVG（Windows 风格）
@@ -1888,9 +1888,15 @@ async function confirmDeleteApp(id: number | null) {
           </button>
           <span class="invalid-hint">只删除收录记录，不卸载任何 Windows 程序</span>
         </div>
-        <ConfirmInline
-          v-if="invalidBatchConfirm"
-          :title="`将把选中的 ${selectedInvalidIds.size} 条收录记录移入回收站（可恢复）。不卸载任何 Windows 程序。确定继续吗？`"
+        <!-- R2：批量移入回收站统一模态 -->
+        <ConfirmModal
+          :open="invalidBatchConfirm"
+          icon="🛡️"
+          :title="`将 ${selectedInvalidIds.size} 条收录记录移入回收站？`"
+          subtitle="来源：软件健康检查面板"
+          consequence="仅删除抽屉柜中的收录记录，不会卸载任何 Windows 程序。"
+          recovery="可在回收站恢复"
+          tone="warn"
           confirm-text="移入回收站"
           :loading="invalidBatchBusy"
           @cancel="invalidBatchConfirm = false"
@@ -1907,25 +1913,20 @@ async function confirmDeleteApp(id: number | null) {
          旧实现 hover 时 sidebar 宽度 42→178 动画，apps-main 每帧重排、全部卡片重算布局，
          大列表下滚轮/悬停明显卡顿；浮层方案让网格零重排 -->
     
-        <!-- P0-#Z：行内 confirm 浮条（软件区，浮在网格上方，全宽不挡卡片） -->
-        <Transition name="confirm-bar">
-          <div v-if="confirmingDeleteId !== null" class="app-confirm-bar">
-            <span class="confirm-bar-icon">⚠️</span>
-            <span class="confirm-bar-text">确定删除「{{ confirmingDeleteName }}」？</span>
-            <div class="confirm-bar-actions">
-              <button
-                class="confirm-btn cancel tap"
-                :disabled="deletingId !== null"
-                @click="cancelDeleteApp"
-              >取消</button>
-              <button
-                class="confirm-btn danger tap"
-                :disabled="deletingId !== null"
-                @click="confirmDeleteApp(confirmingDeleteId)"
-              >{{ deletingId !== null ? "删除中..." : "删除" }}</button>
-            </div>
-          </div>
-        </Transition>
+        <!-- R2：单条软件记录删除统一模态（替代顶部浮条） -->
+        <ConfirmModal
+          :open="confirmingDeleteId !== null"
+          icon="🚀"
+          :title="`删除「${confirmingDeleteName}」？`"
+          subtitle="抽屉柜收录记录"
+          consequence="仅删除抽屉柜中的收录记录，不会卸载任何 Windows 程序。"
+          recovery="可在回收站恢复"
+          tone="warn"
+          confirm-text="移入回收站"
+          :loading="deletingId !== null"
+          @cancel="cancelDeleteApp"
+          @confirm="confirmDeleteApp(confirmingDeleteId)"
+        />
 
         <!-- 加载中：骨架网格（不闪） -->
         <div v-if="showSkeleton" class="app-grid">
@@ -3044,79 +3045,7 @@ AppID：${a.target || a.path}`"
   transition: opacity 0.15s;
 }
 .app-cell:hover .app-actions { opacity: 1; }
-/* P0-#Z：软件区行内 confirm 浮条（view 级别，浮在网格上方不挡卡片） */
-.app-confirm-bar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 14px;
-  margin: 0 0 10px 0;
-  background: linear-gradient(135deg, rgba(255, 94, 126, 0.16) 0%, rgba(255, 78, 110, 0.1) 100%);
-  border: 1px solid rgba(255, 94, 126, 0.45);
-  border-radius: 12px;
-  box-shadow: 0 4px 16px rgba(255, 78, 110, 0.2), 0 0 0 1px rgba(0, 0, 0, 0.2);
-  font-size: 13px;
-  color: rgba(255, 255, 255, 0.95);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-}
-.confirm-bar-icon {
-  font-size: 16px;
-  line-height: 1;
-  flex-shrink: 0;
-}
-.confirm-bar-text {
-  flex: 1;
-  font-weight: 500;
-}
-.confirm-bar-actions {
-  display: flex;
-  gap: 6px;
-  flex-shrink: 0;
-}
-.app-confirm-bar .confirm-btn {
-  height: 28px;
-  padding: 0 14px;
-  border: none;
-  border-radius: 8px;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.15s var(--ease-smooth);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-.app-confirm-bar .confirm-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-.app-confirm-bar .confirm-btn.cancel {
-  background: rgba(255, 255, 255, 0.1);
-  color: rgba(255, 255, 255, 0.88);
-  border: 1px solid rgba(255, 255, 255, 0.16);
-}
-.app-confirm-bar .confirm-btn.cancel:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.18);
-}
-.app-confirm-bar .confirm-btn.danger {
-  background: linear-gradient(135deg, #ff5e7e 0%, #ff3b5c 100%);
-  color: #fff;
-  box-shadow: 0 2px 6px rgba(255, 59, 92, 0.4);
-}
-.app-confirm-bar .confirm-btn.danger:hover:not(:disabled) {
-  transform: translateY(-1px);
-  box-shadow: 0 4px 10px rgba(255, 59, 92, 0.55);
-}
-.confirm-bar-enter-active,
-.confirm-bar-leave-active {
-  transition: all 0.2s var(--ease-smooth);
-}
-.confirm-bar-enter-from,
-.confirm-bar-leave-to {
-  opacity: 0;
-  transform: translateY(-8px);
-}
+/* R2：行内 confirm 浮条已由 ConfirmModal 统一替代（模板/样式移除） */
 .app-cell-confirming {
   z-index: 100;
   background: rgba(255, 78, 110, 0.1) !important;
