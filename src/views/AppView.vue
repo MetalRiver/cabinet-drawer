@@ -7,9 +7,9 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useAppStore } from "../stores/app";
 import { useSoftwareStore } from "../stores/software";
+import { useRouter } from "vue-router";
 import { type ScannedApp, relinkApp, openAppLocation, pickPath, getAppEdition, readIconAsDataUrl, restoreFromTrash, perfProbeEnabled, perfProbeReport } from "../api";
 import ConfirmModal from "../components/ConfirmModal.vue";
-import StatusInline from "../components/settings/StatusLine.vue";
 
 // P0-#Y#FIX#ICON#FOLDER：folder/url/document 没真实图标时显示内置 SVG（Windows 风格）
 // 之前：emoji 📁 / 🔗 / 📄（不真实，看起来像字符而不是图标）
@@ -68,6 +68,7 @@ const DocumentIconSvg = () =>
 
 const appStore = useAppStore();
 const softwareStore = useSoftwareStore();
+const router = useRouter();
 
 // 扫描模态框
 const showScanModal = ref(false);
@@ -326,52 +327,12 @@ async function reextractIcons() {
 }
 
 // ===== v0.4.1 软件失效治理：集中列表 + 手动检查 + 批量清退 =====
-const showInvalidPanel = ref(false);
-const selectedInvalidIds = ref<Set<number>>(new Set());
-const invalidChecking = ref(false);
-const invalidBatchConfirm = ref(false);
-const invalidBatchBusy = ref(false);
-const invalidBatchResult = ref<{ moved: number; skipped: number; failed: number } | null>(null);
-const invalidPanelError = ref("");
 
 const isTestEdition = ref(false);
 void getAppEdition()
   .then((e) => (isTestEdition.value = e === "acceptance"))
   .catch(() => {});
 
-// 任务 A：验收测试数据播种 / 重置（仅便携测试版；后端同规则门禁）
-const seedingFixtures = ref(false);
-async function seedFixtures() {
-  if (seedingFixtures.value) return;
-  seedingFixtures.value = true;
-  try {
-    const r = await softwareStore.seedTestFixtures();
-    appStore.showClipToast(
-      "success",
-      `已播种 ${r.inserted} 条验收记录（清理上轮 ${r.cleared_previous} 条），失效面板已刷新`
-    );
-  } catch (e) {
-    appStore.showClipToast("info", "播种失败：" + String(e));
-  } finally {
-    seedingFixtures.value = false;
-  }
-}
-const clearingFixtures = ref(false);
-async function resetFixtures() {
-  if (clearingFixtures.value) return;
-  clearingFixtures.value = true;
-  try {
-    const n = await softwareStore.clearTestFixtures();
-    appStore.showClipToast(
-      "success",
-      n > 0 ? `已重置：${n} 条测试记录移入回收站（可恢复）` : "没有需要重置的测试记录"
-    );
-  } catch (e) {
-    appStore.showClipToast("info", "重置失败：" + String(e));
-  } finally {
-    clearingFixtures.value = false;
-  }
-}
 
 const KIND_LABELS: Record<string, string> = {
   fixed_missing: "固定盘缺失 · 可清退",
@@ -379,118 +340,6 @@ const KIND_LABELS: Record<string, string> = {
   network_offline: "网络位置离线（保护）",
   uncertain: "状态不确定（保护）",
 };
-
-// ===== U2：失效治理——用户可读的检查界面 =====
-const invalidReasons = ref<Set<number>>(new Set());
-function toggleInvalidReason(id: number) {
-  const next = new Set(invalidReasons.value);
-  if (next.has(id)) next.delete(id);
-  else next.add(id);
-  invalidReasons.value = next;
-}
-const invalidFixedCount = computed(
-  () => softwareStore.invalidItems.filter((i) => i.kind === "fixed_missing").length
-);
-const invalidProtectedCount = computed(
-  () => softwareStore.invalidItems.length - invalidFixedCount.value
-);
-const invalidSummary = computed(() => {
-  const n = softwareStore.invalidItems.length;
-  if (n === 0) return "未发现需要处理的记录";
-  return `真实缺失 ${invalidFixedCount.value} 条 · 无法确认 ${invalidProtectedCount.value} 条（受保护，不可清退）`;
-});
-function invalidIssue(it: { kind: string }): string {
-  switch (it.kind) {
-    case "fixed_missing":
-      return "程序文件已不存在，点击无法启动";
-    case "network_offline":
-      return "网络位置暂时连不上";
-    case "removable_offline":
-      return "移动盘 / 光盘当前不在位";
-    default:
-      return "无法确认这个入口当前是否可用";
-  }
-}
-function invalidAdvice(it: { kind: string }): string {
-  switch (it.kind) {
-    case "fixed_missing":
-      return "建议：重新关联程序；确认不用了再移入回收站（可恢复）";
-    case "network_offline":
-      return "建议：连上网络后点「重新检查」";
-    case "removable_offline":
-      return "建议：接回磁盘后点「重新检查」";
-    default:
-      return "建议：先重新关联，确认后再处理；不推荐直接清退";
-  }
-}
-async function relinkInvalid(item: unknown) {
-  await relinkMissing(item);
-  await softwareStore.loadInvalidApps();
-}
-function goTrashFromPanel() {
-  showInvalidPanel.value = false;
-  window.dispatchEvent(new CustomEvent("open-trash"));
-}
-
-function toggleInvalidPanel() {
-  showInvalidPanel.value = !showInvalidPanel.value;
-  invalidBatchResult.value = null;
-  invalidPanelError.value = "";
-  if (showInvalidPanel.value) {
-    void softwareStore.loadInvalidApps();
-  } else {
-    selectedInvalidIds.value = new Set();
-  }
-}
-
-/** 手动重新检查：先自动重定位（.lnk 目标/常见目录按名），再刷新最新状态 */
-async function runInvalidCheck() {
-  if (invalidChecking.value) return;
-  invalidChecking.value = true;
-  invalidPanelError.value = "";
-  try {
-    const fixed = await softwareStore.runHealthCheck();
-    appStore.showClipToast(
-      "success",
-      fixed > 0 ? `自动重定位 ${fixed} 项，列表已更新` : "检查完成：没有可自动重定位的条目"
-    );
-  } catch (e) {
-    invalidPanelError.value = String(e);
-  } finally {
-    invalidChecking.value = false;
-  }
-}
-
-function toggleSelectInvalid(id: number) {
-  const next = new Set(selectedInvalidIds.value);
-  if (next.has(id)) next.delete(id);
-  else next.add(id);
-  selectedInvalidIds.value = next;
-}
-
-function selectAllClearable() {
-  const next = new Set<number>();
-  for (const it of softwareStore.clearableInvalid) next.add(it.id);
-  selectedInvalidIds.value = next;
-}
-
-async function confirmBatchTrash() {
-  if (invalidBatchBusy.value) return;
-  const ids = Array.from(selectedInvalidIds.value);
-  if (ids.length === 0) return;
-  invalidBatchBusy.value = true;
-  invalidPanelError.value = "";
-  try {
-    const r = await softwareStore.moveAppsToTrash(ids);
-    invalidBatchResult.value = { moved: r.moved, skipped: r.skipped, failed: r.errors.length };
-    selectedInvalidIds.value = new Set();
-    appStore.refreshTrashCount();
-  } catch (e) {
-    invalidPanelError.value = String(e);
-  } finally {
-    invalidBatchBusy.value = false;
-  }
-}
 
 // P0-#ICON#DEBUG#OVERLAY：诊断浮层（按 Alt+Shift+D 临时切换）
 // 原因：用户报"图标变紫色羽毛"，但 cache 文件 + db 路径都对，需要看实际渲染状态
@@ -554,6 +403,8 @@ onMounted(() => {
   //   强制刷新仍走 loadItems（语义不变）。首次加载失败时 hasLoaded=false → 下次仍会真正加载。
   void softwareStore.loadCategories();
   void softwareStore.loadItemsIfNeeded();
+  // R4：header 失效徽标数据（独立健康页同源）
+  void softwareStore.loadInvalidApps();
   // 关键修复：自动补齐 db 里所有 icon_path 为空的 apps 图标
   // 用户不需要每次点"扫描"才能看到图标 —— 首次进软件区时后台抽图存 db
   // 抽完刷新列表，图标会显示出来
@@ -1639,13 +1490,6 @@ async function relinkMissing(item: any) {
   }
 }
 
-async function openLocation(item: any) {
-  try {
-    await openAppLocation(item.id);
-  } catch (e) {
-    appStore.showClipToast("info", String(e));
-  }
-}
 
 // G7-3：启动中的卡片（即时可见反馈 + 同卡防重入 + 成功后 2s 冷却）。
 // 用户实测（G7-3）：点击→toast 间隔 100-290ms 且期间卡片零反馈，目标软件窗口出现更慢，
@@ -1781,7 +1625,7 @@ async function confirmDeleteApp(id: number | null) {
           :title="softwareStore.invalidCount > 0
             ? `${softwareStore.invalidCount} 条失效记录，点击集中治理`
             : '软件健康检查：当前全部正常，点击查看'"
-          @click="toggleInvalidPanel"
+          @click="router.push('/health')"
         >
           <template v-if="softwareStore.invalidCount > 0">⚠️ 失效 ({{ softwareStore.invalidCount }})</template>
           <template v-else>🩺 健康</template>
@@ -1793,127 +1637,7 @@ async function confirmDeleteApp(id: number | null) {
       </div>
     </div>
 
-    <!-- U2：软件检查（用户可读；技术原因折叠在「查看原因」） -->
-    <div v-if="showInvalidPanel" class="invalid-panel">
-      <div class="invalid-panel-head">
-        <div class="invalid-head-text">
-          <b>{{ softwareStore.invalidItems.length ? `${softwareStore.invalidItems.length} 条记录需要处理` : "软件检查" }}</b>
-          <span class="invalid-sub">{{ invalidSummary }}</span>
-        </div>
-        <div class="invalid-head-actions">
-          <button class="s-btn-mini tap" :disabled="invalidChecking" @click="runInvalidCheck" data-interactive>
-            {{ invalidChecking ? "检查中…" : "🔄 重新检查" }}
-          </button>
-          <button class="s-btn-mini tap" @click="toggleInvalidPanel" data-interactive>收起</button>
-        </div>
-      </div>
-
-      <div v-if="isTestEdition" class="invalid-toolbar" style="margin-top: 0;">
-        <button class="s-btn-mini tap" :disabled="seedingFixtures" data-interactive @click="seedFixtures">
-          {{ seedingFixtures ? "播种中…" : "🧪 播种验收测试数据" }}
-        </button>
-        <button class="s-btn-mini tap" :disabled="clearingFixtures" data-interactive @click="resetFixtures">
-          {{ clearingFixtures ? "重置中…" : "♻️ 重置测试数据" }}
-        </button>
-        <span class="invalid-hint">仅作用于本测试版数据目录（[TEST] 前缀记录，软删除可恢复）</span>
-      </div>
-
-      <div v-if="softwareStore.invalidLoading" class="invalid-empty">检查中…</div>
-      <div v-else-if="softwareStore.invalidItems.length === 0" class="invalid-empty">
-        ✅ 全部正常：没有发现失效或需要确认的软件
-      </div>
-      <template v-else>
-        <div class="inv-legend">
-          <span class="inv-tag missing">真实缺失 {{ invalidFixedCount }}</span>
-          <span class="inv-tag protected">无法确认 {{ invalidProtectedCount }} · 已保护</span>
-        </div>
-        <div class="invalid-list">
-          <div
-            v-for="it in softwareStore.invalidItems"
-            :key="it.id"
-            class="inv-row"
-            :class="{ protected: it.kind !== 'fixed_missing' }"
-          >
-            <label
-              v-if="it.kind === 'fixed_missing'"
-              class="invalid-check"
-              title="勾选后可批量移入回收站"
-            >
-              <input
-                type="checkbox"
-                :checked="selectedInvalidIds.has(it.id)"
-                @change="toggleSelectInvalid(it.id)"
-              />
-            </label>
-            <span v-else class="invalid-shield" title="受保护：不提供清退操作">🛡</span>
-            <div class="inv-main">
-              <div class="inv-name">{{ it.name }}</div>
-              <div class="inv-issue">{{ invalidIssue(it) }}</div>
-              <div class="inv-advice">{{ invalidAdvice(it) }}</div>
-              <button
-                class="inv-reason-btn tap"
-                data-interactive
-                @click.stop="toggleInvalidReason(it.id)"
-              >{{ invalidReasons.has(it.id) ? "收起原因" : "查看原因" }}</button>
-              <div v-if="invalidReasons.has(it.id)" class="inv-details">
-                <div v-if="it.path">路径：<code>{{ it.path }}</code></div>
-                <div v-if="it.lnk_target">目标：<code>{{ it.lnk_target }}</code></div>
-                <div>检查结果：{{ KIND_LABELS[it.kind] || it.kind }}</div>
-              </div>
-            </div>
-            <div class="inv-actions">
-              <button class="s-btn-mini tap" data-interactive @click.stop="relinkInvalid(it)">重新关联</button>
-              <button
-                v-if="(it.app_type || 'app') !== 'url'"
-                class="s-btn-mini tap"
-                data-interactive
-                @click.stop="openLocation(it)"
-              >打开位置</button>
-            </div>
-          </div>
-        </div>
-
-        <div class="inv-foot">
-          <button class="s-btn-mini tap" data-interactive @click="selectAllClearable">
-            全选可清退（{{ softwareStore.clearableInvalid.length }}）
-          </button>
-          <button
-            class="s-btn-mini s-btn-warn tap"
-            :disabled="selectedInvalidIds.size === 0 || invalidBatchBusy"
-            data-interactive
-            @click="invalidBatchConfirm = true"
-          >移入回收站（{{ selectedInvalidIds.size }}）</button>
-          <button class="s-btn-mini tap" data-interactive @click="goTrashFromPanel">
-            🗑️ 去回收站恢复
-          </button>
-          <span class="invalid-hint">只删除收录记录，不卸载任何 Windows 程序</span>
-        </div>
-        <!-- R2：批量移入回收站统一模态 -->
-        <ConfirmModal
-          :open="invalidBatchConfirm"
-          icon="🛡️"
-          :title="`将 ${selectedInvalidIds.size} 条收录记录移入回收站？`"
-          subtitle="来源：软件健康检查面板"
-          consequence="仅删除抽屉柜中的收录记录，不会卸载任何 Windows 程序。"
-          recovery="可在回收站恢复"
-          tone="warn"
-          confirm-text="移入回收站"
-          :loading="invalidBatchBusy"
-          @cancel="invalidBatchConfirm = false"
-          @confirm="confirmBatchTrash"
-        />
-        <StatusInline v-if="invalidBatchResult" tone="ok" :text="`✓ 已移入回收站 ${invalidBatchResult.moved} 条 ｜ 跳过（已在回收站）${invalidBatchResult.skipped} 条${invalidBatchResult.failed ? ` ｜ 失败 ${invalidBatchResult.failed} 条` : ''}`" />
-        <StatusInline v-if="invalidPanelError" tone="err" :text="invalidPanelError" />
-      </template>
-    </div>
-
-    <!-- P0-#Y：类型筛选 chips 改为左侧可收缩 sidebar（默认仅图标列、hover 展开） -->
-    <!-- 主内容容器：左 sidebar + 右主区 -->
-    <!-- P0-#APPC#PER#OVERLAY：展开层改为浮在网格上方（absolute），不再挤压 apps-main ——
-         旧实现 hover 时 sidebar 宽度 42→178 动画，apps-main 每帧重排、全部卡片重算布局，
-         大列表下滚轮/悬停明显卡顿；浮层方案让网格零重排 -->
-    
-        <!-- R2：单条软件记录删除统一模态（替代顶部浮条） -->
+    <!-- R2：单条软件记录删除统一模态（替代顶部浮条） -->
         <ConfirmModal
           :open="confirmingDeleteId !== null"
           icon="🚀"
@@ -4287,90 +4011,5 @@ AppID：${a.target || a.path}`"
   border-radius: 999px;
 }
 
-/* ===== v0.4.1 失效治理面板 ===== */
-.invalid-panel {
-  margin: 0 0 10px;
-  padding: 12px;
-  background: var(--bg-primary);
-  border: 1px solid rgba(245, 158, 11, 0.45);
-  border-radius: 12px;
-}
-.invalid-panel-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 10px;
-  flex-wrap: wrap;
-  margin-bottom: 10px;
-}
-.invalid-head-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
-.invalid-panel-head b { font-size: 13.5px; }
-.invalid-sub { font-size: 11.5px; color: var(--text-muted); line-height: 1.5; }
-.invalid-head-actions { display: flex; gap: 6px; flex-shrink: 0; }
-.invalid-empty { font-size: 12.5px; color: var(--text-muted); padding: 12px 4px; }
-.invalid-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
-.invalid-hint { font-size: 11px; color: var(--text-muted); }
-.inv-legend { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0 4px; }
-.inv-tag {
-  font-size: 10.5px; font-weight: 600;
-  padding: 2px 8px; border-radius: 999px;
-  border: 1px solid var(--border);
-  color: var(--text-muted);
-  background: var(--bg-secondary);
-}
-.inv-tag.missing { color: #fb7185; border-color: rgba(244, 63, 94, 0.4); background: rgba(244, 63, 94, 0.1); }
-.inv-tag.protected { color: #fbbf24; border-color: rgba(245, 158, 11, 0.35); background: rgba(245, 158, 11, 0.08); }
-.invalid-list { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
-.inv-row {
-  display: flex; align-items: flex-start; gap: 10px;
-  padding: 10px;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-}
-.inv-row.protected { border-color: rgba(245, 158, 11, 0.25); }
-.invalid-check { padding-top: 2px; }
-.invalid-check input { width: 16px; height: 16px; accent-color: #f43f5e; cursor: pointer; }
-.invalid-shield { font-size: 14px; width: 16px; text-align: center; opacity: 0.8; padding-top: 1px; }
-.inv-main { flex: 1; min-width: 0; }
-.inv-name { font-size: 13px; font-weight: 600; color: var(--text-primary); }
-.inv-issue { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
-.inv-advice { font-size: 11.5px; color: var(--text-muted); margin-top: 3px; line-height: 1.5; }
-.inv-reason-btn {
-  margin-top: 4px;
-  padding: 0;
-  border: none;
-  background: transparent;
-  color: #7ea6ff;
-  font-size: 11.5px;
-  cursor: pointer;
-}
-.inv-reason-btn:hover { text-decoration: underline; }
-.inv-details {
-  margin-top: 6px;
-  padding: 8px 10px;
-  border-radius: 8px;
-  background: var(--bg-primary);
-  border: 1px solid var(--border);
-  font-size: 11px;
-  color: var(--text-muted);
-  line-height: 1.7;
-  word-break: break-all;
-}
-.inv-details code { font-family: Consolas, monospace; color: var(--text-secondary); }
-.inv-actions { display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; }
-.inv-foot {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-top: 10px;
-  padding-top: 10px;
-  border-top: 1px solid var(--border);
-}
-@media (max-width: 419px) {
-  .inv-row { flex-wrap: wrap; }
-  .inv-actions { flex-direction: row; width: 100%; }
-  .inv-actions .s-btn-mini { flex: 1; }
-}
+/* R4：健康检查面板已迁独立页 /health（HealthView），面板样式移除 */
 </style>
