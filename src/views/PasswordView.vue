@@ -1160,8 +1160,8 @@ function fmtTime(ts: number) {
   border: 1px solid rgba(255, 255, 255, 0.08);
 }
 .pwd-tile:hover {
-  transform: scale(1.02);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+  /* R6：hover 统一为背景/边框提亮（去缩放/阴影位移，与软件卡一致） */
+  background: rgba(255, 255, 255, 0.06);
   border-color: rgba(255, 255, 255, 0.18);
 }
 .pwd-tile:active {

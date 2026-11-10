@@ -64,6 +64,7 @@ const widgetStore = useWidgetStore();
   min-width: 280px;
 }
 
+.clip-icon.warning { color: #fbbf24; }
 .clip-icon {
   width: 36px;
   height: 36px;

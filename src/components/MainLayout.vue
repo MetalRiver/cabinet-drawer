@@ -651,9 +651,9 @@ onUnmounted(() => {
   transition: all 0.2s var(--ease-smooth);
 }
 .trash-btn-fixed:hover {
+  /* R6：hover 去缩放（背景/边框/阴影提亮即可） */
   background: var(--bg-secondary);
   border-color: var(--accent);
-  transform: scale(1.05);
   box-shadow: 0 4px 12px rgba(79, 124, 255, 0.25);
 }
 .trash-btn-fixed:active {
@@ -768,7 +768,7 @@ onUnmounted(() => {
   filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.4));
   transition: transform 0.2s var(--ease-spring);
 }
-.bottom-tab:hover .bottom-tab-icon { transform: translateY(-1px) scale(1.08); }
+.bottom-tab:hover .bottom-tab-icon { /* R6：hover 去缩放 */ }
 .bottom-tab.active .bottom-tab-icon { transform: scale(1.15); }
 
 /* P0-#Z#6：底部 tab 红点（便签 ≤24h 过期） */

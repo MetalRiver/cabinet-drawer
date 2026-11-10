@@ -182,7 +182,8 @@ input, select, button, textarea {
 
 /* 列表项交错进入 */
 .stagger-item {
-  animation: staggerIn 0.35s var(--ease-out) backwards;
+  /* R6：0.35→0.28（≤300ms 规范） */
+  animation: staggerIn 0.28s var(--ease-out) backwards;
 }
 @keyframes staggerIn {
   from { opacity: 0; transform: translateY(6px); }
@@ -208,8 +209,8 @@ input, select, button, textarea {
 }
 
 /* 滑入 - 抽屉用 */
-.slide-up-enter-active { animation: slideUp 0.32s var(--ease-out); }
-.slide-up-leave-active { animation: slideDown 0.22s var(--ease-smooth); }
+.slide-up-enter-active { animation: slideUp 0.28s var(--ease-out); }
+.slide-up-leave-active { animation: slideDown 0.2s var(--ease-smooth); }
 @keyframes slideUp {
   from { opacity: 0; transform: translateY(24px); }
   to   { opacity: 1; transform: translateY(0); }
@@ -324,7 +325,6 @@ input, select, button, textarea {
 }
 .btn-primary:hover {
   box-shadow: 0 4px 12px rgba(99, 102, 241, 0.4);
-  transform: translateY(-1px);
 }
 .btn-primary:active { transform: scale(0.97); }
 .btn-secondary {
@@ -484,7 +484,7 @@ input, select, button, textarea {
   color: white;
   box-shadow: 0 2px 8px rgba(79, 124, 255, 0.3);
 }
-.action-btn-primary:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(79, 124, 255, 0.45); }
+.action-btn-primary:hover { box-shadow: 0 4px 12px rgba(79, 124, 255, 0.45); }
 .action-btn-primary:active { transform: translateY(0) scale(0.95); }
 .action-btn-secondary {
   width: 28px;
@@ -507,7 +507,7 @@ input, select, button, textarea {
   color: white;
   box-shadow: 0 2px 8px rgba(79, 124, 255, 0.3);
 }
-.action-btn-text:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(79, 124, 255, 0.45); }
+.action-btn-text:hover { box-shadow: 0 4px 12px rgba(79, 124, 255, 0.45); }
 .action-btn-text.orange {
   background: linear-gradient(135deg, #ffb84d 0%, #ff8a5e 100%);
   box-shadow: 0 2px 8px rgba(255, 184, 77, 0.3);
@@ -531,7 +531,6 @@ input, select, button, textarea {
   background: rgba(168, 85, 247, 0.25);
   border-color: rgba(168, 85, 247, 0.7);
   box-shadow: 0 4px 12px rgba(168, 85, 247, 0.35);
-  transform: translateY(-1px);
 }
 .action-btn-warn:active:not(:disabled) { transform: translateY(0) scale(0.96); }
 .action-btn-warn:disabled { opacity: 0.6; cursor: not-allowed; }

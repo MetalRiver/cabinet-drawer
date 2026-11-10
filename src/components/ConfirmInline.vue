@@ -124,7 +124,7 @@ defineEmits<{
   box-shadow: 0 2px 6px rgba(255, 59, 92, 0.4);
 }
 .confirm-btn.danger:hover:not(:disabled) {
-  transform: translateY(-1px);
+  /* R6：hover 去位移 */
   box-shadow: 0 4px 10px rgba(255, 59, 92, 0.55);
 }
 
