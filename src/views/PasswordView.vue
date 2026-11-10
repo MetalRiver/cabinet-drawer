@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, reactive, nextTick } from "vue";
+import { ref, computed, onMounted, reactive, nextTick , onDeactivated } from "vue";
 import { useAppStore } from "../stores/app";
 import { useWidgetStore } from "../stores/widget";
 import { usePasswordStore } from "../stores/passwords";
@@ -382,6 +382,24 @@ async function updateRowStrength(id: number) {
   else { s.strengthLabel = "非常强"; s.strengthColor = "#4fc3f7"; }
 }
 
+// ===== R3：离开密码区自动收起（KeepAlive deactivated）=====
+// expanded/deleting 收起并关闭明文；editing 保留草稿不收起；重新进入后状态正确
+onDeactivated(() => {
+  for (const [, st] of Object.entries(rowStates)) {
+    if (st.mode === "expanded" || st.mode === "deleting") {
+      st.mode = "collapsed";
+      st.showPassword = false;
+    }
+  }
+});
+
+// ===== R3：详情背景双击收起（编辑态豁免）=====
+function onDetailDblClick(id: number) {
+  const s = getRowState(id);
+  if (s.mode === "editing") return;
+  if (s.mode === "expanded" || s.mode === "deleting") collapseRow(id);
+}
+
 // ===== 删除 =====
 function askDelete(id: number) {
   const s = getRowState(id);
@@ -714,7 +732,7 @@ function fmtTime(ts: number) {
           v-if="getRowState(item.id).mode !== 'collapsed'"
           class="pwd-detail-row"
         >
-          <div class="pwd-detail-card">
+          <div class="pwd-detail-card" @dblclick="onDetailDblClick(item.id)">
             <!-- 详情头部：图标 + 名称 + 关闭 -->
             <div class="pwd-detail-header">
               <div class="pwd-tile small" :class="`hue-${colorIndex(item.title)}`">
@@ -727,7 +745,7 @@ function fmtTime(ts: number) {
                   <span v-if="item.url" class="pwd-detail-url">· {{ shortUrl(item.url) }}</span>
                 </div>
               </div>
-              <button class="pwd-detail-close tap" title="收起" @click="collapseRow(item.id)">▾</button>
+              <button class="pwd-detail-close tap" title="收起" @click="collapseRow(item.id)" @dblclick.stop>▾</button>
             </div>
 
             <!-- 展开态：详情 + 操作 -->
@@ -747,6 +765,7 @@ function fmtTime(ts: number) {
                     class="mini-btn tap"
                     :disabled="getRowState(item.id).isLoading"
                     @click="openVerify('reveal', item.id)"
+                    @dblclick.stop
                   >
                     {{ getRowState(item.id).showPassword ? "🙈" : "👁️" }}
                   </button>
@@ -754,6 +773,7 @@ function fmtTime(ts: number) {
                     class="mini-btn tap"
                     :disabled="getRowState(item.id).isLoading"
                     @click="copyPasswordFromRow(item)"
+                    @dblclick.stop
                   >
                     📋
                   </button>
@@ -763,8 +783,8 @@ function fmtTime(ts: number) {
               <div v-if="item.url" class="detail-row">
                 <span class="detail-label">网址</span>
                 <div class="detail-value">
-                  <a class="link" :href="item.url" target="_blank" rel="noopener">{{ item.url }}</a>
-                  <button class="mini-btn tap" @click="copyUrl(item)">📋</button>
+                  <a class="link" :href="item.url" target="_blank" rel="noopener" @dblclick.prevent.stop>{{ item.url }}</a>
+                  <button class="mini-btn tap" @click="copyUrl(item)" @dblclick.stop>📋</button>
                 </div>
               </div>
 
@@ -778,14 +798,14 @@ function fmtTime(ts: number) {
               </div>
 
               <div class="row-actions">
-                <button class="action-btn tap" @click="enterEdit(item)">✏️ 编辑</button>
-                <button class="action-btn danger tap" @click="askDelete(item.id)">🗑️ 删除</button>
-                <button class="action-btn tap copy" @click="copyUsername(item)">👤 复制账号</button>
+                <button class="action-btn tap" @click="enterEdit(item)" @dblclick.stop>✏️ 编辑</button>
+                <button class="action-btn danger tap" @click="askDelete(item.id)" @dblclick.stop>🗑️ 删除</button>
+                <button class="action-btn tap copy" @click="copyUsername(item)" @dblclick.stop>👤 复制账号</button>
               </div>
             </div>
 
             <!-- 编辑态 -->
-            <div v-else-if="getRowState(item.id).mode === 'editing'" class="pwd-edit-body" @click.stop>
+            <div v-else-if="getRowState(item.id).mode === 'editing'" class="pwd-edit-body" @click.stop @dblclick.stop>
               <div class="edit-header">
                 <span>✏️ 编辑密码</span>
                 <button class="x-btn tap" @click="cancelEdit(item.id)">✕</button>
