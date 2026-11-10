@@ -324,12 +324,14 @@ async function onAbandon() {
   height: 100%;
   width: 100%;
   overflow-y: auto;
+  display: flex; /* R1：flex column + margin auto——高窗口垂直居中，超限自动回退滚动 */
+  flex-direction: column;
   background: linear-gradient(160deg, #0b1020 0%, #131a2e 100%);
   color: #e8ecf3;
   box-sizing: border-box;
 }
-.dr-topbar { height: 28px; width: 100%; }
-.dr-body { padding: 8px 22px 24px; }
+.dr-topbar { height: 28px; width: 100%; flex-shrink: 0; }
+.dr-body { padding: 8px 22px 24px; margin: auto 0; }
 .dr-title { margin: 0 0 8px; font-size: 17px; }
 .dr-sub { margin: 0 0 14px; font-size: 12px; line-height: 1.7; color: #9aa5bd; }
 .dr-notice { margin: 0 0 12px; font-size: 12px; color: #6fd0a0; }

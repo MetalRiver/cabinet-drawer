@@ -419,6 +419,7 @@ onBeforeUnmount(() => {
 .wizard-card {
   width: 100%;
   max-width: 560px;
+  margin: auto; /* R1：高窗口下垂直居中（内容超限时 margin 塌缩为 0，滚动不受影响） */
   padding: 32px 36px;
   background: var(--bg-glass);
   backdrop-filter: blur(30px) saturate(180%);

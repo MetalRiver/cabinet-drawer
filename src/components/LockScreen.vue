@@ -382,8 +382,8 @@ async function handleClose() {
 .lock-content {
   flex: 1;
   display: flex;
-  align-items: center;
-  justify-content: center;
+  align-items: safe center;    /* R1：溢出时回退为可滚动的 start，防卡片被裁出视口 */
+  justify-content: safe center;
   position: relative;
   min-height: 0;
 }
