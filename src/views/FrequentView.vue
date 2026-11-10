@@ -534,10 +534,10 @@ function onIconError(item: FrequentItem) {
   .grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
 }
 @media (min-width: 700px) {
-  .grid { grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 8px; }
+  .grid { grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; }
 }
 @media (min-width: 900px) {
-  .grid { grid-template-columns: repeat(10, minmax(0, 1fr)); gap: 10px; }
+  .grid { grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 10px; }
 }
 .cell {
   position: relative;

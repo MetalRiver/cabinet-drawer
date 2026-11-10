@@ -2855,7 +2855,7 @@ AppID：${a.target || a.path}`"
   .app-grid { grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 10px; }
 }
 @media (min-width: 1200px) {
-  .app-grid { grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 12px; }
+  .app-grid { grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 12px; }
 }
 .app-cell {
   position: relative;

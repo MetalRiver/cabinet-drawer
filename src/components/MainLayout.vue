@@ -706,7 +706,7 @@ onUnmounted(() => {
  */
 .bottom-tabs {
   display: flex;
-  height: 60px;
+  height: var(--nav-h);
   flex-shrink: 0;
   border-top: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(0, 0, 0, 0.28);
@@ -865,7 +865,7 @@ onUnmounted(() => {
   .titlebar-btn { width: 32px; height: 32px; font-size: 16px; }
   .logo { width: 22px; height: 22px; }
   .title { font-size: 16px; }
-  .bottom-tabs { height: 64px; padding: 0 8px; gap: 4px; }
+  .bottom-tabs { height: var(--nav-h); padding: 0 8px; gap: 4px; }
   .bottom-tab-icon { font-size: 22px; }
   .bottom-tab-label { font-size: 12px; }
 }
@@ -876,7 +876,7 @@ onUnmounted(() => {
   .titlebar { padding: 0 20px 0 28px; }
   .logo { font-size: 24px; }
   .title { font-size: 18px; }
-  .bottom-tabs { height: 68px; }
+  .bottom-tabs { height: var(--nav-h); }
 }
 
 .page-wrapper { min-height: 100%; }
