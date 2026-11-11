@@ -2053,46 +2053,54 @@ pub fn force_reextract_icons(state: State<AppState>) -> Result<usize, String> {
 
 // ============================================================
 // R5（0.4.7）：单条图标重取——只处理指定记录，不动其他软件图标
-// 语义：icon_path 置空（数据级）→ 按入口路径重新提取 → 成功回写 / 失败返回 None
-// 不可用场景（程序路径无效等）返回 None，前端据此给出如实提示
+// R5-G1 修订（0.4.7 验收轮）：失败零副作用——
+//   旧实现先置空 icon_path 再抽图，失败时原路径丢失（B 态跌落 A 态）；
+//   且 extract_batch_to_cache 缓存命中早退，对"图标不对/损坏"场景是空操作。
+//   现改为 win_icon::reextract_icon_to_cache：强制重抽 + 临时文件 + PNG 魔数校验
+//   + 原子替换；只有新图标成功落盘后才更新 DB，失败时原 icon_path 与原缓存文件
+//   均保持原样，返回 None 由前端如实提示。
 // ============================================================
 #[tauri::command]
 pub fn refetch_app_icon(state: State<AppState>, id: i64) -> Result<Option<String>, String> {
     // [data-gate:shared] 统一数据操作门
     let _data_gate = state.data_read()?;
-    let app_path: String = {
+    // 读取原始记录：入口路径 + 原始 icon_path（失败时用于保留原状态）
+    let (app_path, original_icon): (String, Option<String>) = {
         let db = state.db.lock().unwrap();
         let conn = db.conn.lock().unwrap();
         conn.query_row(
-            "SELECT path FROM apps WHERE id = ?1 AND deleted_at IS NULL",
+            "SELECT path, icon_path FROM apps WHERE id = ?1 AND deleted_at IS NULL",
             rusqlite::params![id],
-            |r| r.get::<_, String>(0),
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)),
         )
         .map_err(|e| format!("记录不存在或已删除: {}", e))?
     };
     if app_path.is_empty() {
         return Ok(None); // url 等无实体路径的记录，没有可提取对象
     }
-    // 置空 icon_path（失败态落库，重试中不残留旧路径）
-    {
-        let db = state.db.lock().unwrap();
-        db.update_app_icon(id, "").map_err(|e| e.to_string())?;
-    }
     #[cfg(windows)]
     {
-        let extracted = win_icon::extract_batch_to_cache(&[app_path.clone()]);
-        if let Some(png) = extracted.iter().find(|(p, _)| *p == app_path).map(|(_, png)| png) {
-            let pngs = png.to_string_lossy().to_string();
-            {
-                let db = state.db.lock().unwrap();
-                db.update_app_icon(id, &pngs).map_err(|e| e.to_string())?;
+        // 强制重抽：临时文件校验通过后原子替换；任何失败原 PNG/原 DB 值均不动
+        match win_icon::reextract_icon_to_cache(&app_path) {
+            Some(png) => {
+                let pngs = png.to_string_lossy().to_string();
+                {
+                    let db = state.db.lock().unwrap();
+                    db.update_app_icon(id, &pngs).map_err(|e| e.to_string())?;
+                }
+                return Ok(Some(pngs));
             }
-            return Ok(Some(pngs));
+            None => {
+                // R5-G1：失败零副作用——DB icon_path 保持 original_icon 原样，
+                // 不置空、不回写；原缓存文件未被破坏。前端据此如实提示。
+                let _ = original_icon;
+                return Ok(None);
+            }
         }
-        return Ok(None); // 提取失败（路径无效等）——如实返回，不假装成功
     }
     #[cfg(not(windows))]
     {
+        let _ = original_icon;
         Ok(None)
     }
 }
