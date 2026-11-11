@@ -2,7 +2,7 @@
 import { ref, onMounted, onUnmounted, onDeactivated, computed, h, nextTick, watch } from "vue";
 import { scheduleDeferred } from "../lib/defer-idle";
 import { launchCoolingDown, launchMarkAccepted, launchSuccessToast, launchFailureToast, nextLaunchSeq, isLatestLaunch } from "../lib/launch-feedback";
-import { assetUrl, assetFailed as iconAssetFailed, onAssetError as onIconAssetError, dropFallback as dropIconFallback } from "../lib/app-icon-state";
+import { assetUrl, assetFailed as iconAssetFailed, onAssetError as onIconAssetError, dropFallback as dropIconFallback, markIconRefreshed } from "../lib/app-icon-state";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useAppStore } from "../stores/app";
@@ -1505,6 +1505,9 @@ async function retryIcon(item: { id: number; name: string; app_type?: string }) 
     const png = await refetchAppIcon(item.id);
     if (png) {
       clearIconIgnore(item.id);
+      // R5-G3：成功后单卡即时恢复——attempt++（URL 版本化）+ 清 assetFailed，
+      // 模板立即重新渲染 asset img；只动本卡，不触发全局 bump。
+      markIconRefreshed(item.id, png);
       appStore.showClipToast("success", `已重新提取「${item.name}」的图标`);
       await softwareStore.loadItems();
     } else {
