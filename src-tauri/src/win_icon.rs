@@ -327,6 +327,85 @@ pub fn extract_batch_to_cache(exe_paths: &[String]) -> Vec<(String, PathBuf)> {
     cached
 }
 
+/// R5-G1：单卡【强制】重抽——无视缓存命中，且绝不破坏原有缓存文件。
+/// 与 extract_to_cache 的差异：
+///  1. 跳过 cache-hit 早退（否则"图标不对/损坏"场景的重试会原样返回旧文件）；
+///  2. 先写临时文件（同目录 `.tmp`）→ 校验（存在、非空、PNG 魔数）→ 原子 rename 覆盖；
+///     任一步失败：删除临时文件、原 PNG 保持原样、返回 None（调用方保留 DB 旧值）。
+///  3. 只触碰本卡缓存键对应文件，不清理、不影响任何其他图标。
+pub fn reextract_icon_to_cache(exe_path: &str) -> Option<PathBuf> {
+    if !Path::new(exe_path).exists() {
+        return None;
+    }
+    let cache_dir = cache_root();
+    if !cache_dir.exists() {
+        let _ = fs::create_dir_all(&cache_dir);
+    }
+    let key = cache_key(exe_path);
+    let cache_path = cache_dir.join(format!("{}.png", key));
+
+    // G3-1 取证守卫与 extract_to_cache 同一口径（fail-closed）
+    if let Err(e) = icon_write_guard(&cache_path, exe_path, "reextract_icon_to_cache") {
+        eprintln!("{}", e);
+        return None;
+    }
+
+    // 两级候选与 extract_to_cache 一致：lnk 自身优先，失败再试解析出的 target
+    let mut candidates: Vec<String> = vec![pick_extract_path(exe_path)];
+    if exe_path.to_lowercase().ends_with(".lnk") {
+        if let Some(target) = resolve_lnk_target(exe_path) {
+            if Path::new(&target).exists() && !candidates.contains(&target) {
+                candidates.push(target);
+            }
+        }
+    }
+
+    let tmp_path = cache_dir.join(format!("{}.tmp", key));
+    for cand in &candidates {
+        if !Path::new(cand).exists() {
+            continue;
+        }
+        match get_icon_by_path(cand) {
+            Ok(img) => {
+                // 先落临时文件——写失败只会留下/损坏 .tmp，原 PNG 不受影响
+                if let Err(e) = img.save_with_format(&tmp_path, image::ImageFormat::Png) {
+                    eprintln!("[win_icon] reextract temp save failed for {}: {}", cand, e);
+                    let _ = fs::remove_file(&tmp_path);
+                    continue;
+                }
+                // 校验：存在、非空、PNG 魔数（防半成品/坏文件覆盖原缓存）
+                let valid = std::fs::File::open(&tmp_path).ok().and_then(|mut f| {
+                    use std::io::Read;
+                    let mut head = [0u8; 8];
+                    let meta_ok = f.metadata().map(|m| m.len() > 0).unwrap_or(false);
+                    match f.read_exact(&mut head) {
+                        Ok(_) => Some(meta_ok && head == [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]),
+                        Err(_) => None,
+                    }
+                });
+                if valid != Some(true) {
+                    eprintln!("[win_icon] reextract temp invalid for {}（非空 PNG 校验未过）", cand);
+                    let _ = fs::remove_file(&tmp_path);
+                    continue;
+                }
+                // 原子替换：同卷 rename 覆盖既有目标（Windows 下 std::fs::rename 语义）
+                if let Err(e) = fs::rename(&tmp_path, &cache_path) {
+                    eprintln!("[win_icon] reextract rename failed: {}", e);
+                    let _ = fs::remove_file(&tmp_path);
+                    return None;
+                }
+                return Some(cache_path);
+            }
+            Err(e) => {
+                eprintln!("[win_icon] reextract get_icon failed for {}: {}", cand, e);
+            }
+        }
+    }
+    // 全部候选失败：确保无临时残留，原缓存文件原样保留
+    let _ = fs::remove_file(&tmp_path);
+    None
+}
+
 // ============================================================
 // M1-P2（F2/F3）单测：缓存键归属确定性（fill 确定性重基的证据基础）
 // 覆盖：同一入口路径恒产生同一缓存键（大小写不敏感）；不同入口不同键。
@@ -356,5 +435,42 @@ mod m1_cache_key_tests {
         let k = cache_key(r"C:\Windows\System32\notepad.exe");
         assert_eq!(k.len(), 16, "cache_key 为 SHA256 前 8 字节的 16 位 hex——缓存布局扁平 key.png");
         assert!(k.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+}
+
+// ============================================================
+// R5-G1 故障注入实证：本机 Windows 真实 fs::rename 行为
+// reextract_icon_to_cache 的原子替换依赖「rename 可覆盖已存在目标」——
+// 该性质不得由文档推断，必须在真实 Windows 上实证。独立临时目录，不触用户数据。
+// ============================================================
+#[cfg(test)]
+mod r5_rename_semantics_tests {
+    #[test]
+    fn rename_replaces_existing_target_on_windows() {
+        use std::fs;
+        let dir = std::env::temp_dir().join(format!("r5-rename-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("create temp dir");
+
+        let target = dir.join("target.png");
+        let tmp = dir.join("target.png.tmp");
+
+        // 场景：原缓存 PNG 存在（OLD），重抽产物在临时文件（NEW）
+        fs::write(&target, b"OLD-PNG-BYTES").expect("write old");
+        fs::write(&tmp, b"NEW-PNG-BYTES").expect("write tmp");
+
+        // 与 reextract_icon_to_cache 相同的替换调用
+        let result = fs::rename(&tmp, &target);
+
+        assert!(result.is_ok(), "Windows 下 rename 覆盖已存在目标必须成功：{:?}", result.err());
+        assert_eq!(fs::read(&target).unwrap(), b"NEW-PNG-BYTES", "目标内容必须被替换");
+        assert!(!tmp.exists(), "临时文件必须消失（原子移动而非复制）");
+
+        // 再验证二次覆盖（重复执行不破坏）
+        fs::write(&tmp, b"NEWER").unwrap();
+        fs::rename(&tmp, &target).expect("second rename");
+        assert_eq!(fs::read(&target).unwrap(), b"NEWER");
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }
