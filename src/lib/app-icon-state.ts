@@ -171,6 +171,20 @@ function recoverIcon(id: number, path: string): void {
   }
 }
 
+/**
+ * R5-G3：单卡重试成功后的即时恢复入口（供 AppView retryIcon 成功分支调用）。
+ * 与 recoverIcon 同机制：attempt++（asset URL 版本化 ?v=N）→ WebView2 强制重新请求
+ * 新 PNG；清该卡 assetFailed/fallbackFailed → 模板重新渲染 asset img；丢旧 data URL
+ * 回退缓存。只动这一张卡，不触发全局 bump。
+ * 容错：无失败状态（本来健康）时也建立 attempt≥1 的状态——重抽后文件路径不变，
+ * 无版本参数浏览器可能仍用旧位图。
+ */
+export function markIconRefreshed(id: number, iconPath?: string | null): void {
+  const path = iconPath ?? failures.value[id]?.path;
+  if (!path) return;
+  recoverIcon(id, path);
+}
+
 /** F4：图标批量变化完成点（fillMissingIcons/refreshAllIcons/forceReextract 返回后调用）。
  *  n>0 表示后端图标有实际变化 → 所有失败过的 icon attempt++（URL 变化重新请求）；
  *  n=0 时仅清失败标记不动 URL——文件未变，无需重读（避免反复读取全部图标）。 */
