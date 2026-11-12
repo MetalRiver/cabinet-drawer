@@ -196,6 +196,9 @@ interface ContextMenu {
 }
 const ctxMenu = ref<ContextMenu>({ visible: false, x: 0, y: 0, item: null });
 const ctxMenuEl = ref<HTMLElement | null>(null);
+// ==== 分类管理状态（内联手风琴）====
+// openSub: 当前展开的分类组（'type' 一级分类 / 'subtype' 细分分类 / null 无）
+const openSub = ref<"type" | "subtype" | null>(null);
 // P1-#APPC#CTX#EDGE：右键菜单边缘裁切修复
 // 之前：固定 menuW=180, menuH=240 + Math.min 钳位 → 实际菜单高度会变（type/subtype 选项数不同）
 //       → 在窗口底部/右侧点击时，菜单下半部分被窗口裁切看不见
@@ -238,7 +241,34 @@ function closeContextMenu() {
   // G7-3：幂等——已关闭直接返回。滚动期间 window scroll（capture）每帧调本函数，
   // 旧实现无条件展开新对象赋值 → 每帧触发一次响应式更新调度（滚动时持续微开销）。
   if (!ctxMenu.value.visible) return;
+  openSub.value = null; // 关主菜单同时收起分类组
   ctxMenu.value = { ...ctxMenu.value, visible: false };
+}
+
+// ==== 分类管理：内联手风琴展开/收起 ====
+// 改用菜单内原位展开（不用右侧飞出面板）：窄窗下飞出面板难定位、易裁切/出界，
+// 内联展开彻底规避定位问题，且宽度友好。openSub 指向当前展开的分类组。
+function onCategoryClick(which: "type" | "subtype") {
+  // 手风琴：点同一组收起，点另一组切换
+  openSub.value = openSub.value === which ? null : which;
+}
+// 键盘：Esc 逐级关闭（展开的分类组 → 主菜单）；方向键在分类项间切换展开
+function onCtxKeydown(e: KeyboardEvent) {
+  if (!ctxMenu.value.visible) return;
+  if (e.key === "Escape") {
+    e.preventDefault();
+    if (openSub.value) {
+      openSub.value = null; // 先收起展开的分类组
+    } else {
+      closeContextMenu(); // 再关主菜单
+    }
+    return;
+  }
+  if (e.key === "ArrowLeft") {
+    e.preventDefault();
+    openSub.value = null; // 收起展开的分类组
+    return;
+  }
 }
 // 窗口尺寸变化时重新钳位（避免菜单跑出可视区）
 function repositionCtxMenu() {
@@ -562,6 +592,8 @@ onMounted(() => {
   window.addEventListener("scroll", closeContextMenu, true);
   // P1-#APPC#CTX#EDGE：窗口 resize 时重新钳位右键菜单位置
   window.addEventListener("resize", repositionCtxMenu);
+  // 键盘：Esc 关闭（子菜单优先）→ 左方向键返回上一级 → 右方向键展开子菜单
+  document.addEventListener("keydown", onCtxKeydown);
 
 });
 
@@ -584,6 +616,7 @@ onUnmounted(() => {
   window.removeEventListener("click", closeContextMenu);
   window.removeEventListener("contextmenu", closeContextMenu);
   window.removeEventListener("scroll", closeContextMenu, true);
+  document.removeEventListener("keydown", onCtxKeydown);
   document.removeEventListener("keydown", onIconDebugKeydown);
 });
 
@@ -1856,92 +1889,116 @@ async function confirmDeleteApp(id: number | null) {
             <span class="ctx-menu-name">{{ ctxMenu.item?.name }}</span>
             <span class="ctx-menu-type">{{ typeLabel(ctxMenu.item?.app_type) }}</span>
           </div>
-          <div class="ctx-menu-divider"></div>
-          <template v-if="ctxSubtypeOptionsNoUncat.length">
-            <div class="ctx-menu-section">修改细分分类</div>
-            <button
-              v-for="s in ctxSubtypeOptionsNoUncat"
-              :key="s.key"
-              class="ctx-menu-item tap"
-              :class="{ active: ctxMenu.item?.app_subtype === s.key }"
-              @click="pickSubtype(s.key)"
-            >
-              <span class="ctx-menu-emoji">{{ s.emoji }}</span>
-              <span>{{ s.label }}</span>
-              <span v-if="ctxMenu.item?.app_subtype === s.key" class="ctx-menu-check">✓</span>
-            </button>
-          </template>
-          <div v-else class="ctx-menu-empty">
-            该类型无细分分类（仅 app / document 可细分）
-          </div>
-          <div class="ctx-menu-divider"></div>
-          <!-- P0-#Y#FIX#TYPE#EDIT：修改一级分类
-               让用户能把"误判为 app"的网址改成"url"，或把 app 改成 folder
-               之前只能改 subtype（细分），不能改 type（一级） -->
-          <div class="ctx-menu-section">修改一级分类</div>
-          <button
-            v-for="t in TYPE_OPTIONS.filter((o): o is { key: string; label: string; emoji: string } => o.key != null)"
-            :key="t.key"
-            class="ctx-menu-item tap"
-            :class="{ active: ctxMenu.item?.app_type === t.key }"
-            @click="pickType(t.key)"
-          >
-            <span class="ctx-menu-emoji">{{ t.emoji }}</span>
-            <span>{{ t.label }}</span>
-            <span v-if="ctxMenu.item?.app_type === t.key" class="ctx-menu-check">✓</span>
-          </button>
-          <div class="ctx-menu-divider"></div>
-          <!-- P1 修复（v0.4.3 验收轮）：正常软件卡补「打开所在位置」——
-               该入口原先只在失效卡上，正常软件查看实际路径不方便（用户原始反馈缺口） -->
-          <button
-            v-if="ctxMenu.item && (ctxMenu.item.app_type || 'app') !== 'url'"
-            class="ctx-menu-item tap"
-            @click="(closeContextMenu(), openAppLocation(ctxMenu.item.id))"
-          >
-            <span class="ctx-menu-emoji">📂</span>
-            <span>打开所在位置</span>
-          </button>
-          <!-- R5：图标三态治理入口 -->
-          <button
-            v-if="ctxMenu.item && (ctxMenu.item.app_type || 'app') !== 'url'"
-            class="ctx-menu-item tap"
-            @click="(closeContextMenu(), retryIcon(ctxMenu.item))"
-          >
-            <span class="ctx-menu-emoji">🔄</span>
-            <span>重试提取图标</span>
-          </button>
-          <button
-            v-if="ctxMenu.item && ctxMenu.item.icon_path && iconAssetFailed(ctxMenu.item.id) && !isIconIgnored(ctxMenu.item.id, ctxMenu.item.icon_path)"
-            class="ctx-menu-item tap"
-            @click="(closeContextMenu(), ignoreIconState(ctxMenu.item))"
-          >
-            <span class="ctx-menu-emoji">🙈</span>
-            <span>忽略此图标问题</span>
-          </button>
-          <button class="ctx-menu-item tap" @click="(closeContextMenu(), startEdit(ctxMenu.item))">
-            <span class="ctx-menu-emoji">✏️</span>
-            <span>编辑名称/路径</span>
-          </button>
-          <template v-if="ctxMenu.item">
+          <div class="ctx-menu-body">
+            <!-- A. 常用操作：高频动作前置 -->
+            <div class="ctx-menu-group">
+              <button class="ctx-menu-item tap" @click="(closeContextMenu(), launchApp(ctxMenu.item.id))">
+                <span class="ctx-menu-emoji">▶️</span><span class="ctx-menu-label">启动</span>
+              </button>
+              <button class="ctx-menu-item tap" @click="(closeContextMenu(), startEdit(ctxMenu.item))">
+                <span class="ctx-menu-emoji">✏️</span><span class="ctx-menu-label">编辑名称/路径</span>
+              </button>
+              <button
+                v-if="ctxMenu.item && (ctxMenu.item.app_type || 'app') !== 'url'"
+                class="ctx-menu-item tap"
+                @click="(closeContextMenu(), openAppLocation(ctxMenu.item.id))"
+              >
+                <span class="ctx-menu-emoji">📂</span><span class="ctx-menu-label">打开所在位置</span>
+              </button>
+            </div>
+
+            <!-- B. 分类管理：内联手风琴展开（不用右侧飞出面板，窄窗友好） -->
             <div class="ctx-menu-divider"></div>
-            <button
-              v-if="ctxMenu.item.available === false && (ctxMenu.item.app_type || 'app') !== 'url'"
-              class="ctx-menu-item tap"
-              @click="(closeContextMenu(), relinkMissing(ctxMenu.item))"
-            >
-              <span class="ctx-menu-emoji">🔗</span>
-              <span>重新关联程序</span>
-            </button>
-            <button class="ctx-menu-item tap" @click="(closeContextMenu(), launchApp(ctxMenu.item.id))">
-              <span class="ctx-menu-emoji">▶️</span>
-              <span>启动</span>
-            </button>
-            <button class="ctx-menu-item danger tap" @click="(closeContextMenu(), askDeleteApp(ctxMenu.item.id, ctxMenu.item.name))">
-              <span class="ctx-menu-emoji">🗑️</span>
-              <span>从抽屉柜移除</span>
-            </button>
-          </template>
+            <div class="ctx-menu-group">
+              <div class="ctx-menu-section">分类管理</div>
+              <button
+                class="ctx-menu-item tap has-sub"
+                :class="{ open: openSub === 'type' }"
+                @click.stop="onCategoryClick('type')"
+              >
+                <span class="ctx-menu-emoji">🗂️</span><span class="ctx-menu-label">修改一级分类</span>
+                <span class="ctx-menu-chevron">{{ openSub === 'type' ? '⌄' : '›' }}</span>
+              </button>
+              <!-- 一级分类：内联展开 -->
+              <Transition name="ctxacc">
+                <div v-if="openSub === 'type'" class="ctx-sublist">
+                  <button
+                    v-for="t in TYPE_OPTIONS.filter((o): o is { key: string; label: string; emoji: string } => o.key != null)"
+                    :key="t.key"
+                    class="ctx-menu-item tap ctx-subitem"
+                    :class="{ active: ctxMenu.item?.app_type === t.key }"
+                    @click="pickType(t.key)"
+                  >
+                    <span class="ctx-menu-emoji">{{ t.emoji }}</span><span class="ctx-menu-label">{{ t.label }}</span>
+                    <span v-if="ctxMenu.item?.app_type === t.key" class="ctx-menu-check">✓</span>
+                  </button>
+                </div>
+              </Transition>
+              <button
+                v-if="ctxSubtypeOptionsNoUncat.length"
+                class="ctx-menu-item tap has-sub"
+                :class="{ open: openSub === 'subtype' }"
+                @click.stop="onCategoryClick('subtype')"
+              >
+                <span class="ctx-menu-emoji">🏷️</span><span class="ctx-menu-label">修改细分分类</span>
+                <span class="ctx-menu-chevron">{{ openSub === 'subtype' ? '⌄' : '›' }}</span>
+              </button>
+              <!-- 细分分类：内联展开 -->
+              <Transition name="ctxacc">
+                <div v-if="openSub === 'subtype'" class="ctx-sublist">
+                  <button
+                    v-for="s in ctxSubtypeOptionsNoUncat"
+                    :key="s.key"
+                    class="ctx-menu-item tap ctx-subitem"
+                    :class="{ active: ctxMenu.item?.app_subtype === s.key }"
+                    @click="pickSubtype(s.key)"
+                  >
+                    <span class="ctx-menu-emoji">{{ s.emoji }}</span><span class="ctx-menu-label">{{ s.label }}</span>
+                    <span v-if="ctxMenu.item?.app_subtype === s.key" class="ctx-menu-check">✓</span>
+                  </button>
+                </div>
+              </Transition>
+            </div>
+
+            <!-- C. 图标与关联管理：按实际状态显示适用项 -->
+            <div class="ctx-menu-divider"></div>
+            <div class="ctx-menu-group">
+              <div class="ctx-menu-section">图标与关联</div>
+              <button
+                v-if="ctxMenu.item && (ctxMenu.item.app_type || 'app') !== 'url'"
+                class="ctx-menu-item tap"
+                @click="(closeContextMenu(), retryIcon(ctxMenu.item))"
+              >
+                <span class="ctx-menu-emoji">🔄</span><span class="ctx-menu-label">重试提取图标</span>
+              </button>
+              <button
+                v-if="ctxMenu.item && ctxMenu.item.icon_path && iconAssetFailed(ctxMenu.item.id) && !isIconIgnored(ctxMenu.item.id, ctxMenu.item.icon_path)"
+                class="ctx-menu-item tap"
+                @click="(closeContextMenu(), ignoreIconState(ctxMenu.item))"
+              >
+                <span class="ctx-menu-emoji">🙈</span><span class="ctx-menu-label">忽略此图标问题</span>
+              </button>
+              <button
+                v-if="ctxMenu.item && ctxMenu.item.available === false && (ctxMenu.item.app_type || 'app') !== 'url'"
+                class="ctx-menu-item tap"
+                @click="(closeContextMenu(), relinkMissing(ctxMenu.item))"
+              >
+                <span class="ctx-menu-emoji">🔗</span><span class="ctx-menu-label">重新关联程序</span>
+              </button>
+            </div>
+
+            <!-- D. 危险操作：独立分区，沉底，柔和红色 -->
+            <div class="ctx-menu-divider ctx-menu-divider-danger"></div>
+            <div class="ctx-menu-group ctx-menu-group-danger">
+              <button class="ctx-menu-item tap danger" @click="(closeContextMenu(), askDeleteApp(ctxMenu.item.id, ctxMenu.item.name))">
+                <span class="ctx-menu-emoji">🗑️</span><span class="ctx-menu-label">移入回收站</span>
+              </button>
+            </div>
+          </div>
+          <!-- /.ctx-menu-body -->
         </div>
+        <!-- /.ctx-menu：主菜单闭合。分类采用内联手风琴展开（不用右侧飞出面板），
+             规避窄窗下子菜单定位/裁切/出界问题。 -->
       </Transition>
     </Teleport>
 
@@ -3883,11 +3940,12 @@ AppID：${a.target || a.path}`"
 .ctx-menu {
   position: fixed;
   z-index: 9999;
-  min-width: 180px;
-  max-width: 220px;
-  max-height: calc(100vh - 16px);
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  min-width: 200px;
+  max-width: 240px;
+  /* 滚动移入 .ctx-menu-body：容器本身 overflow 可见，子菜单才不会被裁切 */
+  overflow: visible;
+  display: flex;
+  flex-direction: column;
   background: rgba(20, 20, 32, 0.96);
   backdrop-filter: blur(20px) saturate(160%);
   -webkit-backdrop-filter: blur(20px) saturate(160%);
@@ -3897,9 +3955,6 @@ AppID：${a.target || a.path}`"
   box-shadow:
     0 16px 40px rgba(0, 0, 0, 0.5),
     inset 0 1px 0 rgba(255, 255, 255, 0.08);
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
 }
 .ctx-menu-title {
   display: flex;
@@ -3940,18 +3995,24 @@ AppID：${a.target || a.path}`"
 .ctx-menu-item {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
+  gap: 10px;
+  padding: 9px 12px;
   border-radius: 8px;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 500;
+  line-height: 1.3;
+  min-height: 36px;
   background: transparent;
   border: none;
   color: var(--text-secondary);
   cursor: pointer;
-  transition: all 0.12s var(--ease-smooth);
+  transition:
+    background-color 0.12s var(--ease-smooth),
+    border-color 0.12s var(--ease-smooth),
+    color 0.12s var(--ease-smooth);
   text-align: left;
   -webkit-app-region: no-drag;
+  width: 100%;
 }
 .ctx-menu-item:hover {
   background: var(--accent-soft);
@@ -3974,6 +4035,89 @@ AppID：${a.target || a.path}`"
   color: var(--text-faint);
   text-align: center;
   font-style: italic;
+}
+/* ==== 右键菜单体验升级：分组 / 滚动区 / 子菜单 / 危险区 ==== */
+/* 滚动区：容器本身 overflow:visible（让子菜单溢出），滚动约束在这里 */
+.ctx-menu-body {
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+/* 分组：段与段之间用分隔线 + 小标题建立层次 */
+.ctx-menu-group {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 2px 0;
+}
+/* 危险区：独立分区，柔和红色，与普通操作拉开空间 */
+.ctx-menu-group-danger {
+  margin-top: 2px;
+}
+.ctx-menu-divider-danger {
+  background: rgba(255, 92, 92, 0.22);
+  margin: 5px 0 3px;
+}
+/* 选项：正文 13px、行高 ~36px（padding 9px + 行高），文字垂直居中
+   （基础 .ctx-menu-item 定义见上方主菜单块；此处仅追加分组/子菜单/危险区专属规则） */
+/* 分类项：右侧箭头指示有子菜单；展开时高亮 */
+.ctx-menu-item.has-sub {
+  padding-right: 10px;
+}
+.ctx-menu-item.has-sub.open {
+  background: var(--accent-soft);
+  color: var(--text-primary);
+}
+.ctx-menu-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ctx-menu-chevron {
+  margin-left: auto;
+  font-size: 15px;
+  line-height: 1;
+  color: var(--text-faint);
+  flex-shrink: 0;
+  transition: transform 0.12s var(--ease-smooth);
+}
+.ctx-menu-item.has-sub.open .ctx-menu-chevron {
+  color: var(--accent-bright);
+}
+.ctx-menu-item.danger {
+  color: #ff8a8a;
+}
+.ctx-menu-item.danger:hover {
+  background: rgba(255, 92, 92, 0.14);
+  color: #ffb3b3;
+}
+/* 分类内联展开（手风琴）：缩进 + 弱化背景，与主菜单选项拉开层次 */
+.ctx-sublist {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 2px 0 4px 18px; /* 左缩进体现从属关系 */
+}
+.ctx-subitem {
+  font-size: 12.5px;
+  min-height: 32px;
+  padding: 7px 10px;
+}
+/* 内联展开过渡：轻微高度/淡入，不缩放 */
+.ctxacc-enter-active { animation: ctxAccIn 0.14s var(--ease-smooth); }
+.ctxacc-leave-active { animation: ctxAccOut 0.1s var(--ease-smooth); }
+@keyframes ctxAccIn {
+  from { opacity: 0; transform: translateY(-3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes ctxAccOut {
+  from { opacity: 1; }
+  to { opacity: 0; }
 }
 .ctx-fade-enter-active { animation: ctxIn 0.12s var(--ease-smooth); }
 .ctx-fade-leave-active { animation: ctxOut 0.08s var(--ease-smooth); }
