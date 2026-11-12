@@ -30,7 +30,8 @@ export interface LaunchTargetInfo {
   app_type?: string;
 }
 
-type ShowToast = (kind: "success" | "info", msg: string, durationMs?: number) => void;
+// R6-02C-04（PL-085）：与 appStore.showClipToast 四级体系对齐
+type ShowToast = (kind: "success" | "info" | "warning" | "error", msg: string, durationMs?: number) => void;
 
 /** 启动请求成功提交后的提示（区分 no-op 测试目标 / 网址 / 快捷方式 / 文件夹 / 程序） */
 export function launchSuccessToast(show: ShowToast, item?: LaunchTargetInfo): void {
@@ -74,15 +75,15 @@ export function launchFailureToast(
     const isUrl =
       item && (item.app_type === "url" || p.startsWith("http://") || p.startsWith("https://") || p.startsWith("steam://"));
     if (isUrl) {
-      show("info", `网页打开失败：${item?.path}`, 3500);
+      show("error", `网页打开失败：${item?.path}`, 3500);
       return;
     }
     if (item && p.endsWith(".url")) {
-      show("info", `「${item?.name ?? ""}」网页快捷方式已失效。已尝试启动 Steam，请在库中找到该游戏`, 3500);
+      show("error", `「${item?.name ?? ""}」网页快捷方式已失效。已尝试启动 Steam，请在库中找到该游戏`, 3500);
       return;
     }
-    show("info", `找不到「${item?.name ?? ""}」的安装位置。请重新拖入 .exe 或 .lnk`, 3500);
+    show("error", `找不到「${item?.name ?? ""}」的安装位置。请重新拖入 .exe 或 .lnk`, 3500);
     return;
   }
-  show("info", result.message || "启动失败", 3500);
+  show("error", result.message || "启动失败", 3500);
 }

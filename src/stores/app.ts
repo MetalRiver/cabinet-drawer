@@ -21,7 +21,8 @@ export const useAppStore = defineStore("app", () => {
   const clipboardCountdown = ref(0); // 剪贴板倒计时（秒），0=未触发
   // 修复 P1-#16：恢复短语不再放到全局 store（之前 DevTools 可读、关掉 LockScreen 不清），
   // 改为 LockScreen 组件内部 ref，组件 unmount 时自动 GC。
-  const clipToast = ref<{ type: "success" | "info" | "warning"; text: string } | null>(null);
+  // R6-02C-04（PL-085）：四级 success/info/warning/error
+  const clipToast = ref<{ type: "success" | "info" | "warning" | "error"; text: string } | null>(null);
   // P0-#T：回收站计数（全局共享，SearchBar 徽章用）
   const trashCount = ref(0);
 
@@ -81,11 +82,19 @@ export const useAppStore = defineStore("app", () => {
     isFirstRun.value = v;
   }
 
-  function showClipToast(type: "success" | "info" | "warning", text: string, durationMs = 2200) {
+  // R6-02C-04（PL-085）：四级反馈体系——success=成功 / info=中性 / warning=部分成功或
+  // 非致命异常 / error=操作失败。warning/error 展示 3500ms（阅读失败原因需要更久），
+  // 其余维持 2200ms；单例覆盖制保留（PL-086 防抖另行登记处理）。
+  function showClipToast(
+    type: "success" | "info" | "warning" | "error",
+    text: string,
+    durationMs?: number,
+  ) {
     clipToast.value = { type, text };
+    const ttl = durationMs ?? (type === "warning" || type === "error" ? 3500 : 2200);
     setTimeout(() => {
       clipToast.value = null;
-    }, durationMs);
+    }, ttl);
   }
 
   return {
