@@ -306,9 +306,25 @@ const ctxSubtypeOptionsNoUncat = computed(() =>
 // 计算有多少个 app（type=app/folder/document/url）没拿到 data URL
 // > 0 时 header 显示"重抽图标"按钮（用户手动触发兜底闭环）
 const missingIconCount = computed(() => {
-  // G3-1B：图标改走资产 URL 后，"缺图标"=记录本身没有 icon_path
-  // （icon_path 存在但资产加载失败的情况由 iconError 兜底，不在此计数）
-  return softwareStore.items.filter((it) => !it.icon_path).length;
+  // R6-02B F4 口径修正：N = 「后端本次重抽确实会处理」的记录数，与
+  // fill_missing_icons_sync 的资格条件对齐（apps.rs:1988-2001）：
+  //   1) icon_path 为空（icon_path 存在的由单卡重试/归属校验负责，不计入）；
+  //   2) app_type !== 'url'（url 无本地路径，Path::exists 恒 false，后端恒跳过）；
+  //   3) 排除「路径确认失效」的记录（fixed_missing/removable_offline/network_offline
+  //      —— 后端 extract_batch 对不存在路径 continue 跳过）。uncertain 的入口文件
+  //      （.lnk）仍存在，后端可正常抽图 → 保留计数。
+  // 数据源与失效徽标同链（softwareStore.invalidItems），不新增接口。
+  const pathGone = new Set(
+    softwareStore.invalidItems
+      .filter((it) => it.kind === "fixed_missing" || it.kind === "removable_offline" || it.kind === "network_offline")
+      .map((it) => it.id)
+  );
+  return softwareStore.items.filter(
+    (it) =>
+      !it.icon_path &&
+      (it.app_type || "app") !== "url" &&
+      !pathGone.has(it.id)
+  ).length;
 });
 const reextractingIcons = ref(false);
 async function reextractIcons() {
