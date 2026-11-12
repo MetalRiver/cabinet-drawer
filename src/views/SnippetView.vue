@@ -302,7 +302,7 @@ async function confirmRemove(id: number) {
           <div class="modal-body">
             <div class="form-row">
               <label>标题</label>
-              <input v-model="form.title" class="form-input" placeholder="如：Docker 常用命令" />
+              <input v-model="form.title" class="form-input" placeholder="标题 *（如：Docker 常用命令）" />
             </div>
             <div class="form-row">
               <label>语言（可选）</label>
@@ -324,7 +324,7 @@ async function confirmRemove(id: number) {
           </div>
           <div class="modal-footer">
             <button class="btn-secondary tap" @click="showForm = false">取消</button>
-            <button class="btn-primary tap" @click="submit">保存</button>
+            <button class="btn-primary tap" @click="submit" title="标题和内容为必填项">保存</button>
           </div>
         </div>
       </div>

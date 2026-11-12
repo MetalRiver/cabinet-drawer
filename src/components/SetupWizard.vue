@@ -204,7 +204,7 @@ onBeforeUnmount(() => {
                 placeholder="至少 6 位"
                 @input="checkStrength"
               />
-              <button class="input-toggle" @click="showPassword = !showPassword">
+              <button class="input-toggle" @click="showPassword = !showPassword" :title="showPassword ? '隐藏密码' : '显示密码'" :aria-label="showPassword ? '隐藏密码' : '显示密码'">
                 {{ showPassword ? "🙈" : "👁️" }}
               </button>
             </div>
@@ -222,6 +222,13 @@ onBeforeUnmount(() => {
               <div class="strength-label" :style="{ color: strengthColor }">
                 {{ strengthLabel }}
               </div>
+            </div>
+            <!-- R6-02C-05（PL-073/GX-2）：过短与强度不足的内联原因说明——禁用按钮必须可解释 -->
+            <div v-if="masterPassword && masterPassword.length < 6" class="form-hint error">
+              ✗ 密码太短：至少需要 6 位
+            </div>
+            <div v-else-if="masterPassword && strength < 30" class="form-hint error">
+              ✗ 密码强度不足：请混合字母、数字或符号提高强度
             </div>
           </div>
 

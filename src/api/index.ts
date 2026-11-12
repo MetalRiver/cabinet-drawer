@@ -324,6 +324,8 @@ export const fillMissingIcons = () => invoke<number>("fill_missing_icons");
 export const forceReextractIcons = () => invoke<number>("force_reextract_icons");
 // R5：单条图标重取（只处理指定记录；Some=成功回写路径，None=提取失败如实返回）
 export const refetchAppIcon = (id: number) => invoke<string | null>("refetch_app_icon", { id });
+// R6-02C-05（PL-070）：轻量只读路径存在性检查——添加/编辑软件表单的黄色警告用
+export const checkPathExists = (path: string) => invoke<boolean>("check_path_exists", { path });
 
 /** P0-#Y#FIX#ICON#RESTART：重启 app（让 webview 加载新代码） */
 export const restartApp = () => invoke<void>("restart_app");

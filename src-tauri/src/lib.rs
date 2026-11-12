@@ -1957,6 +1957,7 @@ pub fn run() {
             // P0-#Y#FIX#ICON#REEXTRACT/RESTART/VERSION：用户反馈"图标不对"时用
             force_reextract_icons,
             commands::apps::refetch_app_icon,
+            commands::apps::check_path_exists,
             restart_app,
             get_app_version,
             // P0-#Y#FIX#MIGRATE/TRASH/SETTING：设置界面用

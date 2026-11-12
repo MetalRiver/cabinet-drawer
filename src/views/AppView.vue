@@ -8,7 +8,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useAppStore } from "../stores/app";
 import { useSoftwareStore } from "../stores/software";
 import { useRouter } from "vue-router";
-import { type ScannedApp, relinkApp, openAppLocation, pickPath, getAppEdition, readIconAsDataUrl, restoreFromTrash, perfProbeEnabled, perfProbeReport } from "../api";
+import { type ScannedApp, relinkApp, openAppLocation, pickPath, getAppEdition, readIconAsDataUrl, restoreFromTrash, perfProbeEnabled, perfProbeReport, checkPathExists } from "../api";
 import ConfirmModal from "../components/ConfirmModal.vue";
 import { refetchAppIcon } from "../api";
 import { isIconIgnored, ignoreIcon, clearIconIgnore } from "../lib/icon-ignore";
@@ -166,6 +166,30 @@ const addForm = ref({
   args: "",
   categoryId: undefined as number | undefined,
 });
+
+// R6-02C-05（PL-070）：本地路径存在性实时检查（300ms 防抖；url 类不检查）
+const addPathExists = ref(true);
+const editPathExists = ref(true);
+let pathProbeTimer: ReturnType<typeof setTimeout> | null = null;
+watch(
+  () => [addForm.value.path, editForm.value.path],
+  ([ap, ep]) => {
+    if (pathProbeTimer) clearTimeout(pathProbeTimer);
+    pathProbeTimer = setTimeout(() => {
+      const isLocal = (p: string) => p && !p.includes("://") && !p.toLowerCase().endsWith(".url");
+      if (isLocal(ap)) {
+        checkPathExists(ap).then((ok) => (addPathExists.value = ok)).catch(() => (addPathExists.value = true));
+      } else {
+        addPathExists.value = true;
+      }
+      if (isLocal(ep)) {
+        checkPathExists(ep).then((ok) => (editPathExists.value = ok)).catch(() => (editPathExists.value = true));
+      } else {
+        editPathExists.value = true;
+      }
+    }, 300);
+  },
+);
 
 // 编辑
 const editingId = ref<number | null>(null);
@@ -1787,9 +1811,16 @@ async function confirmDeleteApp(id: number | null) {
           >
             <template v-if="editingId === item.id">
               <div class="edit-form" @click.stop>
-                <input v-model="editForm.name" class="form-input" placeholder="名称" />
-                <input v-model="editForm.path" class="form-input" placeholder="路径" />
+                <input v-model="editForm.name" class="form-input" placeholder="名称 *" />
+                <input v-model="editForm.path" class="form-input" placeholder="路径 *" />
                 <input v-model="editForm.args" class="form-input" placeholder="参数（可选）" />
+                <!-- R6-02C-05（PL-070）：编辑同样遵守路径存在性警告规则 -->
+                <div
+                  v-if="editForm.path && !editForm.path.includes('://') && !editForm.path.toLowerCase().endsWith('.url') && !editPathExists"
+                  class="form-hint warn"
+                >
+                  ⚠ 本地路径当前不存在——仍可保存；保存后该条目会在「健康」页标记为失效
+                </div>
                 <div class="edit-actions">
                   <button class="btn-primary tap" @click.stop="submitEdit">✓ 保存</button>
                   <button class="btn-secondary tap" @click.stop="editingId = null">✕ 取消</button>
@@ -1848,7 +1879,7 @@ async function confirmDeleteApp(id: number | null) {
                 <span
                   v-if="item.available === false && (item.app_type || 'app') !== 'url'"
                   class="app-icon-warn"
-                  title="路径失效 / 应用不可用"
+                  title="记录的本地路径当前不存在——可在健康页查看详情；路径恢复后此状态自动解除"
                 >!</span>
               </div>
               <!-- 图标式网格：名称最多两行；异常仅角标，不遮挡名称 -->
@@ -2038,11 +2069,11 @@ async function confirmDeleteApp(id: number | null) {
                    后端按 path 前缀自动判：https://→url，steam://→url，等等 -->
             </div>
             <div class="form-row">
-              <label>名称</label>
+              <label>名称 <span class="req-mark">*</span></label>
               <input v-model="addForm.name" class="form-input" placeholder="如：腾讯视频 / GitHub / 我的文档" />
             </div>
             <div class="form-row">
-              <label>路径</label>
+              <label>路径 <span class="req-mark">*</span></label>
               <!-- P0-#Y#FIX#PICK#UI：路径输入框 + 浏览... 按钮
                    URL 类不放"浏览"按钮（没有"浏览 URL"的概念）
                    应用 / 文件夹类放"浏览"按钮，点开原生资源管理器选 -->
@@ -2063,6 +2094,14 @@ async function confirmDeleteApp(id: number | null) {
                   <span>浏览…</span>
                 </button>
               </div>
+              <!-- R6-02C-05（PL-070）：路径存在性警告——本地路径不存在时黄色内联提醒，
+                   允许确认后继续保存（不禁止暂时不可用的路径），保存后在健康页标记失效 -->
+              <div
+                v-if="addForm.path && !addForm.path.includes('://') && !addForm.path.toLowerCase().endsWith('.url') && !addPathExists"
+                class="form-hint warn"
+              >
+                ⚠ 本地路径当前不存在——仍可保存；保存后该条目会在「健康」页标记为失效，待路径可用后自动恢复
+              </div>
               <div class="form-hint">
                 💡 <strong>网页</strong>直接填 https://... 即可（点 🌐 网址 → 🔗 普通网页）<br>
                 💡 <strong>Steam / Epic 游戏</strong>点 🌐 网址 → 🎮 / 🌀 模板看示例<br>
@@ -2082,7 +2121,7 @@ async function confirmDeleteApp(id: number | null) {
           </div>
           <div class="modal-footer">
             <button class="btn-secondary tap" @click="showAddForm = false">取消</button>
-            <button class="btn-primary tap" @click="submitAdd">保存</button>
+            <button class="btn-primary tap" @click="submitAdd" :title="(!addForm.name || !addForm.path) ? '请填写名称和路径后再保存' : ''">保存</button>
           </div>
         </div>
       </div>
@@ -3067,6 +3106,15 @@ AppID：${a.target || a.path}`"
   margin-top: 2px;
   line-height: 1.4;
 }
+/* R6-02C-05（PL-070/GX-2）：警告/错误级内联提示——与 SetupWizard form-hint 语义一致 */
+.form-hint.warn {
+  color: #fbbf24;
+}
+.form-hint.error {
+  color: #f87171;
+}
+/* R6-02C-05（GX-3）：必填标记——与密码表单「标题 *」口径一致 */
+.req-mark { color: #f87171; font-weight: 600; }
 .auto-classify-info {
   flex-direction: row !important;
   align-items: center;
