@@ -21,8 +21,6 @@ export const useAppStore = defineStore("app", () => {
   const clipboardCountdown = ref(0); // 剪贴板倒计时（秒），0=未触发
   // 修复 P1-#16：恢复短语不再放到全局 store（之前 DevTools 可读、关掉 LockScreen 不清），
   // 改为 LockScreen 组件内部 ref，组件 unmount 时自动 GC。
-  // R6-02C-04（PL-085）：四级 success/info/warning/error
-  const clipToast = ref<{ type: "success" | "info" | "warning" | "error"; text: string } | null>(null);
   // P0-#T：回收站计数（全局共享，SearchBar 徽章用）
   const trashCount = ref(0);
 
@@ -60,6 +58,7 @@ export const useAppStore = defineStore("app", () => {
 
   function lock() {
     isLocked.value = true;
+    clipClearAll(); // PL-086：锁屏不残留过期反馈
   }
 
   function unlock() {
@@ -84,17 +83,61 @@ export const useAppStore = defineStore("app", () => {
 
   // R6-02C-04（PL-085）：四级反馈体系——success=成功 / info=中性 / warning=部分成功或
   // 非致命异常 / error=操作失败。warning/error 展示 3500ms（阅读失败原因需要更久），
-  // 其余维持 2200ms；单例覆盖制保留（PL-086 防抖另行登记处理）。
+  // 其余维持 2200ms；显式 durationMs 优先。
+  // R6-02C-05（PL-086）：单条展示 + 有界队列（上限 3）——新消息排队而非覆盖；
+  // 同文本 1s 内重复触发防抖；队列满时仅丢弃队尾低级（info/success）消息，
+  // warning/error 永不被静默覆盖；锁屏清空队列（避免锁屏残留过期反馈）。
+  type ToastItem = { type: "success" | "info" | "warning" | "error"; text: string; enqueuedAt: number };
+  const clipQueue = ref<ToastItem[]>([]);
+  let clipShowing = false;
+  let clipTimer: ReturnType<typeof setTimeout> | null = null;
+  const clipToast = ref<{ type: ToastItem["type"]; text: string; enqueuedAt?: number } | null>(null);
+
+  function clipTtl(type: ToastItem["type"], explicit?: number) {
+    return explicit ?? (type === "warning" || type === "error" ? 3500 : 2200);
+  }
+
+  function clipDrain() {
+    if (clipShowing || !clipQueue.value.length) return;
+    const head = clipQueue.value[0];
+    clipToast.value = { type: head.type, text: head.text, enqueuedAt: head.enqueuedAt };
+    clipShowing = true;
+    clipTimer = setTimeout(() => {
+      clipQueue.value.shift();
+      clipShowing = false;
+      clipTimer = null;
+      clipDrain();
+    }, clipTtl(head.type, (head as { durationMs?: number }).durationMs));
+  }
+
   function showClipToast(
     type: "success" | "info" | "warning" | "error",
     text: string,
     durationMs?: number,
   ) {
-    clipToast.value = { type, text };
-    const ttl = durationMs ?? (type === "warning" || type === "error" ? 3500 : 2200);
-    setTimeout(() => {
-      clipToast.value = null;
-    }, ttl);
+    const now = Date.now();
+    // 防抖：同文本 1s 内重复触发 → 忽略（当前显示中的队头仍在队列内，一并覆盖）
+    const dup = clipQueue.value.find((q) => q.text === text && now - q.enqueuedAt < 1000);
+    if (dup) return;
+    // 容量上限 3：满时从队尾找低级（info/success）丢弃；全是高级则丢最旧
+    if (clipQueue.value.length >= 3) {
+      let dropIdx = -1;
+      for (let i = clipQueue.value.length - 1; i >= 1; i--) {
+        if (clipQueue.value[i].type === "info" || clipQueue.value[i].type === "success") { dropIdx = i; break; }
+      }
+      clipQueue.value.splice(dropIdx >= 0 ? dropIdx : 0, 1);
+    }
+    const item: ToastItem = { type, text, enqueuedAt: now };
+    if (durationMs !== undefined) (item as { durationMs?: number }).durationMs = durationMs;
+    clipQueue.value.push(item);
+    clipDrain();
+  }
+
+  function clipClearAll() {
+    clipQueue.value = [];
+    clipToast.value = null;
+    clipShowing = false;
+    if (clipTimer) { clearTimeout(clipTimer); clipTimer = null; }
   }
 
   return {

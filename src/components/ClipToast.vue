@@ -93,12 +93,22 @@ const widgetStore = useWidgetStore();
 }
 
 /* R6-02C-04（PL-085）：四级等级视觉区分——图标底色 + 主体描边。
-   success=蓝（原 accent 渐变）｜info=中性灰｜warning=琥珀｜error=红。
-   warning/error 主体描边同色系，远距离可辨识（此前三等级主体逐字节相同）。 */
-.clip-toast.level-success { border-color: rgba(79, 124, 255, 0.55); }
-.clip-toast.level-info    { border-color: var(--border-bright); }
-.clip-toast.level-warning { border-color: rgba(251, 191, 36, 0.6); }
-.clip-toast.level-error   { border-color: rgba(248, 113, 113, 0.65); }
+   R6-02C-05（PL-088）：主体背景加低饱和等级 tint（叠加在玻璃底上），
+   保持 backdrop-filter 与可读性，不做大面积高饱和警示色。
+   success=蓝 tint｜info=无 tint（中性基准）｜warning=琥珀 tint｜error=红 tint。 */
+.clip-toast.level-success {
+  border-color: rgba(79, 124, 255, 0.55);
+  background: linear-gradient(0deg, rgba(79, 124, 255, 0.10), rgba(79, 124, 255, 0.10)), var(--bg-glass);
+}
+.clip-toast.level-info { border-color: var(--border-bright); }
+.clip-toast.level-warning {
+  border-color: rgba(251, 191, 36, 0.6);
+  background: linear-gradient(0deg, rgba(251, 191, 36, 0.12), rgba(251, 191, 36, 0.12)), var(--bg-glass);
+}
+.clip-toast.level-error {
+  border-color: rgba(248, 113, 113, 0.65);
+  background: linear-gradient(0deg, rgba(248, 113, 113, 0.14), rgba(248, 113, 113, 0.14)), var(--bg-glass);
+}
 
 .clip-icon {
   width: 36px;
