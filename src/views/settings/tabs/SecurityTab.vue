@@ -272,7 +272,7 @@ async function onRescuePasswords() {
       try { await passwordStore.refresh?.(); } catch { /* 同上 */ }
     } else {
       rescuePw.hint = `⚠️ 部分救援失败：救回 ${r.rescued} 条，仍有 ${r.failed} 条无法解密（密码不对？）`;
-      appStore.showClipToast("info", `部分失败：${r.failed} 条密码仍无法解密`);
+      appStore.showClipToast("warning", `部分失败：${r.failed} 条密码仍无法解密`);
     }
   } catch (e) {
     rescuePw.hint = "✗ " + String(e);

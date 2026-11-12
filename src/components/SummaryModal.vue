@@ -94,7 +94,7 @@ async function copySummary() {
     appStore.showClipToast("success", `汇总已复制，${secs} 秒后自动清空`);
     setTimeout(() => (copyTip.value = ""), 2000);
   } catch (e) {
-    appStore.showClipToast("info", "复制失败：" + String(e));
+    appStore.showClipToast("error", "复制失败：" + String(e));
   } finally {
     copyBusy.value = false;
   }

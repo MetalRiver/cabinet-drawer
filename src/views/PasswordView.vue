@@ -169,7 +169,7 @@ async function doCopyPassword(item: PasswordMeta) {
       s.decryptedPassword = pwd;
       s.decryptFailed = false;
     } catch (e) {
-      appStore.showClipToast("info", "复制失败：" + String(e));
+      appStore.showClipToast("error", "复制失败：" + String(e));
       return;
     }
   }
@@ -262,7 +262,7 @@ async function toggleRow(item: PasswordMeta) {
         s.decryptFailed = false;
       } catch (e) {
         s.decryptFailed = true;
-        appStore.showClipToast("info", "解密失败：" + String(e));
+        appStore.showClipToast("error", "解密失败：" + String(e));
       } finally {
         s.isLoading = false;
       }
@@ -291,7 +291,7 @@ async function copyWithTimeout(text: string, label: string) {
     clipboardCountdown.start(timeout);
     appStore.showClipToast("success", `已复制${label}`);
   } catch (e) {
-    appStore.showClipToast("info", "复制失败：" + String(e));
+    appStore.showClipToast("error", "复制失败：" + String(e));
   }
 }
 
@@ -359,7 +359,7 @@ async function saveEdit(item: PasswordMeta) {
     appStore.showClipToast("success", "已保存");
     s.mode = "expanded";
   } catch (e) {
-    appStore.showClipToast("info", "保存失败：" + String(e));
+    appStore.showClipToast("error", "保存失败：" + String(e));
   }
 }
 
@@ -419,7 +419,7 @@ async function confirmDelete(id: number) {
     delete rowStates[id];
     appStore.showClipToast("success", "已删除");
   } catch (e) {
-    appStore.showClipToast("info", "删除失败：" + String(e));
+    appStore.showClipToast("error", "删除失败：" + String(e));
   } finally {
     deletingId.value = null;
   }
@@ -464,7 +464,7 @@ async function submitAdd() {
     appStore.showClipToast("success", "已添加");
     addFormOpen.value = false;
   } catch (e) {
-    appStore.showClipToast("info", "添加失败：" + String(e));
+    appStore.showClipToast("error", "添加失败：" + String(e));
   }
 }
 

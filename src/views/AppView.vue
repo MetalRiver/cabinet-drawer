@@ -292,7 +292,7 @@ async function pickSubtype(sub: string) {
     await softwareStore.changeSubtype(it.id, sub);
     appStore.showClipToast("success", `已归类为「${subtypeLabel(sub)}」`);
   } catch (e) {
-    appStore.showClipToast("info", "修改失败：" + String(e));
+    appStore.showClipToast("error", "修改失败：" + String(e));
   } finally {
     closeContextMenu();
   }
@@ -314,7 +314,7 @@ async function pickType(newType: string | null) {
     await softwareStore.changeType(it.id, newType);
     appStore.showClipToast("success", `已归为「${typeLabel(newType)}」`);
   } catch (e) {
-    appStore.showClipToast("info", "修改失败：" + String(e));
+    appStore.showClipToast("error", "修改失败：" + String(e));
   } finally {
     closeContextMenu();
   }
@@ -529,7 +529,7 @@ onMounted(() => {
       appStore.showClipToast(newCount > 0 ? "success" : "info", `已导入：${parts.join(" · ")}`);
     } catch (err) {
       console.error("[drag:drop] importPaths failed", err);
-      appStore.showClipToast("info", "导入失败：" + String(err));
+      appStore.showClipToast("error", "导入失败：" + String(err));
     }
   };
 
@@ -566,7 +566,7 @@ onMounted(() => {
             appStore.showClipToast(newCount > 0 ? "success" : "info", `已导入：${parts.join(" · ")}`);
           } catch (e) {
             console.error("[drag:drop] tauri importPaths failed", e);
-            appStore.showClipToast("info", "导入失败：" + String(e));
+            appStore.showClipToast("error", "导入失败：" + String(e));
           }
         }
       });
@@ -850,7 +850,7 @@ async function restoreTrashedCandidate(a: ScannedApp) {
     selectedPaths.value.delete(a.path);
     selectedPaths.value = new Set(selectedPaths.value);
   } catch (e) {
-    appStore.showClipToast("info", "恢复失败：" + String(e));
+    appStore.showClipToast("error", "恢复失败：" + String(e));
   } finally {
     restoringPath.value = null;
   }
@@ -1141,7 +1141,7 @@ async function openScan() {
     );
   } catch (e) {
     console.error("scan failed", e);
-    appStore.showClipToast("info", "扫描失败：" + String(e));
+    appStore.showClipToast("error", "扫描失败：" + String(e));
   } finally {
     scanning.value = false;
     scanProgress.value = null;
@@ -1175,7 +1175,7 @@ async function switchScanMode(mode: "recommended" | "advanced") {
     void loadScanIcons();
     } catch (e) {
       console.error("scan failed", e);
-      appStore.showClipToast("info", "扫描失败：" + String(e));
+      appStore.showClipToast("error", "扫描失败：" + String(e));
     } finally {
       scanning.value = false;
       scanProgress.value = null;
@@ -1199,7 +1199,7 @@ async function runAdvancedScan() {
     void loadScanIcons();
   } catch (e) {
     console.error("advanced scan failed", e);
-    appStore.showClipToast("info", "高级扫描失败：" + String(e));
+    appStore.showClipToast("error", "高级扫描失败：" + String(e));
   } finally {
     scanning.value = false;
     scanProgress.value = null;
@@ -1219,7 +1219,7 @@ async function runCustomDirScan() {
     applyScanOutcome(outcome, session);
     void loadScanIcons();
   } catch (e) {
-    appStore.showClipToast("info", "目录扫描失败：" + String(e));
+    appStore.showClipToast("error", "目录扫描失败：" + String(e));
   } finally {
     scanning.value = false;
     scanProgress.value = null;
@@ -1288,7 +1288,7 @@ async function confirmScan() {
     scanTargetDropdownOpen.value = false;
     appStore.searchQuery = "";
   } catch (e) {
-    appStore.showClipToast("info", "导入失败：" + String(e));
+    appStore.showClipToast("error", "导入失败：" + String(e));
   } finally {
     scanning.value = false;
   }
@@ -1374,7 +1374,7 @@ async function browsePath() {
       }
     }
   } catch (e) {
-    appStore.showClipToast("info", "浏览对话框打开失败：" + String(e));
+    appStore.showClipToast("error", "浏览对话框打开失败：" + String(e));
   }
 }
 
@@ -1525,7 +1525,7 @@ async function submitAdd() {
       softwareStore.setSubtype(inferred.appSubtype);
     }
   } catch (e) {
-    appStore.showClipToast("info", String(e));
+    appStore.showClipToast("error", String(e));
   }
 }
 
@@ -1542,7 +1542,7 @@ async function relinkMissing(item: any) {
     appStore.showClipToast("success", `已重新关联「${item.name}」`);
     await softwareStore.loadItems();
   } catch (e) {
-    appStore.showClipToast("info", "重新关联失败：" + String(e));
+    appStore.showClipToast("error", "重新关联失败：" + String(e));
   } finally {
     relinkingId.value = null;
   }
@@ -1642,7 +1642,7 @@ async function submitEdit() {
     editingId.value = null;
     appStore.showClipToast("success", "已保存");
   } catch (e) {
-    appStore.showClipToast("info", String(e));
+    appStore.showClipToast("error", String(e));
   }
 }
 
@@ -1664,7 +1664,7 @@ async function confirmDeleteApp(id: number | null) {
     await softwareStore.remove(id);
     appStore.showClipToast("success", "已从抽屉柜移除");
   } catch (e) {
-    appStore.showClipToast("info", "删除失败：" + String(e));
+    appStore.showClipToast("error", "删除失败：" + String(e));
   } finally {
     deletingId.value = null;
     confirmingDeleteId.value = null;

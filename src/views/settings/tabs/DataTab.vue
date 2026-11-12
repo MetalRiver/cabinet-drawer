@@ -69,7 +69,7 @@ async function openFolder() {
   try {
     await openDataDir();
   } catch (e) {
-    appStore.showClipToast("info", "打开数据目录失败：" + String(e));
+    appStore.showClipToast("error", "打开数据目录失败：" + String(e));
   }
 }
 async function copyDataDir() {
@@ -214,7 +214,7 @@ watch(trashRetentionDays, async (v) => {
   try {
     await setSetting("trash_retention_days", String(v));
   } catch (e) {
-    appStore.showClipToast("info", `⚠ 回收站保留天数保存失败：${e}`);
+    appStore.showClipToast("error", `回收站保留天数保存失败：${e}`);
   }
 });
 // 0（永久保留）是合法值，必须原样显示；仅缺失/非法/负数回退默认 30

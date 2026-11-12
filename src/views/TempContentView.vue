@@ -138,7 +138,7 @@ async function saveDetail() {
     }
     appStore.showClipToast("success", detailMode.value === "append" ? "已追加" : "已保存");
   } catch (e) {
-    appStore.showClipToast("info", String(e));
+    appStore.showClipToast("error", String(e));
   } finally {
     detailBusy.value = false;
   }
@@ -158,7 +158,7 @@ async function onDetailCatChange(v: number) {
     await tempStore.setCategory(id, v === -1 ? null : v);
     detailTarget.value = tempStore.items.find((i) => i.id === id) || null;
   } catch (e) {
-    appStore.showClipToast("info", String(e));
+    appStore.showClipToast("error", String(e));
   }
 }
 
@@ -170,7 +170,7 @@ async function setDetailPermanent() {
     detailTarget.value = tempStore.items.find((i) => i.id === id) || null;
     appStore.showClipToast("success", "已设为永不过期");
   } catch (e) {
-    appStore.showClipToast("info", String(e));
+    appStore.showClipToast("error", String(e));
   }
 }
 
@@ -182,7 +182,7 @@ async function confirmDetailDelete() {
     forceCloseDetail();
     appStore.showClipToast("success", "已删除，可在回收站恢复");
   } catch (e) {
-    appStore.showClipToast("info", String(e));
+    appStore.showClipToast("error", String(e));
   }
 }
 
@@ -236,7 +236,7 @@ async function menuPickCategory(categoryId: number | null) {
     }
     appStore.showClipToast("success", "分类已更新");
   } catch (e) {
-    appStore.showClipToast("info", String(e));
+    appStore.showClipToast("error", String(e));
   }
 }
 
@@ -461,7 +461,7 @@ async function submitNewCategory() {
     catNewName.value = "";
     appStore.showClipToast("success", "分类已创建");
   } catch (e) {
-    appStore.showClipToast("info", "创建失败：" + String(e));
+    appStore.showClipToast("error", "创建失败：" + String(e));
   }
 }
 async function submitRenameCategory() {
@@ -471,7 +471,7 @@ async function submitRenameCategory() {
     catRenameId.value = null;
     appStore.showClipToast("success", "分类已重命名");
   } catch (e) {
-    appStore.showClipToast("info", "重命名失败：" + String(e));
+    appStore.showClipToast("error", "重命名失败：" + String(e));
   }
 }
 async function submitDeleteCategory(id: number) {
@@ -482,7 +482,7 @@ async function submitDeleteCategory(id: number) {
     }
     appStore.showClipToast("success", `分类已删除，${n} 张便签回到未分类`);
   } catch (e) {
-    appStore.showClipToast("info", "删除失败：" + String(e));
+    appStore.showClipToast("error", "删除失败：" + String(e));
   }
 }
 
@@ -554,7 +554,7 @@ async function submitAdd() {
     showAdd.value = false;
     appStore.showClipToast("success", "已添加");
   } catch (e) {
-    appStore.showClipToast("info", String(e));
+    appStore.showClipToast("error", String(e));
   }
 }
 
@@ -563,7 +563,7 @@ async function copy(text: string) {
     await tempStore.copy(text);
     appStore.showClipToast("success", "已复制");
   } catch (e) {
-    appStore.showClipToast("info", String(e));
+    appStore.showClipToast("error", String(e));
   }
 }
 
@@ -587,7 +587,7 @@ async function submitPromote() {
     showPromote.value = false;
     appStore.showClipToast("success", "已转存为命令");
   } catch (e) {
-    appStore.showClipToast("info", String(e));
+    appStore.showClipToast("error", String(e));
   }
 }
 </script>

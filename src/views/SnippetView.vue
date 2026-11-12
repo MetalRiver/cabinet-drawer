@@ -160,7 +160,7 @@ async function submit() {
     showForm.value = false;
     appStore.showClipToast("success", isEdit.value ? "已保存" : "已添加");
   } catch (e) {
-    appStore.showClipToast("info", String(e));
+    appStore.showClipToast("error", String(e));
   }
 }
 
@@ -169,7 +169,7 @@ async function copy(item: any) {
     await snippetsStore.copy(item.id);
     appStore.showClipToast("success", "已复制");
   } catch (e) {
-    appStore.showClipToast("info", String(e));
+    appStore.showClipToast("error", String(e));
   }
 }
 
@@ -193,7 +193,7 @@ async function confirmRemove(id: number) {
     await snippetsStore.remove(id);
     appStore.showClipToast("success", "已删除");
   } catch (e) {
-    appStore.showClipToast("info", String(e));
+    appStore.showClipToast("error", String(e));
   } finally {
     deletingId.value = null;
     confirmingDeleteId.value = null;

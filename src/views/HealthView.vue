@@ -140,7 +140,7 @@ async function relink(item: unknown) {
     await softwareStore.loadItems();
     await softwareStore.loadInvalidApps();
   } catch (e) {
-    appStore.showClipToast("info", "重新关联失败：" + String(e));
+    appStore.showClipToast("error", "重新关联失败：" + String(e));
   }
 }
 
@@ -148,7 +148,7 @@ async function openLocation(item: unknown) {
   try {
     await openAppLocation((item as { id: number }).id);
   } catch (e) {
-    appStore.showClipToast("info", String(e));
+    appStore.showClipToast("error", String(e));
   }
 }
 
@@ -178,7 +178,7 @@ async function seedFixtures() {
     const r = await softwareStore.seedTestFixtures();
     appStore.showClipToast("success", `已播种 ${r.inserted} 条验收记录（清理上轮 ${r.cleared_previous} 条），列表已刷新`);
   } catch (e) {
-    appStore.showClipToast("info", "播种失败：" + String(e));
+    appStore.showClipToast("error", "播种失败：" + String(e));
   } finally {
     seedingFixtures.value = false;
   }
@@ -191,7 +191,7 @@ async function resetFixtures() {
     const n = await softwareStore.clearTestFixtures();
     appStore.showClipToast("success", n > 0 ? `已重置：${n} 条测试记录移入回收站（可恢复）` : "没有需要重置的测试记录");
   } catch (e) {
-    appStore.showClipToast("info", "重置失败：" + String(e));
+    appStore.showClipToast("error", "重置失败：" + String(e));
   } finally {
     clearingFixtures.value = false;
   }

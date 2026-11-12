@@ -184,7 +184,7 @@ export const useWidgetStore = defineStore("widget", () => {
   function reportSaveError(context: string, e: unknown) {
     console.error(`[widgetStore] 保存设置失败（${context}）`, e);
     try {
-      useAppStore().showClipToast("info", `⚠ 设置保存失败（${context}）：${e}`);
+      useAppStore().showClipToast("error", `设置保存失败（${context}）：${e}`);
     } catch {
       /* toast 通道不可用时至少 console 有记录 */
     }
