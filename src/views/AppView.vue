@@ -331,11 +331,18 @@ async function reextractIcons() {
   if (reextractingIcons.value) return;
   reextractingIcons.value = true;
   try {
-    // forceClear=true：清空 db.icon_path + 本地 PNG → 强制重抽所有
-    const n = await softwareStore.refreshAllIcons({ forceClear: true });
+    // R6-02B-F4.1：手动「重抽(N)」= 只为 N 条符合条件的缺失记录补齐图标，
+    // 绝不因点击补齐按钮就清空全部图标路径或删除全部缓存。
+    // 修复前误传 forceClear:true → 走 force_reextract_icons（clear_all_cache +
+    // clear_all_icon_paths），实测：按钮显示 4、实际处理 5（把已有图标的 G 也重抽覆盖），
+    // 并删光共享缓存目录里其他测试库留下的 PNG。
+    // 现在与 onMounted 的自动补齐走同一条非破坏性路径：fill_missing_icons 的资格条件
+    // （icon_path 空 / 文件丢失 / 归属不符；url 与路径确认失效排除；入口文件真实存在
+    // 的 uncertain 允许抽图）即为按钮 N 的口径。
+    const n = await softwareStore.refreshAllIcons();
     appStore.showClipToast(
       "success",
-      n > 0 ? `已重新抽取 ${n} 个图标` : "图标已是最新"
+      n > 0 ? `已补齐 ${n} 个缺失图标` : "图标已是最新，无需重抽"
     );
   } catch (e) {
     appStore.showClipToast("warning", "重抽失败：" + String(e));
@@ -1665,7 +1672,7 @@ async function confirmDeleteApp(id: number | null) {
           v-if="missingIconCount > 0"
           class="action-btn action-btn-warn tap"
           :disabled="reextractingIcons"
-          :title="`${missingIconCount} 个软件图标缺失，点击重抽`"
+          :title="`${missingIconCount} 个软件图标缺失，点击补齐（不会清空已有图标）`"
           @click="reextractIcons"
         >
           <template v-if="!reextractingIcons">🎨 <span>重抽 ({{ missingIconCount }})</span></template>
