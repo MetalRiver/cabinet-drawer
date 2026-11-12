@@ -189,7 +189,25 @@ fn icon_write_guard(_target: &std::path::Path, _source_path: &str, _caller: &str
 /// G7-2 隔离修正：目录名改为按 identifier 解析（app_identity::app_dir_name）——
 /// 正式版=com.drawer-box.app（与历史硬编码逐字节一致）；
 /// 候选版=com.drawer-box.candidate（与资产 scope `$APPLOCALDATA/icons/**/*` 对齐，不再写穿正式缓存）。
+///
+/// R6-02C-05（PL-045 兼容方案）：显式设置 `DRAWER_CONFIG_DIR` 时，缓存根改为
+/// `<config_dir>/icons`——多隔离测试库互不清理（此前共享 identifier 目录，
+/// 「清除重建」会删光其他库的 PNG）。兼容性论证：
+/// 1) 既有 icon_path 为指向旧缓存的绝对路径，文件仍在 → 存在性检查通过，不触发重抽；
+/// 2) 归属校验比较 `stem == cache_key(path)`，键名与目录无关 → 不会误判重基；
+/// 3) 新提取写入新目录 → 各库隔离；`clear_all_cache` 只清当前根，旧目录永不触碰；
+/// 4) 旧缓存不迁移（PNG 可再生），不删除任何旧文件。
+/// 正式用户环境无该变量，行为零变化。
 pub fn cache_root() -> PathBuf {
+    if let Ok(dir) = std::env::var("DRAWER_CONFIG_DIR") {
+        if !dir.trim().is_empty() {
+            let root = PathBuf::from(dir.trim()).join("icons");
+            if !root.exists() {
+                let _ = fs::create_dir_all(&root);
+            }
+            return root;
+        }
+    }
     let base = std::env::var("LOCALAPPDATA")
         .or_else(|_| std::env::var("APPDATA"))
         .unwrap_or_else(|_| ".".to_string());
