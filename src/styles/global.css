@@ -452,7 +452,13 @@ input, select, button, textarea {
 /* 窄窗（≤419）：标题独占一行，操作按钮换到第二行，避免标题被挤成竖排 */
 @media (max-width: 419px) {
   .view-header { flex-wrap: wrap; row-gap: 8px; }
+  /* R6-02B F1 修复：view-header-left 的 flex:1 = flex-basis 0 → 假想主轴宽度 0，
+     flex-wrap 把它和按钮排放同一行（0 + 268 < 296），标题仍被挤成"软."。
+     basis 100% 强制标题左组独占第一行，按钮排换行到第二行。 */
+  .view-header-left { flex-basis: 100%; }
   .view-header-actions { width: 100%; justify-content: flex-end; }
+  /* R6-02B F1：筛选按钮文字一并图标化（☰），与 action-btn 口径一致 */
+  .view-header-actions .filter-btn-label { display: none; }
 }
 
 .view-header-actions { display: flex; gap: 5px; flex-shrink: 0; align-items: center; }

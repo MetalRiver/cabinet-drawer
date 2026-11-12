@@ -1664,8 +1664,8 @@ async function confirmDeleteApp(id: number | null) {
             : '软件健康检查：当前全部正常，点击查看'"
           @click="router.push('/health')"
         >
-          <template v-if="softwareStore.invalidCount > 0">⚠️ 失效 ({{ softwareStore.invalidCount }})</template>
-          <template v-else>🩺 健康</template>
+          <template v-if="softwareStore.invalidCount > 0">⚠️ <span>失效 ({{ softwareStore.invalidCount }})</span></template>
+          <template v-else>🩺 <span>健康</span></template>
         </button>
         <button class="action-btn action-btn-text tap" @click="openScan" title="扫描系统">
           🔍 <span>扫描</span>
