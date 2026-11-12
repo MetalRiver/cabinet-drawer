@@ -583,7 +583,7 @@ function fmtTime(ts: number) {
             <button
               class="pwd-toggle tap"
               @click="addShowPassword = !addShowPassword"
-            >
+             :title="addShowPassword ? '隐藏密码' : '显示密码'" :aria-label="addShowPassword ? '隐藏密码' : '显示密码'">
               {{ addShowPassword ? "🙈" : "👁️" }}
             </button>
           </div>
@@ -764,6 +764,8 @@ function fmtTime(ts: number) {
                   <button
                     class="mini-btn tap"
                     :disabled="getRowState(item.id).isLoading"
+                    :title="getRowState(item.id).showPassword ? '隐藏密码' : '显示密码'"
+                    :aria-label="getRowState(item.id).showPassword ? '隐藏密码' : '显示密码'"
                     @click="openVerify('reveal', item.id)"
                     @dblclick.stop
                   >
@@ -772,6 +774,8 @@ function fmtTime(ts: number) {
                   <button
                     class="mini-btn tap"
                     :disabled="getRowState(item.id).isLoading"
+                    title="复制密码（需验证主密码，剪贴板将自动清除）"
+                    aria-label="复制密码"
                     @click="copyPasswordFromRow(item)"
                     @dblclick.stop
                   >
@@ -784,7 +788,7 @@ function fmtTime(ts: number) {
                 <span class="detail-label">网址</span>
                 <div class="detail-value">
                   <a class="link" :href="item.url" target="_blank" rel="noopener" @dblclick.prevent.stop>{{ item.url }}</a>
-                  <button class="mini-btn tap" @click="copyUrl(item)" @dblclick.stop>📋</button>
+                  <button class="mini-btn tap" @click="copyUrl(item)" @dblclick.stop title="复制网址" aria-label="复制网址">📋</button>
                 </div>
               </div>
 
@@ -828,7 +832,7 @@ function fmtTime(ts: number) {
                   <button
                     class="pwd-toggle tap"
                     @click="getRowState(item.id).showPassword = !getRowState(item.id).showPassword"
-                  >
+                   :title="getRowState(item.id).showPassword ? '隐藏密码' : '显示密码'" :aria-label="getRowState(item.id).showPassword ? '隐藏密码' : '显示密码'">
                     {{ getRowState(item.id).showPassword ? "🙈" : "👁️" }}
                   </button>
                 </div>
