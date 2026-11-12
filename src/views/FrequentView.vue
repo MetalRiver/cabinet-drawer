@@ -318,7 +318,8 @@ function onIconError(item: FrequentItem) {
         @click="activate(item)"
       >
         <div class="type-stripe" :class="`stripe-${item.type}`"></div>
-        <div class="top-rank">#{{ i + 1 }}</div>
+        <!-- R6-02C-05（PL-071）：零使用记录不显示排名——排序仍按 use_count，但「#N 高频」语义只属于真实使用过的条目 -->
+        <div v-if="item.useCount > 0" class="top-rank">#{{ i + 1 }}</div>
         <!-- P0-#Z：火苗徽章放回右上角（缩小，不遮挡） -->
         <span
           v-if="item.useCount > 0"
@@ -381,7 +382,7 @@ function onIconError(item: FrequentItem) {
     <!-- 空状态 -->
     <div v-if="items.length === 0" class="empty">
       <div class="empty-icon">⭐</div>
-      <div class="empty-text">还没有使用记录<br />去密码/软件/命令行/临时 区点点看</div>
+      <div class="empty-text">这里会自动收录你添加的软件、密码、命令和便签<br />去各专区添加内容后，就会出现在这里，点一下直达</div>
     </div>
   </div>
 </template>
