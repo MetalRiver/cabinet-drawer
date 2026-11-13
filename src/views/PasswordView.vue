@@ -1729,4 +1729,18 @@ defineExpose({
   padding-top: 2px;
   border-top: 1px dashed var(--border);
 }
+
+/* R3.1：窄窗紧凑化详情卡——320~400px 下减少所需滚动量，
+   让底部「编辑/删除/复制账号」与收起按钮更容易到达。
+   不裁切、不隐藏任何内容，仅收紧内距与间距；≥480px 不受影响。 */
+@media (max-width: 420px) {
+  .pwd-detail-card { padding: 12px 12px; }
+  .pwd-detail-header { padding-bottom: 10px; margin-bottom: 10px; }
+  .pwd-detail-body,
+  .pwd-edit-body,
+  .pwd-deleting-body { gap: 6px; }
+  .detail-row { margin-bottom: 8px; }
+  .row-actions { gap: 6px; }
+  .pwd-grid { gap: 6px; }
+}
 </style>

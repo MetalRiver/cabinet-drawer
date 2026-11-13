@@ -43,6 +43,18 @@ const customPath = ref("");
 const attachPath = ref("");
 const showCustom = ref(false);
 const showRecover = ref(false);
+// R3.1：推荐路径一键复制 + 已复制反馈
+const copied = ref(false);
+async function copyPath(p: string | undefined) {
+  if (!p) return;
+  try {
+    await navigator.clipboard.writeText(p);
+    copied.value = true;
+    setTimeout(() => { copied.value = false; }, 1800);
+  } catch {
+    copied.value = false;
+  }
+}
 
 const isChoose = computed(() => props.mode.kind === "choose");
 const isRecover = computed(() => !isChoose.value);
@@ -207,63 +219,93 @@ async function onAbandon() {
     <!-- ===== 选择数据保存位置 ===== -->
     <div v-if="isChoose" class="dr-body">
       <div v-if="isTestEdition" class="edition-badge edition-badge-float" title="验收便携测试版：数据将保存在本文件夹内，删除文件夹即卸载，与正式版完全隔离">测试版</div>
-      <h1 class="dr-title">请选择抽屉柜的数据保存位置</h1>
-      <p class="dr-sub">数据丢失很难恢复。大多数用户直接使用推荐位置即可；数据会一直保存在你选择的地方。</p>
+
+      <header class="dr-header">
+        <h1 class="dr-title">选择数据保存位置</h1>
+        <p class="dr-sub">数据会一直保存在你选择的地方。不确定就用推荐位置，之后也可以随时更改。</p>
+      </header>
 
       <p v-if="notice" class="dr-notice">{{ notice }}</p>
 
-      <!-- 主入口：唯一主按钮 -->
-      <div class="dr-primary" :class="{ disabled: busy }">
+      <!-- A. 推荐保存位置：最高视觉权重 -->
+      <section class="dr-card dr-card-rec" :class="{ disabled: busy }">
+        <div class="dr-card-rec-head">
+          <span class="dr-card-rec-icon">💾</span>
+          <div class="dr-card-rec-titles">
+            <div class="dr-card-rec-title">推荐保存位置
+              <span class="dr-badge-rec">推荐</span>
+            </div>
+            <div class="dr-card-rec-desc">大多数用户直接用这个即可，一键完成初始化。</div>
+          </div>
+        </div>
+        <div class="dr-path-box">
+          <span class="dr-path-label">将保存到</span>
+          <code class="dr-path-value">{{ mode.config_root }}</code>
+          <button class="dr-copy" :disabled="busy" @click="copyPath(mode.config_root)" title="复制路径">
+            {{ copied ? "✓ 已复制" : "复制路径" }}
+          </button>
+        </div>
         <button class="dr-btn-primary" :disabled="busy" @click="onChooseRecommended">
-          💾 使用推荐位置
+          使用推荐位置
         </button>
-        <code class="dr-card-path">将保存到：{{ mode.config_root }}</code>
         <p v-if="errRecommended" class="dr-error">{{ errRecommended }}</p>
-      </div>
+      </section>
 
-      <!-- 次级入口 1：自定义数据位置 -->
-      <div class="dr-sec">
-        <button class="dr-sec-head" :disabled="busy" @click="showCustom = !showCustom">
-          <span class="dr-sec-arrow">{{ showCustom ? "▾" : "▸" }}</span>
-          想放到 D 盘等其他位置？
-        </button>
-        <div v-if="showCustom" class="dr-sec-body">
-          <p class="dr-sec-desc">可将核心数据保存到 D 盘等其他本地磁盘。</p>
+      <!-- B. 自定义保存位置 -->
+      <section class="dr-card" :class="{ disabled: busy }">
+        <div class="dr-card-head-row">
+          <span class="dr-card-icon">📂</span>
+          <div class="dr-card-titles">
+            <div class="dr-card-title">自己选择保存位置</div>
+            <div class="dr-card-desc">想把数据放在 D 盘或其他磁盘/文件夹，用这个。</div>
+          </div>
+          <button class="dr-toggle" :disabled="busy" @click="showCustom = !showCustom">
+            {{ showCustom ? "收起" : "展开" }}
+          </button>
+        </div>
+        <div v-if="showCustom" class="dr-card-body">
           <div class="dr-row">
             <input v-model="customPath" class="dr-input" placeholder="例如 D:\抽屉柜数据" :disabled="busy" />
-            <button class="dr-mini" :disabled="busy" @click="onPickCustom">选择位置</button>
+            <button class="dr-mini" :disabled="busy" @click="onPickCustom">浏览…</button>
           </div>
+          <p v-if="customPath" class="dr-path-inline">已选择：<code>{{ customPath }}</code></p>
           <button class="dr-btn" :disabled="busy || !customPath.trim()" @click="onBeginCustom">
             {{ busy ? "处理中…" : "使用该位置" }}
           </button>
           <p v-if="errCustom" class="dr-error">{{ errCustom }}</p>
         </div>
-      </div>
+      </section>
 
-      <!-- 次级入口 2：恢复数据（已有目录 / 加密备份，保持可发现性） -->
-      <div class="dr-sec">
-        <button class="dr-sec-head" :disabled="busy" @click="showRecover = !showRecover">
-          <span class="dr-sec-arrow">{{ showRecover ? "▾" : "▸" }}</span>
-          恢复数据：重装过、换过电脑，或有加密备份文件
-        </button>
-        <div v-if="showRecover" class="dr-sec-body">
+      <!-- C. 数据恢复 -->
+      <section class="dr-card" :class="{ disabled: busy }">
+        <div class="dr-card-head-row">
+          <span class="dr-card-icon">🔄</span>
+          <div class="dr-card-titles">
+            <div class="dr-card-title">已有数据？从备份恢复</div>
+            <div class="dr-card-desc">重装系统、更换电脑，或手上有加密备份文件时用这个。需要原来的数据目录或备份文件 + 备份主密码。</div>
+          </div>
+          <button class="dr-toggle" :disabled="busy" @click="showRecover = !showRecover">
+            {{ showRecover ? "收起" : "展开" }}
+          </button>
+        </div>
+        <div v-if="showRecover" class="dr-card-body">
           <!-- 已有数据目录 -->
           <div class="dr-block">
-            <div class="dr-block-head">🔄 使用已有数据目录</div>
-            <p class="dr-sec-desc">重新安装 Windows 或抽屉柜后，连接原来的数据继续使用。</p>
+            <div class="dr-block-head">🔄 连接原有数据目录</div>
+            <p class="dr-sec-desc">重装 Windows 或抽屉柜后，指向原来的数据文件夹即可继续使用，不会覆盖其中数据。</p>
             <div class="dr-row">
               <input v-model="attachPath" class="dr-input" placeholder="选择原数据所在目录" :disabled="busy" />
-              <button class="dr-mini" :disabled="busy" @click="onPickAttach">选择位置</button>
+              <button class="dr-mini" :disabled="busy" @click="onPickAttach">浏览…</button>
             </div>
             <button class="dr-btn" :disabled="busy || !attachPath.trim()" @click="onAttachExisting">
               {{ busy ? "处理中…" : "连接该目录" }}
             </button>
             <p v-if="errAttach" class="dr-error">{{ errAttach }}</p>
           </div>
-          <!-- 从加密备份恢复（Phase 2C-5，第四入口） -->
+          <!-- 从加密备份恢复 -->
           <div class="dr-block">
-            <div class="dr-block-head">🗄️ 从加密备份恢复</div>
-            <p class="dr-sec-desc">更换电脑或丢失数据后，用之前导出的 .drawerbox 备份文件恢复。</p>
+            <div class="dr-block-head">🗄️ 从加密备份文件恢复</div>
+            <p class="dr-sec-desc">用之前导出的 .drawerbox 备份文件恢复，需要备份时设置的主密码。</p>
             <div class="dr-row">
               <input v-model="backupFilePath" class="dr-input" placeholder="选择 .drawerbox 备份文件" :disabled="busy" readonly />
               <button class="dr-mini" :disabled="busy" @click="onPickBackupFile">选择文件</button>
@@ -287,17 +329,17 @@ async function onAbandon() {
               </label>
               <div v-if="restoreTargetMode === 'custom'" class="dr-row">
                 <input v-model="restoreCustomPath" class="dr-input" placeholder="例如 D:\抽屉柜数据" :disabled="busy" />
-                <button class="dr-mini" :disabled="busy" @click="onPickRestoreCustom">选择位置</button>
+                <button class="dr-mini" :disabled="busy" @click="onPickRestoreCustom">浏览…</button>
               </div>
             </div>
             <button class="dr-btn primary" :disabled="busy || !backupFilePath.trim() || !backupPassword" @click="onBeginBackupRestore">
               {{ busy ? "恢复中…" : "从备份恢复" }}
             </button>
-            <p class="dr-hint">恢复使用备份自身的主密码与恢复短语；数据将恢复到你选择的上述位置，与备份原来的位置无关。</p>
+            <p class="dr-hint">恢复会使用备份自身的主密码与恢复短语；数据将恢复到你选择的上述位置，与备份原来的位置无关。恢复前会再次确认，不会未经确认覆盖数据。</p>
             <p v-if="errBackup" class="dr-error">{{ errBackup }}</p>
           </div>
         </div>
-      </div>
+      </section>
     </div>
 
     <!-- ===== 未完成的初始化：继续 / 放弃 ===== -->
@@ -324,33 +366,111 @@ async function onAbandon() {
   height: 100%;
   width: 100%;
   overflow-y: auto;
-  display: flex; /* R1：flex column + margin auto——高窗口垂直居中，超限自动回退滚动 */
+  display: flex;
   flex-direction: column;
   background: linear-gradient(160deg, #0b1020 0%, #131a2e 100%);
   color: #e8ecf3;
   box-sizing: border-box;
 }
 .dr-topbar { height: 28px; width: 100%; flex-shrink: 0; }
-.dr-body { padding: 8px 22px 24px; margin: auto 0; }
-.dr-title { margin: 0 0 8px; font-size: 17px; }
-.dr-sub { margin: 0 0 14px; font-size: 12px; line-height: 1.7; color: #9aa5bd; }
-.dr-notice { margin: 0 0 12px; font-size: 12px; color: #6fd0a0; }
-
-/* Batch 1.5：主入口（唯一主按钮 + 路径小字 + 就近错误） */
-.dr-primary {
-  border: 1px solid #2c3550;
-  background: #161c2c;
-  border-radius: 12px;
-  padding: 14px;
-  margin-bottom: 12px;
+/* R3.1：稳定内容容器——顶部对齐 + 居中限宽，消除高窗下的大片无意义留白 */
+.dr-body {
+  width: 100%;
+  max-width: 560px;
+  margin: 0 auto;
+  padding: 20px 22px 32px;
+  box-sizing: border-box;
 }
-.dr-primary.disabled { opacity: 0.6; }
+.dr-header { margin-bottom: 18px; }
+.dr-title { margin: 0 0 8px; font-size: 20px; font-weight: 700; color: #f2f5fb; }
+.dr-sub { margin: 0; font-size: 13px; line-height: 1.7; color: #9aa5bd; }
+.dr-notice { margin: 0 0 14px; font-size: 13px; color: #6fd0a0; }
+
+/* ===== 通用卡片 ===== */
+.dr-card {
+  border: 1px solid #232b42;
+  background: rgba(19, 26, 42, 0.82);
+  border-radius: 14px;
+  padding: 16px;
+  margin-bottom: 14px;
+  transition: border-color 0.15s var(--ease-smooth, ease), background-color 0.15s var(--ease-smooth, ease);
+}
+.dr-card:hover { border-color: #34406a; background: rgba(24, 32, 52, 0.86); }
+.dr-card.disabled { opacity: 0.6; }
+.dr-card-head-row { display: flex; align-items: flex-start; gap: 12px; }
+.dr-card-icon { font-size: 20px; line-height: 1.2; flex-shrink: 0; }
+.dr-card-titles { flex: 1; min-width: 0; }
+.dr-card-title { font-size: 15px; font-weight: 650; color: #eef2f9; margin-bottom: 4px; }
+.dr-card-desc { margin: 0; font-size: 12.5px; color: #9aa5bd; line-height: 1.65; }
+.dr-toggle {
+  flex-shrink: 0;
+  border: 1px solid #3a4568;
+  background: #1c2438;
+  color: #c6cede;
+  border-radius: 7px;
+  padding: 5px 11px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.dr-toggle:hover:not(:disabled) { border-color: #4a5a8a; color: #eef2f9; }
+.dr-toggle:disabled { opacity: 0.6; cursor: default; }
+.dr-card-body { margin-top: 14px; }
+
+/* ===== A. 推荐位置：最高视觉权重（提亮边框，不用纯色大色块）===== */
+.dr-card-rec {
+  border: 1px solid #3b6ef5;
+  background: linear-gradient(180deg, rgba(59, 110, 245, 0.12) 0%, rgba(22, 28, 44, 0.9) 100%);
+  padding: 16px;
+}
+.dr-card-rec:hover { border-color: #5b8bff; }
+.dr-card-rec-head { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 14px; }
+.dr-card-rec-icon { font-size: 24px; line-height: 1.1; flex-shrink: 0; }
+.dr-card-rec-titles { flex: 1; min-width: 0; }
+.dr-card-rec-title {
+  font-size: 16px; font-weight: 700; color: #ffffff;
+  display: flex; align-items: center; gap: 8px; margin-bottom: 5px;
+}
+.dr-badge-rec {
+  font-size: 11px; font-weight: 600; color: #9dbaff;
+  background: rgba(59, 110, 245, 0.22);
+  border: 1px solid rgba(91, 139, 255, 0.5);
+  border-radius: 6px; padding: 1px 7px;
+}
+.dr-card-rec-desc { font-size: 12.5px; color: #aab6cf; line-height: 1.65; }
+/* 路径展示：放大 + 提对比 + 复制按钮 */
+.dr-path-box {
+  display: flex; align-items: center; gap: 10px;
+  background: #0d1220;
+  border: 1px solid #2c3550;
+  border-radius: 9px;
+  padding: 10px 12px;
+  margin-bottom: 14px;
+}
+.dr-path-label { font-size: 12px; color: #8b97b3; flex-shrink: 0; }
+.dr-path-value {
+  flex: 1; min-width: 0;
+  font-size: 13px; color: #dce4f2;
+  font-family: inherit;
+  word-break: break-all;
+  line-height: 1.5;
+}
+.dr-copy {
+  flex-shrink: 0;
+  border: 1px solid #3a4568;
+  background: #1c2438;
+  color: #c6cede;
+  border-radius: 7px;
+  padding: 6px 11px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.dr-copy:hover:not(:disabled) { border-color: #4a5a8a; color: #eef2f9; }
 .dr-btn-primary {
   width: 100%;
   border: 1px solid #3b6ef5;
   background: #3b6ef5;
   color: #ffffff;
-  border-radius: 8px;
+  border-radius: 9px;
   padding: 12px 14px;
   font-size: 15px;
   font-weight: 600;
@@ -358,70 +478,18 @@ async function onAbandon() {
 }
 .dr-btn-primary:hover:not(:disabled) { filter: brightness(1.1); }
 .dr-btn-primary:disabled { opacity: 0.6; cursor: default; }
-.dr-primary .dr-card-path { margin-top: 10px; }
 
-/* Batch 1.5：次级折叠入口 */
-.dr-sec {
-  border: 1px solid #232b42;
-  background: #131a2a;
-  border-radius: 10px;
-  margin-bottom: 10px;
-  overflow: hidden;
+/* ===== B/C 共用内部元素 ===== */
+.dr-block { margin-top: 14px; }
+.dr-block + .dr-block { padding-top: 14px; border-top: 1px dashed #232b42; }
+.dr-block-head { font-size: 13.5px; font-weight: 650; margin-bottom: 5px; color: #dce4f2; }
+.dr-sec-desc { margin: 0 0 10px; font-size: 12.5px; color: #9aa5bd; line-height: 1.65; }
+.dr-path-inline {
+  margin: 0 0 10px; font-size: 12.5px; color: #9aa5bd;
 }
-.dr-sec-head {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  background: transparent;
-  border: none;
-  color: #c6cede;
-  font-size: 13px;
-  padding: 11px 14px;
-  cursor: pointer;
-  text-align: left;
-}
-.dr-sec-head:hover:not(:disabled) { color: #e8ecf3; }
-.dr-sec-head:disabled { opacity: 0.6; cursor: default; }
-.dr-sec-arrow { color: #7c8aa8; font-size: 11px; width: 12px; }
-.dr-sec-body { padding: 2px 14px 14px; border-top: 1px solid #232b42; }
-.dr-sec-desc { margin: 10px 0; font-size: 12px; color: #9aa5bd; line-height: 1.6; }
-.dr-block { margin-top: 12px; }
-.dr-block + .dr-block { padding-top: 12px; border-top: 1px dashed #232b42; }
-.dr-block-head { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
-
-.dr-backup-panel {
-  margin-top: 10px;
-  padding: 10px;
-  border: 1px solid #2c3550;
-  border-radius: 8px;
-  background: #101624;
-}
+.dr-path-inline code { color: #dce4f2; word-break: break-all; }
 .dr-restore-loc { margin: 10px 0; display: flex; flex-direction: column; gap: 6px; }
-.dr-radio { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #c6cede; cursor: pointer; }
-.dr-card {
-  border: 1px solid #2c3550;
-  background: #161c2c;
-  border-radius: 12px;
-  padding: 14px;
-  cursor: pointer;
-  transition: border-color 0.15s;
-}
-.dr-card:not(.disabled):hover { border-color: #3b6ef5; }
-.dr-card.disabled { opacity: 0.6; cursor: default; }
-.dr-card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
-.dr-card-icon { font-size: 16px; }
-.dr-card-title { font-size: 14px; font-weight: 600; }
-.dr-card-desc { margin: 0 0 10px; font-size: 12px; color: #9aa5bd; line-height: 1.6; }
-.dr-card-path {
-  display: block;
-  font-size: 11px;
-  color: #7c8aa8;
-  background: #0f1422;
-  border-radius: 6px;
-  padding: 6px 8px;
-  word-break: break-all;
-}
+.dr-radio { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: #c6cede; cursor: pointer; }
 .dr-row { display: flex; gap: 8px; margin-bottom: 10px; }
 .dr-input {
   flex: 1;
@@ -430,34 +498,36 @@ async function onAbandon() {
   border: 1px solid #2c3550;
   border-radius: 8px;
   color: #e8ecf3;
-  padding: 7px 10px;
-  font-size: 12px;
+  padding: 8px 10px;
+  font-size: 12.5px;
 }
 .dr-mini {
   border: 1px solid #3a4568;
   background: #232b42;
   color: #e8ecf3;
   border-radius: 8px;
-  padding: 7px 12px;
-  font-size: 12px;
+  padding: 8px 12px;
+  font-size: 12.5px;
   cursor: pointer;
   white-space: nowrap;
 }
+.dr-mini:hover:not(:disabled) { border-color: #4a5a8a; }
 .dr-btn {
   width: 100%;
   border: 1px solid #3a4568;
   background: #232b42;
   color: #e8ecf3;
   border-radius: 8px;
-  padding: 9px 14px;
+  padding: 10px 14px;
   font-size: 13px;
   cursor: pointer;
 }
+.dr-btn:hover:not(:disabled) { border-color: #4a5a8a; background: #28304a; }
 .dr-btn.primary { background: #3b6ef5; border-color: #3b6ef5; }
 .dr-btn.danger { background: #40253a; border-color: #7a3b5c; }
 .dr-btn:disabled { opacity: 0.6; cursor: default; }
+.dr-target { font-size: 12.5px; color: #9aa5bd; word-break: break-all; }
+.dr-hint { font-size: 11.5px; color: #7c8aa8; line-height: 1.65; }
+.dr-error { margin: 8px 0 0; font-size: 12.5px; color: #ff8fa3; line-height: 1.6; word-break: break-all; }
 .dr-actions { display: flex; gap: 10px; margin-bottom: 10px; }
-.dr-target { font-size: 12px; color: #9aa5bd; word-break: break-all; }
-.dr-hint { font-size: 11px; color: #7c8aa8; }
-.dr-error { margin: 8px 0 0; font-size: 12px; color: #ff8fa3; line-height: 1.6; word-break: break-all; }
 </style>
