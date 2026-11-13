@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from "vue";
+import { ref, watch, onMounted, onUnmounted } from "vue";
 import { useAppStore } from "./stores/app";
 import { useWidgetStore } from "./stores/widget";
 import { applyWidgetConfig, exitApp, getAppStatus, getDataRootBlock, getSetupMode, lockApp, restartApp } from "./api";
@@ -52,6 +52,7 @@ function blockText(info: DataRootBlockInfo): string {
 //   - 清空密码区 store 缓存（防止旧数据残留）
 let unlistenLock: (() => void) | null = null;
 let unlistenToggleMini: (() => void) | null = null;
+let unwatchIsLocked: (() => void) | null = null;
 
 // P0-#LOCK#POLLING#FALLBACK：除了事件监听，再加 2s 一次的轮询兜底
 // 原因：用户 build 后还是看到"应用已锁定"错误条
@@ -113,6 +114,27 @@ onMounted(async () => {
   } catch (e) {
     console.warn("[App.vue] 监听 app:lock 失败", e);
   }
+  // 修复「首次解锁后被空闲自动锁立即重新上锁，需输第二次」：
+  // 锁屏期间空闲检测器因 isLocked==true 提前 return，lastActivity 停留在上锁前的旧值；
+  // 解锁落定后第一个 tick 用陈旧 idleMs 判定 → 立即 ≥ autoLockMinutes → 误触发自动上锁。
+  // 监听 isLocked true→false（解锁落定）→ 重置 lastActivity，给完整空闲窗口。
+  // 用 watch 而非在 LockScreen 里改，可覆盖所有解锁路径（主密码 / 恢复短语）。
+  unwatchIsLocked = watch(
+    () => appStore.isLocked,
+    (locked, prev) => {
+      if (prev && !locked) {
+        lastActivity = Date.now();
+        // 关键修复：轮询 fail-closed 计时基线也要重置。
+        // 锁定期间 poll 在 isLocked 检查处提前 return，lastPollOkAt 停留在上锁前的旧值；
+        // 解锁后第一个 poll tick 的 fail-closed 检查（Date.now()-lastPollOkAt>30000）
+        // 会因陈旧基线立即成立 → window.location.reload() → 页面重载把 Pinia 重置为
+        // isLocked=true（不走 lock()），后端仍解锁 → 用户被迫二次解锁。
+        // 重置 lastPollOkAt 让 fail-closed 从解锁时刻重新计时，消除误重载。
+        lastPollOkAt = Date.now();
+        console.log("[App.vue] 解锁落定 → 重置 lastActivity + lastPollOkAt（防 fail-closed 误重载致二次解锁）");
+      }
+    },
+  );
   // Alt+M 切换 完整/迷你模式
   try {
     unlistenToggleMini = await listen("widget:toggle-mini", () => {
@@ -274,6 +296,8 @@ onUnmounted(() => {
   unlistenLock = null;
   unlistenToggleMini?.();
   unlistenToggleMini = null;
+  unwatchIsLocked?.();
+  unwatchIsLocked = null;
   if (pollTimer != null) {
     window.clearInterval(pollTimer);
     pollTimer = null;
