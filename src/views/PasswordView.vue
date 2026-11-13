@@ -383,11 +383,15 @@ async function updateRowStrength(id: number) {
 }
 
 // ===== R3：离开密码区自动收起（KeepAlive deactivated）=====
-// expanded/deleting 收起并关闭明文；editing 保留草稿不收起；重新进入后状态正确
+// expanded/deleting 收起并关闭明文；editing 保留草稿但强制隐藏明文；重新进入后状态正确
 onDeactivated(() => {
   for (const [, st] of Object.entries(rowStates)) {
     if (st.mode === "expanded" || st.mode === "deleting") {
       st.mode = "collapsed";
+      st.showPassword = false;
+    } else if (st.mode === "editing") {
+      // 编辑态：保留 mode 与未保存草稿（form 不动），但强制隐藏明文，
+      // 避免用户把新密码显示成明文后切走 tab、返回时明文仍在。
       st.showPassword = false;
     }
   }
@@ -531,6 +535,16 @@ function fmtTime(ts: number) {
   const pad = (n: number) => n.toString().padStart(2, "0");
   return `${d.getMonth() + 1}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
+
+// R3 测试钩子：script-setup 组件默认不暴露内部状态，双击隔离等测试需要驱动行内状态机。
+// 仅暴露读取与操作函数，不改变任何行为。（onDeactivated 由真实 KeepAlive 切换触发，不在此重复）
+defineExpose({
+  rowStates,
+  toggleRow,
+  enterEdit,
+  collapseRow,
+  getRowState,
+});
 </script>
 
 <template>
@@ -1169,17 +1183,18 @@ function fmtTime(ts: number) {
   border-color: rgba(255, 255, 255, 0.18);
 }
 .pwd-tile:active {
-  transform: scale(0.97);
+  /* R3：去掉 scale 缩放（规格：hover/active 用背景边框提亮，不用位移/缩放），
+     仅保留极轻微压暗反馈 */
+  background: rgba(255, 255, 255, 0.04);
 }
-/* P1-#PW#LAYOUT：选中态——展开详情时对应卡片保持高亮，明确"详情属于这张卡" */
+/* P1-#PW#LAYOUT：选中态——展开详情时对应卡片保持高亮，明确"详情属于这张卡"。
+   R3：收敛发光——去掉外层 8px/20px 投影，仅保留 2px 描边环 + 边框提亮，避免过度发光 */
 .pwd-tile.selected {
   border-color: var(--accent);
-  box-shadow:
-    0 0 0 2px var(--accent-soft),
-    0 8px 20px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 0 0 2px var(--accent-soft);
 }
 .pwd-tile.selected .pwd-tile-letter {
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45), 0 0 12px var(--accent-soft);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
 }
 .pwd-tile-letter {
   /* P3-R2（2026-11-08）视觉精修：20px → 16px（二轮收敛；上一轮 26→20 仍偏大，
