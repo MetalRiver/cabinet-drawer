@@ -337,12 +337,21 @@ onUnmounted(() => {
   </Transition>
   <Transition v-else name="boot" appear>
     <div v-if="ready" class="app-root">
+      <!-- R6-02C-06-P1-01：场景切换层加 KeepAlive——仅缓存 MainLayout。
+           修复前锁屏（失焦空闲自动锁/Alt+L/托盘）时 MainLayout 从 DOM 卸载，
+           其内部 KeepAlive 缓存随之销毁，TempContentView/PasswordView/SnippetView
+           组件实例销毁 → 编辑草稿（detailDraft/form/editForm）静默丢失。
+           缓存 MainLayout 后：锁屏→解锁走 onDeactivated/onActivated，
+           组件实例与编辑草稿保留；密码区 onDeactivated 收起明文的保护仍然生效。
+           SetupWizard/MigrationFlow/LockScreen 不在缓存内，正常销毁（一次性界面）。 -->
       <Transition name="scene" mode="out-in">
-        <SetupWizard v-if="appStore.isFirstRun" key="wizard" />
-        <!-- 0.3.0 安全升级：legacy-only 启动态必须走两阶段迁移，不允许普通解锁 -->
-        <MigrationFlow v-else-if="appStore.migrationRequired && appStore.isLocked" key="migration" />
-        <LockScreen v-else-if="appStore.isLocked" key="lock" />
-        <MainLayout v-else key="main" />
+        <KeepAlive :include="['MainLayout']">
+          <SetupWizard v-if="appStore.isFirstRun" key="wizard" />
+          <!-- 0.3.0 安全升级：legacy-only 启动态必须走两阶段迁移，不允许普通解锁 -->
+          <MigrationFlow v-else-if="appStore.migrationRequired && appStore.isLocked" key="migration" />
+          <LockScreen v-else-if="appStore.isLocked" key="lock" />
+          <MainLayout v-else key="main" />
+        </KeepAlive>
       </Transition>
       <ClipToast />
     </div>

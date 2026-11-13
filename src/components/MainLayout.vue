@@ -1,4 +1,7 @@
 <script setup lang="ts">
+// R6-02C-06-P1-01：显式组件名——App.vue 场景层 KeepAlive 按名缓存本组件，
+// 保证锁屏↔解锁切换时实例与编辑草稿保留（缓存 key 不依赖构建环境推断）。
+defineOptions({ name: "MainLayout" });
 import { onMounted, onUnmounted, ref, watch } from "vue";
 import { useRouter, useRoute } from "vue-router";
 import { useAppStore } from "../stores/app";
