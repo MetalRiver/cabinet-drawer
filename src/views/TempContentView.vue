@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, onActivated, onDeactivated, computed, nextTick } from "vue";
+import { ref, onMounted, onUnmounted, onActivated, onDeactivated, computed, nextTick, watch } from "vue";
 import { useAppStore } from "../stores/app";
 import { useWidgetStore } from "../stores/widget";
 import { useTempStore } from "../stores/temp";
 import { useSnippetsStore } from "../stores/snippets";
 import { TEMP_NEVER_EXPIRES_MS, isTempPermanent, type TempMeta } from "../api";
+import { applySavedModalSize, observeModalSize } from "../composables/useModalResize";
 import DarkSelect from "../components/DarkSelect.vue";
 import ConfirmModal from "../components/ConfirmModal.vue";
 
@@ -543,6 +544,20 @@ function openAdd() {
   addForm.value = { text: "", ttlMinutes: defaultTtl.value, title: "" };
   showAdd.value = true;
 }
+
+// R6-02C-07（弹窗尺寸统一）：新建便签弹窗支持拖拽调尺寸并记忆（非敏感 UI 偏好）
+let addModalStop: (() => void) | null = null;
+watch(showAdd, (v) => {
+  if (addModalStop) { addModalStop(); addModalStop = null; }
+  if (!v) return;
+  void nextTick(() => {
+    const el = document.querySelector(".modal-mask .modal") as HTMLElement | null;
+    if (!el) return;
+    applySavedModalSize(el, "note-add");
+    el.classList.add("modal-resizable");
+    addModalStop = observeModalSize(el, "note-add");
+  });
+});
 
 // R6-02C-06-P1-01（规则2）：新建便签取消守卫——存在未保存输入时关闭须明确确认
 const addFormDirty = computed(
@@ -1343,6 +1358,16 @@ async function submitPromote() {
 .form-input { background: rgba(0, 0, 0, 0.3); border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; color: var(--text-primary); font-size: 13px; font-family: inherit; min-width: 0; }
 .form-input:focus { outline: none; border-color: var(--accent); }
 .form-textarea { resize: vertical; font-family: inherit; min-height: 100px; }
+
+/* R6-02C-07：弹窗拖拽调尺寸——右下角把柄；min/max 防超出可视区域；textarea 随弹窗伸展 */
+.modal-resizable { resize: both; overflow: hidden; min-width: 280px; min-height: 320px; max-width: 92vw; max-height: 85vh; }
+.modal-resizable .form-textarea { flex: 1; min-height: 80px; }
+.modal-resizable .modal-body { display: flex; flex-direction: column; }
+.modal-resizable .form-row:has(.form-textarea) { flex: 1; }
+.modal-resizable .form-textarea { height: 100%; }
+@media (max-width: 419px) {
+  .modal-resizable { resize: none; width: 92% !important; height: auto !important; }
+}
 
 .btn-primary, .btn-secondary { border: none; border-radius: 8px; padding: 8px 14px; font-size: 12px; cursor: pointer; font-weight: 500; transition: all 0.15s; -webkit-app-region: no-drag; }
 .btn-primary { background: linear-gradient(135deg, var(--accent) 0%, #4fc3f7 100%); color: white; }

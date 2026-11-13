@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch, computed } from "vue";
+import { ref, onMounted, onUnmounted, watch, computed, nextTick } from "vue";
 import { useAppStore } from "../stores/app";
 import { useSnippetsStore } from "../stores/snippets";
 import ConfirmModal from "../components/ConfirmModal.vue";
+import { applySavedModalSize, observeModalSize } from "../composables/useModalResize";
 import DarkSelect from "../components/DarkSelect.vue";
 
 const appStore = useAppStore();
@@ -91,6 +92,19 @@ onMounted(() => {
 // 关键修复：去掉 watch(searchQuery) → loadItems
 // 之前每次按键都触发后端 DB 查询，导致列表项被整个替换 → 闪屏
 // 现在搜索过滤完全在客户端 computed 完成
+
+let snipModalStop: (() => void) | null = null;
+watch(showForm, (v) => {
+  if (snipModalStop) { snipModalStop(); snipModalStop = null; }
+  if (!v) return;
+  void nextTick(() => {
+    const el = document.querySelector(".modal-mask .modal") as HTMLElement | null;
+    if (!el) return;
+    applySavedModalSize(el, "snip-edit");
+    el.classList.add("modal-resizable");
+    snipModalStop = observeModalSize(el, "snip-edit");
+  });
+});
 
 function openAdd() {
   isEdit.value = false;
@@ -603,4 +617,13 @@ async function confirmRemove(id: number) {
 .modal-enter-from, .modal-leave-to { opacity: 0; }
 .toast-enter-active, .toast-leave-active { transition: all 0.3s var(--ease-smooth); }
 .toast-enter-from, .toast-leave-to { opacity: 0; transform: translateY(20px); }
+
+/* R6-02C-07：命令片段弹窗拖拽调尺寸（与便签统一） */
+.modal-resizable { resize: both; overflow: hidden; min-width: 280px; min-height: 320px; max-width: 92vw; max-height: 85vh; }
+.modal-resizable .modal-body { display: flex; flex-direction: column; }
+.modal-resizable .form-row:has(.form-textarea) { flex: 1; }
+.modal-resizable .form-textarea { flex: 1; min-height: 80px; height: 100%; }
+@media (max-width: 419px) {
+  .modal-resizable { resize: none; width: 92% !important; height: auto !important; }
+}
 </style>
