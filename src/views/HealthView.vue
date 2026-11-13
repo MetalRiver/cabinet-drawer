@@ -190,6 +190,7 @@ async function confirmBatch() {
     batchResult.value = { moved: r.moved, skipped: r.skipped, failed: r.errors.length };
     selectedIds.value = new Set();
     appStore.refreshTrashCount();
+    await Promise.all([refreshAllItems(), softwareStore.loadInvalidApps()]);
   } catch (e) {
     checkError.value = String(e);
   } finally {
@@ -225,6 +226,7 @@ async function resetFixtures() {
 }
 
 onMounted(() => {
+  void refreshAllItems();
   void softwareStore.loadInvalidApps();
 });
 </script>

@@ -389,6 +389,10 @@ export const useSoftwareStore = defineStore("software", () => {
     bumpAfterIconRefresh(0);
     await loadCategories();
     await loadItems();
+    // R4.1 闭环修复：恢复/扫描等 reloadAll 路径此前漏刷失效列表，
+    // 导致软件区徽标停在旧值（实测：回收站恢复后徽标 失效(2)，后端实时 3）。
+    // loadInvalidApps 内部仅置 invalidLoading，无 items 级防并发冲突，可安全并行。
+    await loadInvalidApps();
   }
 
   // ===== v0.4.1 软件失效治理 =====
