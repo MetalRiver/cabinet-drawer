@@ -54,7 +54,7 @@ function openDetail(item: TempMeta) {
   detailEditing.value = false;
   detailDiscardConfirm.value = false;
   detailDeleteConfirm.value = false;
-  void nextTick(() => { detailEl.value?.focus(); syncDraftProbe(); });
+  void nextTick(() => detailEl.value?.focus());
 }
 
 function openDetailAppend(item: TempMeta) {
@@ -70,7 +70,6 @@ function startDetailEdit(mode: "edit" | "append") {
   detailAppend.value = "";
   detailEditing.value = true;
   detailDiscardConfirm.value = false;
-  syncDraftProbe();
 }
 
 const detailDirty = computed(() => {
@@ -88,26 +87,14 @@ function requestCloseDetail() {
   forceCloseDetail();
 }
 
-// R6-02C-06-P1-01 验收探针（只读同步，不改变行为）：生产构建无 __vueParentComponent，
-// 通过 window 暴露草稿状态供 CDP 验收读取。
-function syncDraftProbe() {
-  (window as any).__drawerDraftProbe = {
-    target: detailTarget.value ? { id: detailTarget.value.id } : null,
-    editing: detailEditing.value,
-    draft: (detailDraft.value || "").slice(0, 32),
-  };
-}
-
 function forceCloseDetail() {
   detailTarget.value = null;
   detailEditing.value = false;
   detailDiscardConfirm.value = false;
   detailDeleteConfirm.value = false;
-  syncDraftProbe();
   detailTitle.value = "";
   detailDraft.value = "";
   detailAppend.value = "";
-  syncDraftProbe();
 }
 
 async function saveDetail() {
@@ -438,12 +425,7 @@ onUnmounted(() => {
   window.removeEventListener("scroll", onWindowScroll, true);
   window.removeEventListener("keydown", onGlobalKeydown);
 });
-// R6-02C-06-P1-01 诊断钩子：仅读取草稿状态，供验收脚本确认缓存保留语义（不改变任何行为）
-defineExpose({
-  getDetail: () => ({ target: detailTarget.value, editing: detailEditing.value, draft: detailDraft.value }),
-});
-
-onActivated(() => { startTimer(); syncDraftProbe(); });
+onActivated(startTimer);
 onDeactivated(stopTimer);
 
 // 关键修复：去掉 watch(searchQuery) → loadItems
