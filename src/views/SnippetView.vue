@@ -98,6 +98,23 @@ function openAdd() {
   showForm.value = true;
 }
 
+// R6-02C-06-P1-01（规则2）：新建命令片段取消守卫——存在未保存输入时关闭须明确确认
+const formDirty = computed(
+  () => form.value.title.trim().length > 0 || form.value.content.trim().length > 0
+);
+const discardOpen = ref(false);
+function requestCloseForm() {
+  if (formDirty.value) {
+    discardOpen.value = true;
+    return;
+  }
+  showForm.value = false;
+}
+function confirmDiscard() {
+  showForm.value = false;
+  discardOpen.value = false;
+}
+
 /** 语言 code → 中文标签（带简短解释） */
 const languageOptions = [
   { value: "text", label: "纯文本" },
@@ -300,6 +317,12 @@ async function confirmRemove(id: number) {
             <button class="modal-close tap" @click="showForm = false">×</button>
           </div>
           <div class="modal-body">
+          <!-- R6-02C-06-P1-01：未保存内容关闭确认 -->
+          <div v-if="discardOpen" class="dt-discard">
+            <span>有未保存的输入</span>
+            <button class="btn-secondary tap" data-interactive @click="discardOpen = false">继续编辑</button>
+            <button class="btn-secondary danger-text tap" data-interactive @click="confirmDiscard">放弃修改</button>
+          </div>
             <div class="form-row">
               <label>标题</label>
               <input v-model="form.title" class="form-input" placeholder="标题 *（如：Docker 常用命令）" />
@@ -323,7 +346,7 @@ async function confirmRemove(id: number) {
             </div>
           </div>
           <div class="modal-footer">
-            <button class="btn-secondary tap" @click="showForm = false">取消</button>
+            <button class="btn-secondary tap" @click="requestCloseForm">取消</button>
             <button class="btn-primary tap" @click="submit" title="标题和内容为必填项">保存</button>
           </div>
         </div>

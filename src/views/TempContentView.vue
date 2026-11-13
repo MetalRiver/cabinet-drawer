@@ -54,7 +54,7 @@ function openDetail(item: TempMeta) {
   detailEditing.value = false;
   detailDiscardConfirm.value = false;
   detailDeleteConfirm.value = false;
-  void nextTick(() => detailEl.value?.focus());
+  void nextTick(() => { detailEl.value?.focus(); syncDraftProbe(); });
 }
 
 function openDetailAppend(item: TempMeta) {
@@ -70,6 +70,7 @@ function startDetailEdit(mode: "edit" | "append") {
   detailAppend.value = "";
   detailEditing.value = true;
   detailDiscardConfirm.value = false;
+  syncDraftProbe();
 }
 
 const detailDirty = computed(() => {
@@ -87,14 +88,26 @@ function requestCloseDetail() {
   forceCloseDetail();
 }
 
+// R6-02C-06-P1-01 验收探针（只读同步，不改变行为）：生产构建无 __vueParentComponent，
+// 通过 window 暴露草稿状态供 CDP 验收读取。
+function syncDraftProbe() {
+  (window as any).__drawerDraftProbe = {
+    target: detailTarget.value ? { id: detailTarget.value.id } : null,
+    editing: detailEditing.value,
+    draft: (detailDraft.value || "").slice(0, 32),
+  };
+}
+
 function forceCloseDetail() {
   detailTarget.value = null;
   detailEditing.value = false;
   detailDiscardConfirm.value = false;
   detailDeleteConfirm.value = false;
+  syncDraftProbe();
   detailTitle.value = "";
   detailDraft.value = "";
   detailAppend.value = "";
+  syncDraftProbe();
 }
 
 async function saveDetail() {
@@ -425,7 +438,12 @@ onUnmounted(() => {
   window.removeEventListener("scroll", onWindowScroll, true);
   window.removeEventListener("keydown", onGlobalKeydown);
 });
-onActivated(startTimer);
+// R6-02C-06-P1-01 诊断钩子：仅读取草稿状态，供验收脚本确认缓存保留语义（不改变任何行为）
+defineExpose({
+  getDetail: () => ({ target: detailTarget.value, editing: detailEditing.value, draft: detailDraft.value }),
+});
+
+onActivated(() => { startTimer(); syncDraftProbe(); });
 onDeactivated(stopTimer);
 
 // 关键修复：去掉 watch(searchQuery) → loadItems
@@ -542,6 +560,24 @@ function openSummary() {
 function openAdd() {
   addForm.value = { text: "", ttlMinutes: defaultTtl.value, title: "" };
   showAdd.value = true;
+}
+
+// R6-02C-06-P1-01（规则2）：新建便签取消守卫——存在未保存输入时关闭须明确确认
+const addFormDirty = computed(
+  () => addForm.value.text.trim().length > 0 || addForm.value.title.trim().length > 0
+);
+const addDiscardOpen = ref(false);
+function requestCloseAdd() {
+  if (addFormDirty.value) {
+    addDiscardOpen.value = true;
+    return;
+  }
+  showAdd.value = false;
+}
+function confirmDiscardAdd() {
+  showAdd.value = false;
+  addDiscardOpen.value = false;
+  addForm.value = { text: "", ttlMinutes: defaultTtl.value, title: "" };
 }
 
 async function submitAdd() {
@@ -693,7 +729,7 @@ async function submitPromote() {
     </TransitionGroup>
 
     <!-- ===== U3：详情浮层（阅读 / 编辑 / 追加 / 分类 / 续期 / 复制 / 删除） ===== -->
-    <Teleport to="body">
+
       <Transition name="modal">
         <div v-if="detailTarget" class="dt-mask" @click.self="requestCloseDetail">
           <div class="dt-sheet" role="dialog" aria-modal="true" tabindex="-1" ref="detailEl">
@@ -792,10 +828,9 @@ async function submitPromote() {
           </div>
         </div>
       </Transition>
-    </Teleport>
 
     <!-- ===== U3：右键 / ⋯ 共用菜单 ===== -->
-    <Teleport to="body">
+
       <Transition name="modal">
         <div
           v-if="itemMenu.visible && itemMenu.item"
@@ -841,7 +876,6 @@ async function submitPromote() {
           </template>
         </div>
       </Transition>
-    </Teleport>
 
     <!-- 分类管理（新建/重命名/删除；删除分类不删除便签） -->
     <Transition name="modal">
@@ -886,11 +920,17 @@ async function submitPromote() {
         <div class="modal">
           <div class="modal-header">
             <span>添加便签</span>
-            <button class="modal-close tap" @click="showAdd = false">×</button>
+            <button class="modal-close tap" @click="requestCloseAdd">×</button>
           </div>
           <div class="modal-body">
             <div class="form-row">
               <label>标题（选填，≤100 字符）</label>
+            <!-- R6-02C-06-P1-01：未保存内容关闭确认 -->
+            <div v-if="addDiscardOpen" class="dt-discard">
+              <span>有未保存的输入</span>
+              <button class="btn-secondary tap" data-interactive @click="addDiscardOpen = false">继续编辑</button>
+              <button class="btn-secondary danger-text tap" data-interactive @click="confirmDiscardAdd">放弃修改</button>
+            </div>
               <input v-model="addForm.title" class="form-input" maxlength="100" placeholder="不填则显示正文预览" />
             </div>
             <div class="form-row">
@@ -903,7 +943,7 @@ async function submitPromote() {
             </div>
           </div>
           <div class="modal-footer">
-            <button class="btn-secondary tap" @click="showAdd = false">取消</button>
+            <button class="btn-secondary tap" @click="requestCloseAdd">取消</button>
             <button class="btn-primary tap" @click="submitAdd">保存</button>
           </div>
         </div>

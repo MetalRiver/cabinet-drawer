@@ -444,6 +444,29 @@ function openAdd() {
   addFormOpen.value = true;
 }
 
+// R6-02C-06-P1-01（规则2）：新建密码取消守卫——存在未保存输入时关闭须明确确认。
+// 注意：确认文案与状态均不回显任何字段内容（密码安全）。
+const addFormDirty = computed(
+  () =>
+    addForm.title.trim().length > 0 ||
+    addForm.username.trim().length > 0 ||
+    addForm.password.length > 0 ||
+    addForm.url.trim().length > 0 ||
+    addForm.notes.trim().length > 0
+);
+const addDiscardOpen = ref(false);
+function requestCancelAdd() {
+  if (addFormDirty.value) {
+    addDiscardOpen.value = true;
+    return;
+  }
+  addFormOpen.value = false;
+}
+function confirmDiscardAdd() {
+  addFormOpen.value = false;
+  addDiscardOpen.value = false;
+}
+
 function cancelAdd() {
   addFormOpen.value = false;
 }
@@ -563,13 +586,19 @@ defineExpose({
       </div>
       <div class="view-header-actions">
         <button v-if="!addFormOpen" class="action-btn action-btn-primary tap" title="新增密码" @click="openAdd">+</button>
-        <button v-else class="action-btn action-btn-secondary tap" @click="cancelAdd">×</button>
+        <button v-else class="action-btn action-btn-secondary tap" @click="requestCancelAdd">×</button>
       </div>
     </div>
 
     <!-- 新增表单（行内） -->
     <Transition name="form">
       <div v-if="addFormOpen" class="add-form">
+        <!-- R6-02C-06-P1-01：未保存内容关闭确认 -->
+        <div v-if="addDiscardOpen" class="dt-discard">
+          <span>有未保存的输入</span>
+          <button class="btn-secondary tap" data-interactive @click="addDiscardOpen = false">继续编辑</button>
+          <button class="btn-secondary danger-text tap" data-interactive @click="confirmDiscardAdd">放弃修改</button>
+        </div>
         <div class="form-row">
           <input
             v-model="addForm.title"
@@ -652,7 +681,7 @@ defineExpose({
           ></textarea>
         </div>
         <div class="form-actions">
-          <button class="btn-secondary tap" @click="cancelAdd">取消</button>
+          <button class="btn-secondary tap" @click="requestCancelAdd">取消</button>
           <button
             class="btn-primary tap"
             :disabled="!canAdd"
