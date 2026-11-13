@@ -5,11 +5,11 @@
  * 对账：收录总数 = 正常 + 真实缺失 + 无法确认（全部由同一数组派生）。
  * 入口：软件区 header 🩺/⚠️ 失效(N) → /health；返回 → /apps。
  */
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { useAppStore } from "../stores/app";
 import { useSoftwareStore } from "../stores/software";
-import { relinkApp, openAppLocation, pickPath } from "../api";
+import { relinkApp, openAppLocation, pickPath, listApps } from "../api";
 import ConfirmModal from "../components/ConfirmModal.vue";
 import StatusLine from "../components/settings/StatusLine.vue";
 
@@ -34,12 +34,38 @@ void import("../api").then(({ getAppEdition }) =>
   getAppEdition().then((e) => (isTestEdition.value = e === "acceptance")).catch(() => {})
 );
 
-const totalCount = computed(() => softwareStore.items.length);
+// R4 对账（修正 v2，实测纠正）：list_apps 返回全部未删除记录（含失效记录），
+// list_invalid_apps 返回其中失效子集——二者是包含关系，不可相加（相加会重复计数）。
+// 正确口径：总数 = 无过滤的 list_apps 数量；正常 = 总数 − 失效数；恒等式
+// 总数 = 正常 + 真实缺失 + 无法确认 由「失效 ⊆ 全部」保证。
+// 此前实测 -3 的根因是 HealthView 挂载时 items 尚未加载（陈旧空值），故本页
+// 挂载与重新检查时都自行拉取一次无分类过滤的 list_apps（同一命令，仅去过滤），
+// 不依赖软件区可能带有分类筛选的 store.items。
+const allItems = ref<{ id: number }[]>([]);
 const invalidItems = computed(() => softwareStore.invalidItems);
 const fixedMissing = computed(() => softwareStore.clearableInvalid);
 const protectedItems = computed(() => invalidItems.value.filter((it) => it.kind !== "fixed_missing"));
-const normalCount = computed(() => totalCount.value - invalidItems.value.length);
 const invalidCount = computed(() => softwareStore.invalidCount);
+const totalCount = computed(() => allItems.value.length);
+const normalCount = computed(() => Math.max(0, totalCount.value - invalidItems.value.length));
+
+async function refreshAllItems() {
+  try {
+    allItems.value = await listApps("", undefined);
+  } catch {
+    // 保持上次可信数据；错误由 checkError 展示
+  }
+}
+
+// R4.1 闭环修复：回收站恢复发生在本页之外（TrashModal → softwareStore.reloadAll），
+// KeepAlive 下本页不会重挂载 → 本地 allItems 变陈旧（实测恢复后总数显示 3、实际 4）。
+// 监听 store.items 变化（恢复/批量删除/重定位都会 reloadAll）→ 重拉无过滤列表对齐。
+watch(
+  () => softwareStore.items.length,
+  () => {
+    void refreshAllItems();
+  },
+);
 
 const summary = computed(() => {
   const n = invalidItems.value.length;
@@ -100,6 +126,7 @@ async function runCheck() {
   checkError.value = "";
   try {
     const fixed = await softwareStore.runHealthCheck();
+    await refreshAllItems();
     appStore.showClipToast(
       "success",
       fixed > 0 ? `自动重定位 ${fixed} 项，列表已更新` : "检查完成：没有可自动重定位的条目"
