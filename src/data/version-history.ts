@@ -40,6 +40,30 @@ export interface VersionHistoryEntry {
 
 export const VERSION_HISTORY: VersionHistoryEntry[] = [
   {
+    version: "v0.4.8",
+    name: "抽屉柜 Drawer v0.4.8",
+    date: "2026-11-14",
+    unreleased: false,
+    summary: "修复提示条不自动消失的问题：导入完成等最后一条提示会按时自动消失，不再残留",
+    url: "https://github.com/MetalRiver/cabinet-drawer/releases/tag/v0.4.8",
+    notes: `# 抽屉柜 Drawer v0.4.8
+
+## 修复
+
+- 修复提示条不自动消失的问题：导入完成、复制等操作显示的最后一条提示现在会按时自动消失，不再残留在屏幕底部。
+- 其余提示行为保持不变：成功/信息约 2.2 秒、警告/错误约 3.5 秒自动消失；连续提示按顺序依次显示；锁屏时自动清空。
+
+## 数据与兼容
+
+- 数据位置、安全机制与数据库结构均不变（本版无表结构变更）；从 v0.4.7 应用内更新或覆盖安装均不影响数据，原主密码与全部记录可直接使用（升级链路已实测验证）。
+
+## 安装与更新说明
+
+- 适用于 Windows 10/11 x64，安装到当前用户目录（无需管理员权限）。
+- 应用内更新使用 GitHub Releases，更新包由原 updater 公钥校验；Gitee 作为手动下载镜像。
+- 升级前建议在「数据与备份」中导出 \`.drawerbox\` 加密备份并妥善保存。`,
+  },
+  {
     version: "v0.4.7",
     name: "抽屉柜 Drawer v0.4.7",
     date: "2026-11-14",
