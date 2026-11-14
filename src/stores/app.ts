@@ -105,6 +105,10 @@ export const useAppStore = defineStore("app", () => {
     clipTimer = setTimeout(() => {
       clipQueue.value.shift();
       clipShowing = false;
+      // R6-02C-14（PL-094）：TTL 到期必须清除显示态——修复最后一条 Toast 永久驻留
+      // （clipToast 只在此处与 clipClearAll 置空；clipDrain 会立即回填下一条队头，
+      //  因此先置 null 再 drain 与既有 Transition :key 换位动画语义一致）。
+      clipToast.value = null;
       clipTimer = null;
       clipDrain();
     }, clipTtl(head.type, (head as { durationMs?: number }).durationMs));
